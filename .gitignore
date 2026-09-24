@@ -1,0 +1,20 @@
+# Local upstream checkouts and research scratch files
+.research/
+
+# Android / IDE local state
+.gradle/
+**/build/
+local.properties
+.idea/
+*.iml
+
+# Local credentials and signing material
+.env
+.env.*
+!.env.example
+*.jks
+*.keystore
+
+# Operating system files
+Thumbs.db
+.DS_Store
