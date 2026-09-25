@@ -2,9 +2,11 @@ package com.lmreader.core.database
 
 import android.content.Context
 import com.lmreader.core.database.repository.MangaRepositoryImpl
+import com.lmreader.core.database.repository.ReadingProgressRepositoryImpl
 import com.lmreader.core.database.repository.ShelfRepositoryImpl
 import com.lmreader.core.database.repository.SourceRepositoryImpl
 import com.lmreader.core.model.MangaRepository
+import com.lmreader.core.model.ReadingProgressRepository
 import com.lmreader.core.model.ShelfRepository
 import com.lmreader.core.model.SourceRepository
 
@@ -24,6 +26,7 @@ object DatabaseProvider {
         sources = SourceRepositoryImpl(database, database.sourceDao()),
         mangas = MangaRepositoryImpl(database, database.mangaDao()),
         shelf = ShelfRepositoryImpl(database),
+        readingProgress = ReadingProgressRepositoryImpl(database.readingProgressDao()),
     )
 
     class Components(
@@ -31,5 +34,6 @@ object DatabaseProvider {
         val sources: SourceRepository,
         val mangas: MangaRepository,
         val shelf: ShelfRepository,
+        val readingProgress: ReadingProgressRepository,
     )
 }

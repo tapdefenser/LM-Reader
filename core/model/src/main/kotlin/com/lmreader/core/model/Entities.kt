@@ -94,6 +94,17 @@ data class ChapterRecord(
     val discoveredAt: Long,
 )
 
+/** 漫画级阅读恢复点（开发文档 9、15.3）。 */
+data class ReadingProgress(
+    val mangaId: String,
+    val chapterId: String?,
+    val pageOrdinal: Int,
+    val intraPageRatio: Float,
+    val read: Boolean,
+    val bookmark: Boolean,
+    val updatedAt: Long,
+)
+
 /**
  * ComicInfo 解析结果：原文始终保留，未知字段不丢弃（开发文档 7）。
  *

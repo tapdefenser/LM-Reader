@@ -23,6 +23,7 @@ import com.lmreader.di.AppContainer
 import com.lmreader.ui.bookshelf.BookshelfScreen
 import com.lmreader.ui.detail.MangaDetailScreen
 import com.lmreader.ui.library.LibraryScreen
+import com.lmreader.ui.reader.ReaderScreen
 import com.lmreader.ui.settings.SettingsHomeScreen
 import com.lmreader.ui.settings.paths.GalleryPathsScreen
 import com.lmreader.ui.settings.paths.GalleryPathsSettingsScreen
@@ -37,10 +38,12 @@ object Routes {
     const val SETTINGS = "settings"
     const val SETTINGS_PATHS = "settings/paths"
     const val MANGA_DETAIL = "manga/{mangaId}"
+    const val READER = "reader/{mangaId}/{chapterId}"
     const val TRANSLATION_QUEUE = "queue/translation"
     const val EXPORT_QUEUE = "queue/export"
 
     fun mangaDetail(mangaId: String) = "manga/$mangaId"
+    fun reader(mangaId: String, chapterId: String?) = "reader/$mangaId/${chapterId ?: "resume"}"
 }
 
 /**
@@ -158,6 +161,18 @@ fun LmReaderNavHost(
                     MangaDetailScreen(
                         container = container,
                         mangaId = mangaId,
+                        onBack = { navController.popBackStack() },
+                        onReadChapter = { chapterId ->
+                            navController.navigate(Routes.reader(mangaId, chapterId))
+                        },
+                    )
+                }
+
+                composable(Routes.READER) { entry ->
+                    ReaderScreen(
+                        container = container,
+                        mangaId = entry.arguments?.getString("mangaId").orEmpty(),
+                        chapterId = entry.arguments?.getString("chapterId").orEmpty(),
                         onBack = { navController.popBackStack() },
                     )
                 }

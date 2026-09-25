@@ -8,6 +8,7 @@ import com.lmreader.core.model.LibrarySource
 import com.lmreader.core.model.MangaCard
 import com.lmreader.core.model.MangaRecord
 import com.lmreader.core.model.MetadataRecord
+import com.lmreader.core.model.ReadingProgress
 import com.lmreader.core.model.ShelfEntry
 
 /**
@@ -117,6 +118,26 @@ internal fun ChapterRecord.toEntity(): ChapterEntity = ChapterEntity(
     coverDocumentId = coverDocumentId,
     contentRevision = contentRevision,
     discoveredAt = discoveredAt,
+)
+
+internal fun ReadingProgressEntity.toDomain(): ReadingProgress = ReadingProgress(
+    mangaId = mangaId,
+    chapterId = chapterId,
+    pageOrdinal = pageOrdinal,
+    intraPageRatio = intraPageRatio,
+    read = read,
+    bookmark = bookmark,
+    updatedAt = updatedAt,
+)
+
+internal fun ReadingProgress.toEntity(): ReadingProgressEntity = ReadingProgressEntity(
+    mangaId = mangaId,
+    chapterId = chapterId,
+    pageOrdinal = pageOrdinal,
+    intraPageRatio = intraPageRatio,
+    read = read,
+    bookmark = bookmark,
+    updatedAt = updatedAt,
 )
 
 internal fun MetadataEntity.toDomain(): MetadataRecord = MetadataRecord(

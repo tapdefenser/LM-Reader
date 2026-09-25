@@ -12,9 +12,11 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.BookmarkAdd
 import androidx.compose.material.icons.filled.BookmarkRemove
@@ -47,6 +49,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.lmreader.core.model.ChapterKind
 import com.lmreader.di.AppContainer
@@ -59,6 +64,7 @@ fun MangaDetailScreen(
     container: AppContainer,
     mangaId: String,
     onBack: () -> Unit,
+    onReadChapter: (String?) -> Unit,
     viewModel: MangaDetailViewModel = viewModel(
         key = mangaId,
         factory = MangaDetailViewModel.factory(container, mangaId),
@@ -67,6 +73,15 @@ fun MangaDetailScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     var showCategoryDialog by remember { mutableStateOf(false) }
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    androidx.compose.runtime.DisposableEffect(lifecycleOwner, viewModel) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) viewModel.reload()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     LaunchedEffect(state.message) {
         state.message?.let {
@@ -138,6 +153,7 @@ fun MangaDetailScreen(
                 onShelfClick = {
                     if (state.inShelf) viewModel.removeFromShelf() else showCategoryDialog = true
                 },
+                onReadChapter = onReadChapter,
             )
         }
     }
@@ -149,6 +165,7 @@ private fun DetailContent(
     contentPadding: PaddingValues,
     onSync: () -> Unit,
     onShelfClick: () -> Unit,
+    onReadChapter: (String?) -> Unit,
 ) {
     val manga = requireNotNull(state.manga)
     LazyColumn(
@@ -210,6 +227,17 @@ private fun DetailContent(
             }
         }
         item {
+            Button(
+                onClick = { onReadChapter(null) },
+                enabled = state.chapters.isNotEmpty(),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Icon(Icons.AutoMirrored.Filled.MenuBook, contentDescription = null)
+                Spacer(Modifier.width(6.dp))
+                Text("阅读 / 继续阅读")
+            }
+        }
+        item {
             val countText = if (manga.chapterCountKnown) {
                 "共 ${state.chapters.size} 章"
             } else {
@@ -222,6 +250,7 @@ private fun DetailContent(
         } else {
             items(state.chapters, key = { it.chapterId }) { chapter ->
                 ListItem(
+                    modifier = Modifier.clickable { onReadChapter(chapter.chapterId) },
                     headlineContent = { Text(chapter.title) },
                     supportingContent = {
                         Text(

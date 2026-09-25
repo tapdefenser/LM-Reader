@@ -10,6 +10,8 @@ import com.lmreader.core.storage.saf.SafContentTree
 import com.lmreader.core.storage.saf.SafTreeAccess
 import android.net.Uri
 import java.io.File
+import java.io.FileInputStream
+import java.io.InputStream
 
 /**
  * 打开内容树的统一入口：能用直接文件访问就用它，否则退回 SAF。
@@ -131,6 +133,16 @@ class TreeAccess(
             return Uri.fromFile(File(documentId))
         }
         return safAccess.documentUri(treeUri, documentId)
+    }
+
+    /** 阅读器统一打开页内容；调用方必须关闭返回的流。 */
+    fun openInputStream(treeUri: String, documentId: String): InputStream? {
+        if (usesDirectFileAccess() && documentId.startsWith("/")) {
+            val file = File(documentId)
+            return if (file.isFile && file.canRead()) FileInputStream(file) else null
+        }
+        val uri = readableUri(treeUri, documentId) ?: return null
+        return context.contentResolver.openInputStream(uri)
     }
 
     /** 展示路径：能拿到真实路径就给真实路径。 */

@@ -15,6 +15,7 @@ import com.lmreader.core.storage.scan.LibraryScanCoordinator
 import com.lmreader.core.storage.scan.MangaChapterSyncer
 import com.lmreader.core.storage.scan.MetadataBackfillWorker
 import com.lmreader.core.storage.scan.SourceScanRunner
+import com.lmreader.core.storage.reader.PageSourceFactory
 import com.lmreader.core.storage.settings.AppPreferences
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -62,6 +63,7 @@ class AppContainer(private val application: Application) {
     val sourceRepository: SourceRepository get() = databaseComponents.sources
     val mangaRepository: MangaRepository get() = databaseComponents.mangas
     val shelfRepository: ShelfRepository get() = databaseComponents.shelf
+    val readingProgressRepository get() = databaseComponents.readingProgress
 
     val preferences by lazy { AppPreferences(application) }
 
@@ -105,6 +107,8 @@ class AppContainer(private val application: Application) {
             sourceRepository = sourceRepository,
         )
     }
+
+    val pageSourceFactory by lazy { PageSourceFactory(treeAccess) }
 
     /**
      * 结构扫描器是**纯算法**，不认识任何具体来源：它只通过 [TreeFactory] 读目录。

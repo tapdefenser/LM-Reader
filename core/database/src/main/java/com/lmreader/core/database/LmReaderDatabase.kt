@@ -9,6 +9,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 import com.lmreader.core.database.dao.ChapterDao
 import com.lmreader.core.database.dao.MangaDao
 import com.lmreader.core.database.dao.MetadataDao
+import com.lmreader.core.database.dao.ReadingProgressDao
 import com.lmreader.core.database.dao.ScanDao
 import com.lmreader.core.database.dao.ShelfDao
 import com.lmreader.core.database.dao.SourceDao
@@ -53,6 +54,7 @@ abstract class LmReaderDatabase : RoomDatabase() {
     abstract fun mangaDao(): MangaDao
     abstract fun chapterDao(): ChapterDao
     abstract fun metadataDao(): MetadataDao
+    abstract fun readingProgressDao(): ReadingProgressDao
     abstract fun shelfDao(): ShelfDao
     abstract fun scanDao(): ScanDao
 

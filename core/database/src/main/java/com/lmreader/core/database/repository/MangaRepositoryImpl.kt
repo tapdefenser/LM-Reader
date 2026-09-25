@@ -87,6 +87,14 @@ internal class MangaRepositoryImpl(
     override suspend fun getChapters(mangaId: String): List<ChapterRecord> =
         chapterDao.getByManga(mangaId).map { it.toDomain() }
 
+    override suspend fun updateChapterPageInfo(
+        chapterId: String,
+        pageCount: Int,
+        coverDocumentId: String?,
+    ) {
+        chapterDao.updateDerivedFields(chapterId, pageCount, coverDocumentId)
+    }
+
     override suspend fun pendingBackfillIds(limit: Int): List<String> =
         mangaDao.pendingBackfillIds(limit)
 

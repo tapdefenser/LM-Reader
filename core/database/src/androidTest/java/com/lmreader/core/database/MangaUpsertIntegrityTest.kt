@@ -7,6 +7,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.lmreader.core.database.entity.ChapterEntity
 import com.lmreader.core.database.entity.LibrarySourceEntity
 import com.lmreader.core.database.entity.MangaEntity
+import com.lmreader.core.database.entity.ReadingProgressEntity
 import com.lmreader.core.database.entity.ShelfEntryEntity
 import com.lmreader.core.database.repository.MangaRepositoryImpl
 import com.lmreader.core.database.repository.SourceRepositoryImpl
@@ -67,6 +68,17 @@ class MangaUpsertIntegrityTest {
             ),
         )
         database.shelfDao().upsertEntry(ShelfEntryEntity(MANGA_ID, categoryId = 0, addedAt = 1))
+        database.readingProgressDao().upsert(
+            ReadingProgressEntity(
+                mangaId = MANGA_ID,
+                chapterId = "chapter-1",
+                pageOrdinal = 3,
+                intraPageRatio = 0f,
+                read = false,
+                bookmark = false,
+                updatedAt = 1,
+            ),
+        )
 
         database.mangaDao().upsert(
             manga.copy(
@@ -80,6 +92,7 @@ class MangaUpsertIntegrityTest {
         assertEquals("After", database.mangaDao().getById(MANGA_ID)?.displayName)
         assertEquals(1, database.chapterDao().countByManga(MANGA_ID))
         assertNotNull(database.shelfDao().getEntry(MANGA_ID))
+        assertEquals(3, database.readingProgressDao().get(MANGA_ID)?.pageOrdinal)
     }
 
     @Test

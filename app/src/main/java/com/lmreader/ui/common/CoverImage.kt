@@ -30,6 +30,7 @@ import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.layout.ContentScale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.File
 
 /**
  * 封面加载（开发文档 7.2、8.1）。
@@ -103,12 +104,16 @@ private fun rememberCoverPainter(request: CoverRequest?): Painter? {
  * 会一次吃掉上百 MB 内存，滚动万级图库必然 OOM。
  */
 private fun loadCover(context: Context, request: CoverRequest): Painter? {
-    val uri = runCatching {
-        DocumentsContract.buildDocumentUriUsingTree(
-            Uri.parse(request.treeUri),
-            request.documentId,
-        )
-    }.getOrNull() ?: return null
+    val uri = if (request.documentId.startsWith("/")) {
+        Uri.fromFile(File(request.documentId))
+    } else {
+        runCatching {
+            DocumentsContract.buildDocumentUriUsingTree(
+                Uri.parse(request.treeUri),
+                request.documentId,
+            )
+        }.getOrNull() ?: return null
+    }
 
     val resolver = context.contentResolver
     return runCatching {

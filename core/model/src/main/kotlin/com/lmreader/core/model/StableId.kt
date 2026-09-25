@@ -21,6 +21,9 @@ object StableId {
     /** 章节 ID：`c_` + SHA-256(documentId + '\u0000' + kind.name) 的前 32 个十六进制字符。 */
     fun chapterId(documentId: String, kind: ChapterKind): String = derive("c_", documentId, kind.name)
 
+    /** 页 ID：章节身份与页文档身份共同派生，重排显示序号不改变它。 */
+    fun pageId(chapterId: String, documentId: String): String = derive("p_", chapterId, documentId)
+
     /**
      * 来源 ID：`s_` + SHA-256(treeUri) 的前 32 个十六进制字符。
      *

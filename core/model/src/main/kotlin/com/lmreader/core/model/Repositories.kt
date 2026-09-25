@@ -121,6 +121,9 @@ interface MangaRepository {
     /** 批量取章节；按自然序（`sortKey`）返回，封面取第一章不依赖调用方再排序。 */
     suspend fun getChapters(mangaId: String): List<ChapterRecord>
 
+    /** 页源完整枚举后回填页数和首页；不改变章节身份。 */
+    suspend fun updateChapterPageInfo(chapterId: String, pageCount: Int, coverDocumentId: String?)
+
     /**
      * 落库一次扫描结果。必须在单个事务内完成，并且只有 `completed = true` 的扫描
      * 才允许删除章节（框架 5.2）。
@@ -156,4 +159,10 @@ interface ShelfRepository {
      * 强迫调用方在没有必要时也进入协程（分类侧栏在 Compose 里直接 collect）。
      */
     fun observeShelfCount(categoryId: Long?): Flow<Int>
+}
+
+/** 阅读恢复点与派生索引分开，重扫不得删除（开发文档 15.3）。 */
+interface ReadingProgressRepository {
+    suspend fun get(mangaId: String): ReadingProgress?
+    suspend fun save(progress: ReadingProgress)
 }
