@@ -5,6 +5,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -15,24 +16,27 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDownward
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DragHandle
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -48,6 +52,9 @@ import com.lmreader.core.model.LayoutMode
 import com.lmreader.core.model.ScanRunStatus
 import com.lmreader.core.model.SourcePermissionState
 import com.lmreader.core.storage.scan.ScanState
+import com.lmreader.ui.common.description
+import com.lmreader.ui.common.displayName
+import com.lmreader.ui.common.shortName
 
 /**
  * 一张路径表（开发文档 4.1，按用户要求修订交互）。
@@ -357,22 +364,11 @@ private fun SourceTableRow(
         }
 
         Box(modifier = Modifier.width(MODE_COLUMN_WIDTH), contentAlignment = Alignment.Center) {
-            SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-                LayoutMode.entries.forEachIndexed { index, mode ->
-                    SegmentedButton(
-                        selected = row.mode == mode,
-                        onClick = { onChangeMode(mode) },
-                        shape = SegmentedButtonDefaults.itemShape(index, LayoutMode.entries.size),
-                        label = {
-                            Text(
-                                text = if (mode == LayoutMode.MULTI_CHAPTER) "多章" else "单章",
-                                style = MaterialTheme.typography.labelSmall,
-                                maxLines = 1,
-                            )
-                        },
-                    )
-                }
-            }
+            LayoutModeDropdown(
+                selected = row.mode,
+                onSelect = onChangeMode,
+                enabled = row.source != null,
+            )
         }
 
         Box(modifier = Modifier.width(DELETE_COLUMN_WIDTH), contentAlignment = Alignment.Center) {
@@ -392,3 +388,68 @@ private val MOVE_COLUMN_WIDTH = 26.dp
 private val CHECKBOX_COLUMN_WIDTH = 52.dp
 private val MODE_COLUMN_WIDTH = 112.dp
 private val DELETE_COLUMN_WIDTH = 52.dp
+
+/**
+ * 解释方式下拉（用户要求：从分段切换改成下拉，将来要加"混合"这类选项）。
+ *
+ * 为什么用下拉而不是分段：分段切换的宽度随选项数线性增长，第三个选项就会把这四列的
+ * 行挤坏；下拉的按钮宽度固定，选项放在菜单里还能带一句说明。
+ *
+ * 选项列表直接遍历 [LayoutMode.entries]、文案取自 [displayName]/[description]，
+ * 因此新增枚举值时这里一行都不用改。
+ */
+@Composable
+private fun LayoutModeDropdown(
+    selected: LayoutMode,
+    onSelect: (LayoutMode) -> Unit,
+    enabled: Boolean,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        TextButton(
+            onClick = { expanded = true },
+            enabled = enabled,
+            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+            modifier = Modifier.semantics {
+                contentDescription = "解释方式：${selected.displayName()}，点击切换"
+            },
+        ) {
+            Text(
+                text = selected.shortName(),
+                style = MaterialTheme.typography.labelSmall,
+                maxLines = 1,
+            )
+            Icon(
+                imageVector = Icons.Filled.ArrowDropDown,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+            )
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            LayoutMode.entries.forEach { mode ->
+                DropdownMenuItem(
+                    text = {
+                        Column {
+                            Text(text = mode.displayName(), style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                text = mode.description(),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    },
+                    // 当前值给一个勾：下拉里必须能一眼看出"现在选的是哪个"。
+                    leadingIcon = if (mode == selected) {
+                        { Icon(Icons.Filled.Check, contentDescription = null, modifier = Modifier.size(18.dp)) }
+                    } else {
+                        null
+                    },
+                    onClick = {
+                        expanded = false
+                        if (mode != selected) onSelect(mode)
+                    },
+                )
+            }
+        }
+    }
+}

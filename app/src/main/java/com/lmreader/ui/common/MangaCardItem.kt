@@ -30,7 +30,6 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.lmreader.core.model.LayoutMode
 import com.lmreader.core.model.MangaAvailability
 import com.lmreader.core.model.MangaCard
 
@@ -136,12 +135,8 @@ fun MangaCardItem(
                     if (card.hasArchiveChapters) {
                         Badge(text = "压缩包章节")
                     }
-                    Badge(
-                        text = when (card.layoutMode) {
-                            LayoutMode.MULTI_CHAPTER -> "多章节"
-                            LayoutMode.SINGLE_CHAPTER -> "单章节"
-                        },
-                    )
+                    // 解释方式文案与类型列下拉共用一处（ui/common/LayoutModeLabels.kt）。
+                    Badge(text = card.layoutMode.displayName())
                     Text(
                         text = chapterLabel(card),
                         style = MaterialTheme.typography.labelSmall,

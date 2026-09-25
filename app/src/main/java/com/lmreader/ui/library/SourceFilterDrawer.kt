@@ -27,8 +27,8 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.lmreader.core.model.LayoutMode
 import com.lmreader.core.model.LibrarySource
+import com.lmreader.ui.common.displayName
 
 /**
  * 图库的图源筛选右滑栏（用户要求）。
@@ -169,12 +169,8 @@ private fun SourceFilterRow(
                     append(discovered ?: 0)
                     append(" 项")
                     append(" · ")
-                    append(
-                        when (source.mode) {
-                            LayoutMode.MULTI_CHAPTER -> "多章节"
-                            LayoutMode.SINGLE_CHAPTER -> "单章节"
-                        },
-                    )
+                    // 解释方式文案与类型列下拉共用一处（ui/common/LayoutModeLabels.kt）。
+                    append(source.mode.displayName())
                 },
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
