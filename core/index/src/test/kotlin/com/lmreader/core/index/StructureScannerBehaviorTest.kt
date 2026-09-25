@@ -182,48 +182,56 @@ class StructureScannerBehaviorTest {
     }
 
     /**
-     * 真机 `/Tachiyomi/local` 的形态：漫画文件夹里用**压缩包**当章节，只有一张封面图片。
+     * 真机 `/Tachiyomi/local` 的形态：同一个目录里既有"章节是图片目录"的作品，
+     * 也有"章节是压缩包"的作品（漫画文件夹里只有一张 `cover.jpg` + 若干 `.zip`）。
      *
-     * 这种目录有图片、没有子目录，若不额外排除就会被当成"单章节"，于是它的**父目录**
-     * （来源目录/授权根）被判成漫画，其余子文件夹全部跳过——真机上 51 个子文件夹
-     * 只扫出 1 张名叫 `local` 的卡片（日志：漫画=1 遍历目录=11 章节探测=10，
-     * 第 10 次探测正好命中 `Jyminish  OOHS`，后 41 个文件夹一个都没看）。
-     *
-     * 正确行为：它不是图片章节，父目录继续当普通文件夹遍历，同一层的其它漫画照常发现；
-     * 用压缩包当章节的那部作品由「CBZ/ZIP/PDF 导入列表」解释。
+     * 一条来源、一次遍历就要把它们都扫出来：
+     * - 压缩包章节的文件夹**不是**父目录的章节，否则父目录会被判成漫画、其余子文件夹
+     *   全部跳过（真机 51 个子文件夹只扫出 1 张名叫 `local` 的卡片：日志 漫画=1
+     *   遍历目录=11 章节探测=10，第 10 次探测正好命中 `Jyminish  OOHS`）；
+     * - 它自己是一部漫画，章节是那些压缩包。
      */
     @Test
-    fun 压缩包章节的漫画文件夹不得被当成单章节而让授权根塌缩() = runTest {
+    fun 一条来源同时扫出图片章节与压缩包章节的漫画() = runTest {
         val harness = ScanHarness(
             rootName = "local",
             paths = listOf(
-                // 压缩包当章节：cover.jpg + 两个 .zip，没有子目录
+                // 章节是图片目录
+                "10000-nichi no 7/Swarm_Chapter 3/001.jpg",
+                "Big Banko/第1话/001.jpg",
+                // 章节是压缩包：cover.jpg + 两个 .zip，没有子目录
                 "Jyminish  OOHS/cover.jpg",
                 "Jyminish  OOHS/Jyminish  OOHS1 - A Loss Of Influence (EN).zip",
                 "Jyminish  OOHS/Jyminish  OOHS 2 - A Goddess In Distress (EN).zip",
-                // 同层的普通图片漫画：章节是图片目录
-                "10000-nichi no 7/Swarm_Chapter 3/001.jpg",
-                "Big Banko/第1话/001.jpg",
             ),
         )
         harness.run()
 
         assertEquals(
-            "授权根不得因为一个压缩包章节的文件夹而被判定成漫画",
-            listOf("10000-nichi no 7", "Big Banko"),
-            harness.names,
+            "图片章节与压缩包章节的漫画都要被发现",
+            setOf("10000-nichi no 7", "Big Banko", "Jyminish  OOHS"),
+            harness.names.toSet(),
         )
         assertFalse("授权根「local」不得成为卡片", harness.names.contains("local"))
         assertEquals(listOf("Swarm_Chapter 3"), harness.chaptersOf("10000-nichi no 7"))
-        assertTrue(
-            "含压缩包的目录必须给出可操作提示（告诉用户去用导入列表）",
-            harness.diagnostics.any { it.contains("CBZ/ZIP/PDF") },
+        // 压缩包章节按名称自然序取第一个即可断定这是一部漫画（其余靠"深入"阶段枚举）。
+        // 注意自然序里空格排在数字之前，所以 "…OOHS 2 - …" 先于 "…OOHS1 - …"
+        // （这与真机 Jyminish  OOHS/ 目录里的两个 .zip 完全一致）。
+        val archiveChapters = harness.resultOf("Jyminish  OOHS").chapters
+        assertEquals(
+            listOf("Jyminish  OOHS 2 - A Goddess In Distress (EN)"),
+            archiveChapters.map { it.title },
+        )
+        assertEquals(
+            "压缩包章节的种类必须是 ARCHIVE",
+            ChapterKind.ARCHIVE,
+            archiveChapters.single().kind,
         )
     }
 
-    /** 单章节模式同样不把"封面 + 压缩包"的目录当成单章节。 */
+    /** 单章节模式同样一条来源覆盖两种形态：叶子图片目录一张卡，每个压缩包各一张卡。 */
     @Test
-    fun 单章节模式不把含压缩包的目录当成单章节() = runTest {
+    fun 单章节模式同时产出图片单章节与压缩包单章节() = runTest {
         val harness = ScanHarness(
             rootName = "local",
             paths = listOf(
@@ -235,8 +243,21 @@ class StructureScannerBehaviorTest {
         )
         harness.run()
 
-        assertEquals("只有真正的图片叶子目录出卡片", listOf("短篇"), harness.names)
-        assertTrue(harness.diagnostics.any { it.contains("CBZ/ZIP/PDF") })
+        assertEquals(
+            "含压缩包的目录本身不算单章节，但它的压缩包各自是一张卡",
+            setOf("短篇", "第1话"),
+            harness.names.toSet(),
+        )
+        assertEquals(
+            "压缩包单章节的章节种类是 ARCHIVE",
+            ChapterKind.ARCHIVE,
+            harness.resultOf("第1话").chapters.single().kind,
+        )
+        assertEquals(
+            "图片单章节的章节种类是 IMAGE_DIRECTORY",
+            ChapterKind.IMAGE_DIRECTORY,
+            harness.resultOf("短篇").chapters.single().kind,
+        )
     }
 
     /** 验收 A04：先见到图片、后枚举到子文件夹，不能误判叶子章节。 */

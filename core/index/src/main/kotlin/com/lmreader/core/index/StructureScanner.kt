@@ -10,7 +10,6 @@ import com.lmreader.core.model.MangaRecord
 import com.lmreader.core.model.MetadataCandidate
 import com.lmreader.core.model.MetadataOwnerType
 import com.lmreader.core.model.MimeTypes
-import com.lmreader.core.model.SourceKind
 import com.lmreader.core.model.StableId
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
@@ -85,16 +84,13 @@ private class ScanRun(
 
     suspend fun execute(): ScanSummary {
         try {
-            when (request.sourceKind) {
-                SourceKind.IMAGE_DIRECTORY -> when (request.layoutMode) {
-                    LayoutMode.MULTI_CHAPTER -> scanImageManga(rootRef, depth = 0)
-                    LayoutMode.SINGLE_CHAPTER -> scanImageSingle(rootRef, isRoot = true)
-                }
-
-                SourceKind.ARCHIVE_IMPORT -> when (request.layoutMode) {
-                    LayoutMode.MULTI_CHAPTER -> scanArchiveManga(rootRef, depth = 0)
-                    LayoutMode.SINGLE_CHAPTER -> scanArchiveSingle(rootRef, isRoot = true)
-                }
+            // 两种解释（图片目录 / CBZ-ZIP-PDF）共用**一次**遍历：一个目录的直接章节是
+            // 「它直接含的归档文件」与「它直接子目录里的叶子图片目录」的并集，有章节它就是
+            // 一部漫画。`request.sourceKind` 因此不再决定扫描行为，只决定卡片的身份与徽标
+            // （用户要求：不要再让用户为了一个目录去两张表各加一遍）。
+            when (request.layoutMode) {
+                LayoutMode.MULTI_CHAPTER -> scanManga(rootRef, depth = 0)
+                LayoutMode.SINGLE_CHAPTER -> scanSingle(rootRef, isRoot = true)
             }
         } catch (cancellation: CancellationException) {
             // 取消不向外抛：ScanSummary.completed 就是「不完整」的表达方式
@@ -114,37 +110,43 @@ private class ScanRun(
         )
     }
 
-    // ---------------------------------------------------------------- 图片目录
+    // ---------------------------------------------------------------- 多章节
 
     /**
-     * 图片目录 · 多章节。
+     * 多章节：**图片目录与归档共用同一条判定**。
+     *
+     * 一个目录的直接章节 = 「它直接含的 CBZ/ZIP/PDF」∪「它直接子目录里的叶子图片目录」
+     * （[isLeafImageChapter]，即没有子目录、没有归档、至少一张图片）。只要有一个章节，
+     * 这个目录就是一部漫画。这样同一个目录（例如 Tachiyomi 的 `/Tachiyomi/local`，里面
+     * 既有"章节是文件夹"的作品、也有"章节是压缩包"的作品）**一条来源就能扫全**，
+     * 不再需要用户把它在两张表里各加一遍。
      *
      * 判定与停止规则（用户明确要求，也是这个模式唯一必要的成本）：
-     * 1. 逐个检查直接子目录，**找到一个** [isLeafImageChapter] 就成立——这个目录
-     *    是一部漫画，那个子目录是它的章节；
-     * 2. 一旦成立，**该目录下的其余子文件夹全部跳过**：它们要么是同一部作品的其它
-     *    章节，要么是这部作品的附属内容，都不是新的漫画。因此每部作品最多只打开
-     *    一个子目录，而不是枚举几百个章节文件夹。
+     * 1. 先看直接归档文件：**零额外 IO**（子项列表已经在手）就能断定这是一部漫画；
+     * 2. 否则逐个检查直接子目录，**找到第一个** [isLeafImageChapter] 就成立；
+     * 3. 一旦成立，**该目录下的其余子项全部跳过**：它们要么是同一部作品的其它章节，
+     *    要么是这部作品的附属内容，都不是新的漫画。因此每部作品最多只打开一个子目录，
+     *    而不是枚举几百个章节文件夹。
      *
-     * 第 1 条成立的前提是"章节"判得准。[isLeafImageChapter] 因此要求子目录
+     * 第 2 条成立的前提是"章节"判得准。[isLeafImageChapter] 因此要求子目录
      * **既没有子目录、也没有 CBZ/ZIP/PDF**：真机 `/Tachiyomi/local` 里
-     * `Jyminish  OOHS/`（`cover.jpg` + 两个章节 `.zip`，没有子目录）曾被当成章节，
-     * 于是授权根被判成一部叫 `local` 的漫画、其余 41 个子文件夹全部没被检查。
-     * 这类目录归「CBZ/ZIP/PDF 导入列表」管，不是图片章节。
+     * `Jyminish  OOHS/`（`cover.jpg` + 两个章节 `.zip`，没有子目录）曾被当成父目录的
+     * 一个章节，于是授权根被判成一部叫 `local` 的漫画、其余 41 个子文件夹全部没被检查；
+     * 现在它的章节是那两个压缩包，它自己就是一部漫画。
      *
      * 反过来说：判定"这里不是漫画"必须把直接子目录都检查完（否则会把漫画误判成
      * 包裹目录，继续往下把「第一章」当成新作品）。
      *
      * 与开发文档的两点偏离都记录在此，避免以后被当成 bug 改回去：
-     * - 锚点章节是"枚举顺序里第一个被确认为叶子的子目录"，不保证是自然序第一章。
-     *   封面与简介由补全阶段按自然序重取（开发文档 7.2），因此不影响展示；
+     * - 锚点章节是"归档里自然序第一个文件"或"枚举/排序后第一个被确认为叶子的子目录"，
+     *   不保证是自然序第一章。封面与简介由补全阶段按自然序重取（开发文档 7.2），不影响展示；
      * - 因此也不再深入"已判定为漫画"的目录去找更深的作品（开发文档 5.1 第 12 行
      *   的样例属于这种情况，本实现按用户要求以跳过换取性能）。
      *
      * depth 用于实现"未勾选子目录时只把根自身及根的直接子目录当作漫画候选"：
      * depth == 0 的那一层永远要进，再深才看 recursive。
      */
-    private suspend fun scanImageManga(dir: DirRef, depth: Int) {
+    private suspend fun scanManga(dir: DirRef, depth: Int) {
         val children = dir.enumerateOnce() ?: return
         val childDirs = children.filter { it.isDirectory }
         val hasDirectImage = children.any { it.isSupportedImage() }
@@ -153,8 +155,28 @@ private class ScanRun(
             diagnose(dir.path, MESSAGE_MIXED)
         }
 
-        var isManga = false
-        // 先按名称自然序排候选，再"找到第一个叶子就停"：
+        // 1) 直接含归档文件：按名称自然序取第一个即可断定"这是一部漫画"，其余子项全部跳过。
+        //    枚举每个归档的页数、打开每个 PDF 都是「深入」阶段的事（开发文档 6.1）。
+        val firstArchive = children
+            .filter { it.isArchiveFile() }
+            .minWithOrNull(Comparator { a, b -> NaturalOrder.compare(a.name, b.name) })
+        if (firstArchive != null) {
+            emitManga(
+                anchor = dir,
+                chapters = listOf(
+                    ChapterSpec(
+                        documentId = firstArchive.documentId,
+                        title = MimeTypes.nameWithoutExtension(firstArchive.name),
+                        kind = ChapterKind.ARCHIVE,
+                    ),
+                ),
+                anchorChildren = children,
+                chaptersFullyEnumerated = false,
+            )
+            return
+        }
+
+        // 2) 先按名称自然序排候选，再"找到第一个叶子就停"：
         // - 排序让锚点章节**确定、且通常是第一章**，而不是枚举顺序碰巧返回的那个
         //   （真机上出现过先返回「第10话」，会让封面在不同设备上不一致）；
         // - 只对排序后的前几项做叶子判定，命中即 break，其余子文件夹全部跳过。
@@ -164,7 +186,6 @@ private class ScanRun(
             // 不显式检查就会出现"取消之后又冒出一部漫画"（验收 A09 要求无错序结果）。
             currentCoroutineContext().ensureActive()
             if (!isLeafImageChapter(dir, child)) continue
-            isManga = true
             emitManga(
                 anchor = dir,
                 chapters = listOf(
@@ -176,10 +197,8 @@ private class ScanRun(
                 chaptersFullyEnumerated = false,
             )
             // 找到一个章节就够：其余子文件夹全部跳过。
-            break
+            return
         }
-
-        if (isManga) return
 
         if (depth == 0 && childDirs.isEmpty() && hasDirectImage) {
             // 根特例：授权根本身就是叶子图片目录，说明用户选中的是单章节本体
@@ -194,7 +213,7 @@ private class ScanRun(
             return
         }
         if (depth == 0 && childDirs.isEmpty()) {
-            diagnose(dir.path, MESSAGE_NO_IMAGE)
+            diagnose(dir.path, MESSAGE_EMPTY_ROOT)
             return
         }
 
@@ -206,37 +225,52 @@ private class ScanRun(
             // （验收 A09：取消后不得继续产生结果）。
             currentCoroutineContext().ensureActive()
             val sub = openChild(dir, child) ?: continue
-            scanImageManga(sub, depth + 1)
+            scanManga(sub, depth + 1)
         }
     }
 
+    // ---------------------------------------------------------------- 单章节
+
     /**
-     * 图片目录 · 单章节（框架 4.3 第二段）。
+     * 单章节：**图片目录与归档共用同一条判定**（框架 4.3 第二段）。
      *
-     * 每个叶子图片目录是一本共 1 章的漫画。为了让 `作者/短篇/001.jpg` 得到
-     * 「短篇」而不是「作者」（开发文档 5.3 第 7、13 行的示例结构），中间容器的
-     * 判定是：**只要还有子目录就继续向下**——既有图片又有子目录的目录既不是
-     * 章节也不是漫画，它只是包裹目录，发诊断后继续递归（开发文档 5.1）。
+     * 一个目录出卡片的方式有两种，互不冲突：
+     * 1. 它**直接含的每个 CBZ/ZIP/PDF** 各自是一本共 1 章的漫画，章节标题 = 去扩展名的
+     *    文件名（开发文档 1.3「归档单章节」）；
+     * 2. 它自己**没有子目录、没有归档、且至少有一张图片**时，它是一本共 1 章的漫画，
+     *    唯一的章节就是它自己。
      *
-     * "根自身是叶子图片目录"因此自然覆盖：根没有子目录且直接含图片时，
-     * 它自己就是唯一章节（开发文档 5.1 根特例），不需要额外分支。
+     * 为了让 `作者/短篇/001.jpg` 得到「短篇」而不是「作者」（开发文档 5.3 第 7、13 行的
+     * 示例结构），中间容器的判定是：**只要还有子目录就继续向下**——既有图片又有子目录的
+     * 目录既不是章节也不是漫画，它只是包裹目录，发诊断后继续递归（开发文档 5.1）。
+     *
+     * 根自身是叶子图片目录因此自然覆盖：根没有子目录且直接含图片时，它自己就是唯一章节
+     * （开发文档 5.1 根特例），不需要额外分支。
      */
-    private suspend fun scanImageSingle(dir: DirRef, isRoot: Boolean) {
+    private suspend fun scanSingle(dir: DirRef, isRoot: Boolean) {
         val children = dir.enumerateOnce() ?: return
         val childDirs = children.filter { it.isDirectory }
         val hasDirectImage = children.any { it.isSupportedImage() }
-        // 直接含 CBZ/ZIP/PDF 的目录属于「归档表」的解释范围，不是图片单章节。
-        // 少了这一条，一张 `cover.jpg` + 几个章节压缩包就会看起来像"有图片且没有子文件夹"，
-        // 于是父目录被误判成单章节、其余子文件夹全部被跳过（真机 `/Tachiyomi/local` 实测：
-        // 51 个子文件夹只扫出 1 张名叫 local 的卡片）。
+        // 直接含 CBZ/ZIP/PDF 的目录不按"图片单章节"处理：它的章节是那些压缩包，
+        // 而一张 `cover.jpg` 会让它看起来像"有图片且没有子文件夹"（Tachiyomi 本地库里
+        // "章节就是压缩包"的漫画文件夹正是这种形态）。判别条件少了这一条时，
+        // 父目录会被误判成单章节、其余子文件夹全部被跳过。
         val hasDirectArchive = children.any { it.isArchiveFile() }
+
+        // 每个直接归档文件自身是一张卡片：卡片与章节共用同一物理身份。
+        for (file in children.filter { it.isArchiveFile() }) {
+            val title = MimeTypes.nameWithoutExtension(file.name)
+            emitManga(
+                anchor = DirRef(dir.tree, file.documentId, title, "${dir.path}/${file.name}"),
+                chapters = listOf(ChapterSpec(file.documentId, title, ChapterKind.ARCHIVE)),
+                anchorChildren = emptyList(),
+                chaptersFullyEnumerated = true,
+            )
+        }
 
         if (childDirs.isEmpty()) {
             when {
-                // 只有"图片 + 压缩包"同时存在时才值得提示：那种目录正好会被误认成图片单章节。
-                hasDirectArchive -> if (hasDirectImage) diagnose(dir.path, MESSAGE_ARCHIVE_CHAPTER)
-
-                hasDirectImage -> emitManga(
+                hasDirectImage && !hasDirectArchive -> emitManga(
                     anchor = dir,
                     chapters = listOf(ChapterSpec(dir.documentId, dir.name, ChapterKind.IMAGE_DIRECTORY)),
                     anchorChildren = children,
@@ -244,7 +278,7 @@ private class ScanRun(
                     chaptersFullyEnumerated = true,
                 )
 
-                isRoot -> diagnose(dir.path, MESSAGE_NO_IMAGE)
+                isRoot && !hasDirectImage && !hasDirectArchive -> diagnose(dir.path, MESSAGE_EMPTY_ROOT)
             }
             return
         }
@@ -255,82 +289,7 @@ private class ScanRun(
         if (!request.recursive && !isRoot) return
         for (child in childDirs) {
             val sub = openChild(dir, child) ?: continue
-            scanImageSingle(sub, isRoot = false)
-        }
-    }
-
-    // ---------------------------------------------------------------- 归档/PDF
-
-    /**
-     * 归档/PDF · 多章节：判定换成 [isArchiveFile]，其余与图片多章节同构
-     * （开发文档 5.2：包含至少一个直接 CBZ/ZIP/PDF 的目录是一部漫画）。
-     *
-     * 同样**只取第一个**归档文件就能断定这是一部漫画；枚举每个归档的页数、
-     * 打开每个 PDF 都是「深入」阶段的事，不属于发现阶段（开发文档 6.1）。
-     */
-    private suspend fun scanArchiveManga(dir: DirRef, depth: Int) {
-        val children = dir.enumerateOnce() ?: return
-        // 与图片多章节同一套规则：按名称自然序取第一个归档即可断定这是一部漫画，
-        // 命中后其余子文件/子目录全部跳过。
-        val firstArchive = children
-            .filter { it.isArchiveFile() }
-            .minWithOrNull(Comparator { a, b -> NaturalOrder.compare(a.name, b.name) })
-
-        if (firstArchive != null) {
-            emitManga(
-                anchor = dir,
-                chapters = listOf(
-                    ChapterSpec(
-                        documentId = firstArchive.documentId,
-                        title = MimeTypes.nameWithoutExtension(firstArchive.name),
-                        kind = ChapterKind.ARCHIVE,
-                    ),
-                ),
-                anchorChildren = children,
-                chaptersFullyEnumerated = false,
-            )
-        } else if (depth == 0 && children.isEmpty()) {
-            diagnose(dir.path, MESSAGE_NO_ARCHIVE)
-        }
-
-        // 已判定为漫画：其余子目录全部跳过（与图片多章节一致）。
-        if (firstArchive != null) return
-
-        if (!request.recursive && depth > 0) return
-        // 嵌套目录独立按递归开关检查，不混入父作品（开发文档 5.2）。
-        for (child in children.filter { it.isDirectory }) {
-            val sub = openChild(dir, child) ?: continue
-            scanArchiveManga(sub, depth + 1)
-        }
-    }
-
-    /**
-     * 归档/PDF · 单章节：每个归档文件自身是一本共 1 章的漫画，章节标题为
-     * 去扩展名的文件名（开发文档 1.3「归档单章节」）；recursive 控制是否继续
-     * 向下遍历子目录（框架 4.3）。
-     *
-     * 这里的 1 章是**结构定义**而不是探测结果，因此 `chaptersFullyEnumerated = true`：
-     * 一张卡片对应一个文件，不存在"还有别的章节"。
-     */
-    private suspend fun scanArchiveSingle(dir: DirRef, isRoot: Boolean) {
-        val children = dir.enumerateOnce() ?: return
-
-        for (file in children.filter { it.isArchiveFile() }) {
-            val title = MimeTypes.nameWithoutExtension(file.name)
-            emitManga(
-                // 单章归档的漫画锚点就是归档文件本身：卡片与章节共用同一物理身份。
-                anchor = DirRef(dir.tree, file.documentId, title, "${dir.path}/${file.name}"),
-                chapters = listOf(ChapterSpec(file.documentId, title, ChapterKind.ARCHIVE)),
-                anchorChildren = emptyList(),
-                chaptersFullyEnumerated = true,
-            )
-        }
-
-        if (isRoot && children.isEmpty()) diagnose(dir.path, MESSAGE_NO_ARCHIVE)
-        if (!request.recursive && !isRoot) return
-        for (child in children.filter { it.isDirectory }) {
-            val sub = openChild(dir, child) ?: continue
-            scanArchiveSingle(sub, isRoot = false)
+            scanSingle(sub, isRoot = false)
         }
     }
 
@@ -393,19 +352,19 @@ private class ScanRun(
 
     /**
      * leafChapter(d)：直接子项中至少有一张受支持图片、**没有**子目录、且**没有** CBZ/ZIP/PDF
-     * （开发文档 5.1，见下面对压缩包这一条的说明）。
+     * （开发文档 5.1）。
      *
      * 判定顺序是「先确认没有子目录，再确认有图片」（框架 4.3）：先看到图片不能
      * 断言没有子目录（验收 A04）。这里用 [ContentTree.hasDirectoryChildren] 提前
      * 短路，避免为判定叶子而枚举整棵子树。
      *
-     * **为什么要排除含压缩包的目录**（真机实测补上的规则）：Tachiyomi 的本地库里，
+     * **为什么要排除含归档的目录**（真机实测补上的规则）：Tachiyomi 的本地库里，
      * "章节就是压缩包"的漫画文件夹长这样：`漫画名/cover.jpg` + `漫画名/第1话.zip`……
-     * 它没有子目录，唯一的一张图片是封面。按"有图片且没有子目录"判定它就是单章节，
-     * 于是它的**父目录**（来源目录或授权根）被判定成漫画、其余子文件夹全部跳过——
-     * 真机 `/Tachiyomi/local`（51 个子文件夹）因此只扫出 1 张名叫 `local` 的卡片。
-     * 这类目录的正确归属是「CBZ/ZIP/PDF 导入列表」：归档表按"包含至少一个直接归档
-     * 文件的目录是一部漫画"解释它，章节是那些压缩包（开发文档 5.2）。
+     * 它没有子目录，唯一的一张图片是封面。若按"有图片且没有子目录"判定它就是单章节，
+     * 它的**父目录**（来源目录或授权根）会被判成漫画、其余子文件夹全部跳过——真机
+     * `/Tachiyomi/local`（51 个子文件夹）因此只扫出 1 张名叫 `local` 的卡片。
+     * 正确解释是：它是**一部漫画**，章节是那些压缩包（现在由 [scanManga] 的第一条规则
+     * 在同一个来源里产出，不再需要另一张表）。
      */
     private suspend fun isLeafImageChapter(parent: DirRef, child: ChildNode): Boolean {
         leafProbes++
@@ -417,15 +376,7 @@ private class ScanRun(
             val children = ref.enumerateOnce() ?: return false
             when {
                 children.any { it.isDirectory } -> false
-
-                children.any { it.isArchiveFile() } -> {
-                    // 只有"图片 + 压缩包"同时存在时才提示：那种目录最容易被误认成图片章节。
-                    if (children.any { it.isSupportedImage() }) {
-                        diagnose("${parent.path}/${child.name}", MESSAGE_ARCHIVE_CHAPTER)
-                    }
-                    false
-                }
-
+                children.any { it.isArchiveFile() } -> false
                 else -> children.any { it.isSupportedImage() }
             }
         } catch (cancellation: CancellationException) {
@@ -630,18 +581,13 @@ private class ScanRun(
 
         const val MESSAGE_MIXED = "目录同时包含图片和子目录，未按叶子章节处理（开发文档 5.1）"
         const val MESSAGE_ROOT_LEAF = "根目录自身是叶子图片目录，按根特例生成共 1 章的漫画（开发文档 5.1）"
-        const val MESSAGE_NO_IMAGE = "目录内没有受支持的图片，未生成卡片（开发文档 5.1）"
 
         /**
-         * 含 CBZ/ZIP/PDF 的目录在图片解释下的提示。
+         * 根目录里既没有图片也没有归档：不生成卡片。
          *
-         * 必须显式提示而不是静默跳过：这类目录（Tachiyomi 本地库里"章节就是压缩包"的
-         * 漫画）在图片表里本来就不该出卡片，但用户只会在图库里"少了一部漫画"，
-         * 不知道该把它加到另一张表。
+         * 两种解释已经合并，所以提示同时提到两边，否则用户会以为"只有图片才算数"
+         * ——归档章节现在同样由这一次扫描产出。
          */
-        const val MESSAGE_ARCHIVE_CHAPTER =
-            "目录内有 CBZ/ZIP/PDF，按归档表解释（请把该目录加入「CBZ / ZIP / PDF 导入列表」），" +
-                "不作为图片单章节（开发文档 5.2）"
-        const val MESSAGE_NO_ARCHIVE = "目录内没有可导入的 CBZ/ZIP/PDF（开发文档 5.2）"
+        const val MESSAGE_EMPTY_ROOT = "目录内没有受支持的图片，也没有 CBZ/ZIP/PDF，未生成卡片（开发文档 5.1/5.2）"
     }
 }

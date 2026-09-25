@@ -22,6 +22,14 @@ typealias ScanPersistReport = com.lmreader.core.model.ScanPersistReport
  */
 data class ScanRequest(
     val sourceId: String,
+    /**
+     * 来源所属的表（图片目录 / CBZ-ZIP-PDF 导入）。
+     *
+     * **它不再决定扫描行为**：两种解释共用一次遍历（一个目录的直接章节是"直接含的
+     * 归档文件"与"直接子目录里的叶子图片目录"的并集）。这里保留它是因为它参与
+     * 卡片身份（[com.lmreader.core.model.StableId.mangaId]）与界面徽标，改它会让
+     * 已有卡片的 ID 变化、连带丢掉书架与阅读进度。
+     */
     val sourceKind: SourceKind,
     val rootDocumentId: String,
     val layoutMode: LayoutMode,
