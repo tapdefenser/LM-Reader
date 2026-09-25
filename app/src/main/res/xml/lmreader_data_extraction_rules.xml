@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 12+ 备份/迁移规则。
+  TODO(P4)：开发文档 14「存储与备份」要求备份不含 API Key 与可重建缓存；
+  引入密钥存储后必须在此排除，恢复后目录需重新授权。
+-->
+<data-extraction-rules>
+    <cloud-backup />
+    <device-transfer />
+</data-extraction-rules>

@@ -1,0 +1,190 @@
+package com.lmreader.core.database.entity
+
+import com.lmreader.core.database.dao.CardQueryRow
+import com.lmreader.core.index.NaturalOrder
+import com.lmreader.core.model.Category
+import com.lmreader.core.model.ChapterRecord
+import com.lmreader.core.model.LibrarySource
+import com.lmreader.core.model.MangaCard
+import com.lmreader.core.model.MangaRecord
+import com.lmreader.core.model.MetadataRecord
+import com.lmreader.core.model.ShelfEntry
+
+/**
+ * 领域类型 ↔ Room 实体。
+ *
+ * 手写而不是用 MapStruct 之类生成器：字段数量有限，且转换里包含语义决定
+ * （例如 `inShelf` 由 LEFT JOIN 的可空列推导），生成器反而更难看出这些判断。
+ */
+
+internal fun LibrarySourceEntity.toDomain(): LibrarySource = LibrarySource(
+    sourceId = sourceId,
+    kind = kind,
+    treeUri = treeUri,
+    displayPath = displayPath,
+    providerLabel = providerLabel,
+    displayName = displayName,
+    recursive = recursive,
+    mode = mode,
+    orderIndex = orderIndex,
+    permission = permission,
+    revision = revision,
+    lastScanAt = lastScanAt,
+    lastScanStatus = lastScanStatus,
+    lastScanError = lastScanError,
+)
+
+internal fun LibrarySource.toEntity(): LibrarySourceEntity = LibrarySourceEntity(
+    sourceId = sourceId,
+    kind = kind,
+    treeUri = treeUri,
+    displayPath = displayPath,
+    providerLabel = providerLabel,
+    displayName = displayName,
+    recursive = recursive,
+    mode = mode,
+    orderIndex = orderIndex,
+    permission = permission,
+    revision = revision,
+    lastScanAt = lastScanAt,
+    lastScanStatus = lastScanStatus,
+    lastScanError = lastScanError,
+)
+
+internal fun MangaEntity.toDomain(): MangaRecord = MangaRecord(
+    mangaId = mangaId,
+    anchorDocumentId = anchorDocumentId,
+    sourceId = sourceId,
+    sourceKind = sourceKind,
+    layoutMode = layoutMode,
+    displayName = displayName,
+    author = author,
+    hasMetadata = hasMetadata,
+    summary = summary,
+    coverDocumentId = coverDocumentId,
+    coverChapterId = coverChapterId,
+    chapterCount = chapterCount,
+    chapterCountKnown = chapterCountKnown,
+    availability = availability,
+    discoveryGeneration = discoveryGeneration,
+    discoveredAt = discoveredAt,
+    updatedAt = updatedAt,
+)
+
+internal fun MangaRecord.toEntity(sourceOrderIndex: Int): MangaEntity = MangaEntity(
+    mangaId = mangaId,
+    anchorDocumentId = anchorDocumentId,
+    sourceId = sourceId,
+    sourceKind = sourceKind,
+    layoutMode = layoutMode,
+    displayName = displayName,
+    sortKey = NaturalOrder.sortKey(displayName),
+    sourceOrderIndex = sourceOrderIndex,
+    author = author,
+    hasMetadata = hasMetadata,
+    summary = summary,
+    coverDocumentId = coverDocumentId,
+    coverChapterId = coverChapterId,
+    chapterCount = chapterCount,
+    chapterCountKnown = chapterCountKnown,
+    availability = availability,
+    discoveryGeneration = discoveryGeneration,
+    discoveredAt = discoveredAt,
+    updatedAt = updatedAt,
+)
+
+internal fun ChapterEntity.toDomain(): ChapterRecord = ChapterRecord(
+    chapterId = chapterId,
+    mangaId = mangaId,
+    documentId = documentId,
+    kind = kind,
+    title = title,
+    sortKey = sortKey,
+    pageCount = pageCount,
+    coverDocumentId = coverDocumentId,
+    contentRevision = contentRevision,
+    discoveredAt = discoveredAt,
+)
+
+internal fun ChapterRecord.toEntity(): ChapterEntity = ChapterEntity(
+    chapterId = chapterId,
+    mangaId = mangaId,
+    documentId = documentId,
+    kind = kind,
+    title = title,
+    sortKey = sortKey,
+    pageCount = pageCount,
+    coverDocumentId = coverDocumentId,
+    contentRevision = contentRevision,
+    discoveredAt = discoveredAt,
+)
+
+internal fun MetadataEntity.toDomain(): MetadataRecord = MetadataRecord(
+    ownerId = ownerId,
+    ownerType = ownerType,
+    xml = xml,
+    fields = com.lmreader.core.database.Converters.jsonToFields(fieldsJson),
+    summary = summary,
+    series = series,
+    title = title,
+    writer = writer,
+    alternateSeries = alternateSeries,
+    normalizedSearchText = normalizedSearchText,
+    parseError = parseError,
+    sourceLabel = sourceLabel,
+    fingerprint = fingerprint,
+    updatedAt = updatedAt,
+)
+
+internal fun MetadataRecord.toEntity(): MetadataEntity = MetadataEntity(
+    ownerId = ownerId,
+    ownerType = ownerType,
+    xml = xml,
+    fieldsJson = com.lmreader.core.database.Converters.fieldsToJson(fields),
+    summary = summary,
+    series = series,
+    title = title,
+    writer = writer,
+    alternateSeries = alternateSeries,
+    normalizedSearchText = normalizedSearchText,
+    parseError = parseError,
+    sourceLabel = sourceLabel,
+    fingerprint = fingerprint,
+    updatedAt = updatedAt,
+)
+
+internal fun CategoryEntity.toDomain(): Category = Category(
+    categoryId = categoryId,
+    name = name,
+    styleMode = styleMode,
+    customStyle = customStyle,
+    orderIndex = orderIndex,
+    revision = revision,
+)
+
+internal fun ShelfEntryEntity.toDomain(): ShelfEntry = ShelfEntry(
+    mangaId = mangaId,
+    categoryId = categoryId,
+    addedAt = addedAt,
+)
+
+/**
+ * 卡片投影行 → 领域卡片。
+ *
+ * [CardQueryRow.shelfCategoryId] 为空表示不在书架：使用 LEFT JOIN 而不是两次查询，
+ * 否则每批 40 张卡片会变成 80 次查询（开发文档 8.1「不为每张卡片再查库」）。
+ */
+internal fun CardQueryRow.toCard(): MangaCard = MangaCard(
+    mangaId = mangaId,
+    displayName = displayName,
+    summaryPreview = summaryPreview,
+    sourceId = sourceId,
+    coverDocumentId = coverDocumentId,
+    coverChapterId = coverChapterId,
+    sourceKind = sourceKind,
+    layoutMode = layoutMode,
+    chapterCount = chapterCount,
+    chapterCountKnown = chapterCountKnown,
+    inShelf = shelfCategoryId != null,
+    availability = availability,
+)

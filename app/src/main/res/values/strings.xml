@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="lmreader_app_name">LM-Reader</string>
+    <!-- 系统授权页会链接到这个说明页，标题必须写明用途而不是应用名。 -->
+    <string name="lmreader_all_files_access_title">全部文件访问说明</string>
+</resources>

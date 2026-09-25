@@ -1,12 +1,16 @@
 # Local upstream checkouts and research scratch files
 .research/
 
+# Local debugging scratch (screenshots, pulled databases) — never part of the app
+.scratch/
+
 # Android / IDE local state
 .gradle/
 **/build/
 local.properties
 .idea/
 *.iml
+.kotlin/
 
 # Local credentials and signing material
 .env

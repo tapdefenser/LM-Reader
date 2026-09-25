@@ -1,0 +1,3 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 备份规则：本阶段没有需要排除的本地凭据，保留默认行为并显式声明。 -->
+<full-backup-content />

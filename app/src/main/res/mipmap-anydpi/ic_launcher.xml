@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- API 26 以下的启动图标回退（minSdk 26 机型通常走 anydpi-v26 自适应图标）。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#FF1B4B5A"
+        android:pathData="M0,0 L108,0 L108,108 L0,108 Z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M30,34 L52,40 L52,74 L30,68 Z" />
+    <path
+        android:fillColor="#FFB9E4F2"
+        android:pathData="M78,34 L56,40 L56,74 L78,68 Z" />
+</vector>

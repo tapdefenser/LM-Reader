@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!--
+      全部文件访问权限（Android 11+）。
+
+      为什么本应用需要它：应用的核心用途就是"读取用户指定的任意漫画目录"，属于
+      开发文档 16 P5「文件管理器类」场景。SAF 的目录选择器在 Android 11+ 上明确
+      禁止选中存储根、Download 根以及 Android/data、Android/obb
+      （开发文档 4.1 已记录这一限制），而真实漫画库经常正好落在这些位置
+      （真机上的 `/sdcard/Tachiyomi/downloads` 就是 Download 下的目录）。
+      没有它，用户即使看得见目录也选不中。
+
+      仍然保留 SAF 路径：用户也可以只授予某一个目录（更小的权限面），
+      两条路都支持，界面上分别说明（见 PathAccessCoordinator）。
+    -->
+    <uses-permission
+        android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
+        tools:ignore="ScopedStorage" />
+
+    <!-- Android 13+ 读取媒体图片；不申请音频/视频，避免要求用不到的权限。 -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+
+    <!--
+      Android 14+ 的"部分照片访问"：用户可以选择只授予部分图片。
+      必须显式声明，否则在该版本上系统会按"未处理部分授权"降级处理，
+      应用拿到的是不完整的结果却看不出原因（lint 的 SelectedPhotoAccess）。
+      本应用在权限不足时会退回单目录 SAF 授权（见 TreeAccess），因此部分授权
+      可用而不是假装成功。
+    -->
+    <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
+
+    <!-- Android 12 及以下的旧存储读取权限。 -->
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+
+    <application
+        android:name=".LmReaderApplication"
+        android:allowBackup="true"
+        android:dataExtractionRules="@xml/lmreader_data_extraction_rules"
+        android:fullBackupContent="@xml/lmreader_backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/lmreader_app_name"
+        android:requestLegacyExternalStorage="true"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.LmReader">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode|density|smallestScreenSize"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!--
+          全部文件访问的应用内说明页（Android 11+ 要求）。
+          Android 的规范要求申请 MANAGE_EXTERNAL_STORAGE 时提供一个可到达的说明，
+          系统设置页会链接到这里。它同时直白说明"为什么需要"与"不授权也能用"，
+          而不是把权限当成不可解释的前置条件。
+        -->
+        <activity
+            android:name=".ui.settings.AllFilesAccessActivity"
+            android:exported="true"
+            android:label="@string/lmreader_all_files_access_title">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="lmreader" android:host="all-files-access" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>

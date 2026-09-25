@@ -1,0 +1,35 @@
+package com.lmreader.core.database
+
+import android.content.Context
+import com.lmreader.core.database.repository.MangaRepositoryImpl
+import com.lmreader.core.database.repository.ShelfRepositoryImpl
+import com.lmreader.core.database.repository.SourceRepositoryImpl
+import com.lmreader.core.model.MangaRepository
+import com.lmreader.core.model.ShelfRepository
+import com.lmreader.core.model.SourceRepository
+
+/**
+ * 数据库模块的对外入口。
+ *
+ * 为什么用工厂函数而不是让 `:app` 直接 `new` 实现类：实现类是 `internal`，
+ * 由本模块决定暴露什么（开发文档 15.2「接口返回带身份的结果/错误，
+ * 不返回 UI 对象」）。
+ */
+object DatabaseProvider {
+
+    fun create(context: Context): Components = create(LmReaderDatabase.build(context))
+
+    fun create(database: LmReaderDatabase): Components = Components(
+        database = database,
+        sources = SourceRepositoryImpl(database.sourceDao()),
+        mangas = MangaRepositoryImpl(database, database.mangaDao()),
+        shelf = ShelfRepositoryImpl(database),
+    )
+
+    class Components(
+        val database: LmReaderDatabase,
+        val sources: SourceRepository,
+        val mangas: MangaRepository,
+        val shelf: ShelfRepository,
+    )
+}

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      基础主题：真正的配色由 Compose Material 3 主题提供（ui/theme）。
+      这里只保证冷启动窗口背景不出现纯白闪烁，并禁用系统 ActionBar。
+      注意：必须用 Theme.DeviceDefault.NoActionBar（API 21+），
+      Theme.DeviceDefault.DayNight.* 需要 API 29，会与 minSdk 26 冲突。
+    -->
+    <style name="Theme.LmReader" parent="android:Theme.DeviceDefault.NoActionBar">
+        <item name="android:windowBackground">?android:attr/colorBackground</item>
+    </style>
+</resources>
