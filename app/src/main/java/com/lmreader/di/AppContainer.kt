@@ -67,6 +67,16 @@ class AppContainer(private val application: Application) {
 
     val preferences by lazy { AppPreferences(application) }
 
+    /**
+     * 阅读器偏好（开发文档 12、14）。
+     *
+     * 与 [preferences] 分开放：两者共用同一个 DataStore 文件，但一个是"界面与引导"、
+     * 另一个是"阅读器几十项设置"，合并成一个类只会让它变成杂物间。
+     */
+    val readerPreferences by lazy {
+        com.lmreader.core.storage.settings.ReaderPreferences(application)
+    }
+
 
     /** 底层 SAF 授权管理（持久授权、URI 构造）。 */
     val safAccess by lazy { SafTreeAccess(application) }

@@ -259,8 +259,12 @@ class ReaderNavigationTest {
         )
         assertEquals(TapZones.KINDLISH, settings.copy(readingMode = ReadingMode.WEBTOON).tapZones)
         assertEquals(TapInvert.VERTICAL, settings.copy(readingMode = ReadingMode.WEBTOON).tapInvert)
-        // 竖向分页是"分页"，所以用分页那一套，不是条漫那一套。
+        // 竖向分页属于 Pager，所以用分页那一套偏好，不是条漫那一套。
         assertEquals(TapZones.EDGE, settings.copy(readingMode = ReadingMode.VERTICAL).tapZones)
+        assertEquals(
+            TapInvert.HORIZONTAL,
+            settings.copy(readingMode = ReadingMode.VERTICAL).tapInvert,
+        )
     }
 
     @Test

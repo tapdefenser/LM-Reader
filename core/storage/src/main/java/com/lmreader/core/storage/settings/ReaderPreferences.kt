@@ -1,19 +1,11 @@
 package com.lmreader.core.storage.settings
 
 import android.content.Context
-import androidx.datastore.core.DataStore
-import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
-import androidx.datastore.preferences.preferencesDataStore
 import com.lmreader.core.model.ReaderSettings
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
-
-/** 与 [AppPreferences] 共用同一个 DataStore 文件；DataStore 要求每进程单实例。 */
-private val Context.preferencesStore: DataStore<Preferences> by preferencesDataStore(
-    name = "lmreader_preferences",
-)
 
 /**
  * 阅读器偏好（开发文档 12、14「阅读器」分组）。
@@ -36,7 +28,7 @@ private val Context.preferencesStore: DataStore<Preferences> by preferencesDataS
 class ReaderPreferences(private val context: Context) {
 
     /** 当前阅读器设置。发出的每一份都是完整且自洽的快照。 */
-    val settings: Flow<ReaderSettings> = context.preferencesStore.data
+    val settings: Flow<ReaderSettings> = context.preferenceStore.data
         .map { prefs -> ReaderSettingsCodec.decode(prefs[KEY_READER_SETTINGS]) }
 
     /**
@@ -46,7 +38,7 @@ class ReaderPreferences(private val context: Context) {
      * 用户快速连点两个开关时，第二次修改必须建立在第一次的结果之上。
      */
     suspend fun update(transform: (ReaderSettings) -> ReaderSettings) {
-        context.preferencesStore.edit { prefs ->
+        context.preferenceStore.edit { prefs ->
             val current = ReaderSettingsCodec.decode(prefs[KEY_READER_SETTINGS])
             prefs[KEY_READER_SETTINGS] = ReaderSettingsCodec.encode(transform(current))
         }
@@ -54,7 +46,7 @@ class ReaderPreferences(private val context: Context) {
 
     /** 恢复全部阅读器设置为出厂默认。 */
     suspend fun resetToDefaults() {
-        context.preferencesStore.edit { it.remove(KEY_READER_SETTINGS) }
+        context.preferenceStore.edit { it.remove(KEY_READER_SETTINGS) }
     }
 
     private companion object {

@@ -288,21 +288,19 @@ data class ReaderSettings(
     val grayscale: Boolean = false,
     val invertedColors: Boolean = false,
 ) {
-    /** 当前模式下实际生效的点按区域布局。 */
+    /**
+     * 当前模式下实际生效的点按区域布局。
+     *
+     * 分派依据是**连续模式**而不是方向：Mihon 给 Pager 用 `reader_navigation_mode_pager`、
+     * 给 Webtoon 用 `reader_navigation_mode_webtoon`，而"竖向分页"属于 Pager。
+     * 所以「竖向分页」用分页那一套，「条漫」用条漫那一套。
+     */
     val tapZones: TapZones
-        get() = if (readingMode.direction == ReadingDirection.VERTICAL && readingMode.continuous) {
-            webtoonTapZones
-        } else {
-            pagerTapZones
-        }
+        get() = if (readingMode.continuous) webtoonTapZones else pagerTapZones
 
-    /** 当前模式下实际生效的反转方式。 */
+    /** 当前模式下实际生效的反转方式；分派依据同 [tapZones]。 */
     val tapInvert: TapInvert
-        get() = if (readingMode.direction == ReadingDirection.VERTICAL && readingMode.continuous) {
-            webtoonTapInvert
-        } else {
-            pagerTapInvert
-        }
+        get() = if (readingMode.continuous) webtoonTapInvert else pagerTapInvert
 
     /** 当前模式下实际生效的裁白边开关（Mihon 对条漫用独立的偏好键）。 */
     val effectiveCropBorders: Boolean
