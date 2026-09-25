@@ -122,7 +122,8 @@ private class ScanRun(
      * 不再需要用户把它在两张表里各加一遍。
      *
      * 判定与停止规则（用户明确要求，也是这个模式唯一必要的成本）：
-     * 1. 先看直接归档文件：**零额外 IO**（子项列表已经在手）就能断定这是一部漫画；
+     * 1. 先看直接归档文件：**零额外 IO**（子项列表已经在手），把**全部**直接归档登记为
+     *    章节，并因此可以声明章节数已知（开发文档 5.3 第 10 行）；
      * 2. 否则逐个检查直接子目录，**找到第一个** [isLeafImageChapter] 就成立；
      * 3. 一旦成立，**该目录下的其余子项全部跳过**：它们要么是同一部作品的其它章节，
      *    要么是这部作品的附属内容，都不是新的漫画。因此每部作品最多只打开一个子目录，
@@ -137,11 +138,14 @@ private class ScanRun(
      * 反过来说：判定"这里不是漫画"必须把直接子目录都检查完（否则会把漫画误判成
      * 包裹目录，继续往下把「第一章」当成新作品）。
      *
-     * 与开发文档的两点偏离都记录在此，避免以后被当成 bug 改回去：
-     * - 锚点章节是"归档里自然序第一个文件"或"枚举/排序后第一个被确认为叶子的子目录"，
-     *   不保证是自然序第一章。封面与简介由补全阶段按自然序重取（开发文档 7.2），不影响展示；
+     * 与开发文档的偏离都记录在此，避免以后被当成 bug 改回去：
+     * - **图片目录**漫画的锚点章节是"枚举/排序后第一个被确认为叶子的子目录"，
+     *   不保证是自然序第一章（归档漫画不适用：第 1 条会登记全部归档）。封面与简介由
+     *   补全阶段按自然序重取（开发文档 7.2），不影响展示；
      * - 因此也不再深入"已判定为漫画"的目录去找更深的作品（开发文档 5.1 第 12 行
-     *   的样例属于这种情况，本实现按用户要求以跳过换取性能）。
+     *   的样例属于这种情况，本实现按用户要求以跳过换取性能）；
+     * - 混放目录（既直接含归档、又含图片子目录）只取归档为章节，发诊断但继续，
+     *   按开发文档 5.1 第 6/11 行的"优先解释为多章节"处理。
      *
      * depth 用于实现"未勾选子目录时只把根自身及根的直接子目录当作漫画候选"：
      * depth == 0 的那一层永远要进，再深才看 recursive。
@@ -155,23 +159,42 @@ private class ScanRun(
             diagnose(dir.path, MESSAGE_MIXED)
         }
 
-        // 1) 直接含归档文件：按名称自然序取第一个即可断定"这是一部漫画"，其余子项全部跳过。
-        //    枚举每个归档的页数、打开每个 PDF 都是「深入」阶段的事（开发文档 6.1）。
-        val firstArchive = children
+        // 1) 直接含归档文件：**全部**按名称自然序登记为章节，其余子项跳过。
+        //
+        //    为什么这里不像子目录那样"只取第一个"：归档文件的章节清单**零额外 IO**——
+        //    子项列表已经在第 150 行拿到手，逐个归档变成 ChapterSpec 只是内存里的 map，
+        //    不需要打开压缩包。真正昂贵的是"枚举每个归档的页数、打开每个 PDF"，
+        //    那才是「深入」阶段的事（开发文档 6.1）。这条分支曾经只取自然序第一个
+        //    并声明 `chaptersFullyEnumerated = false`，后果是开发文档 5.3 第 10 行
+        //    的样例（`作品/01.cbz、02.zip、03.pdf` 应为「共 3 章」）永远做不到：
+        //    唯一能补齐的 `ChapterResolver` 只挂在详情页的「更新章节」上，扫描管线从不
+        //    自动调用它。于是真机上 `NovaSamus/` 的 59 个 zip 只索引出 1 个。
+        //
+        //    更严重的是它还会**破坏用户数据**：`scanManga` 通过 `enumerateOnce()`
+        //    已经把本目录记入 `fullyEnumerated`，而 `upsertScanResult` 的删除判定
+        //    只看 `anchorEnumerated`。用户手动「更新章节」补齐 60 章之后，下一次扫描
+        //    重发这份只有 1 章的清单，会把另外 59 个章节行删掉，连带删掉引用它们的
+        //    阅读进度（`reading_progress` 没有外键级联）。
+        //
+        //    因为归档完备而断言"章节数已知"是成立的：本分支已经列出了该目录的
+        //    **全部**直接归档。只有当目录同时还直接含图片子目录时，那些子目录可能是
+        //    本目录的章节而非更深的作品；那种混放形态本身就不可靠（上面已经发诊断），
+        //    且历史上也取不到它们，因此不为它保留"部分枚举"的退化行为。
+        val archives = children
             .filter { it.isArchiveFile() }
-            .minWithOrNull(Comparator { a, b -> NaturalOrder.compare(a.name, b.name) })
-        if (firstArchive != null) {
+            .sortedWith(CHAPTER_NAME_ORDER)
+        if (archives.isNotEmpty()) {
             emitManga(
                 anchor = dir,
-                chapters = listOf(
+                chapters = archives.map { archive ->
                     ChapterSpec(
-                        documentId = firstArchive.documentId,
-                        title = MimeTypes.nameWithoutExtension(firstArchive.name),
+                        documentId = archive.documentId,
+                        title = MimeTypes.nameWithoutExtension(archive.name),
                         kind = ChapterKind.ARCHIVE,
-                    ),
-                ),
+                    )
+                },
                 anchorChildren = children,
-                chaptersFullyEnumerated = false,
+                chaptersFullyEnumerated = true,
             )
             return
         }

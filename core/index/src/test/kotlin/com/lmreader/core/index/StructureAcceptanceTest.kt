@@ -162,9 +162,13 @@ class StructureAcceptanceTest {
         harness.run()
 
         assertEquals(listOf("作品"), harness.names)
-        // 与图片多章节同构：只取自然序第一个归档就能断定这是一部漫画。
-        assertEquals(listOf(listOf("01")), harness.chapterTitles)
-        assertFalse(harness.chapterCountKnown("作品"))
+        // 开发文档 5.3 第 10 行的期望就是「共 3 章」：归档章节清单是零额外 IO 的，
+        // 必须一次列全，而不是只取自然序第一个。
+        assertEquals(listOf(listOf("01", "02", "03")), harness.chapterTitles)
+        assertTrue(
+            "列出全部直接归档后章节数是确定的，不得再报「已发现 N 章」",
+            harness.chapterCountKnown("作品"),
+        )
     }
 
     /** 5.3 第 11 行：`作品`，多章归档，`01.cbz`、`02.pdf` —— 授权根自身为漫画。 */
@@ -178,7 +182,7 @@ class StructureAcceptanceTest {
         harness.run()
 
         assertEquals(listOf("作品"), harness.names)
-        assertEquals(listOf(listOf("01")), harness.chapterTitles)
+        assertEquals(listOf(listOf("01", "02")), harness.chapterTitles)
         assertEquals(InMemoryTreeFactory.ROOT_DOCUMENT_ID, harness.resultOf("作品").manga.anchorDocumentId)
     }
 

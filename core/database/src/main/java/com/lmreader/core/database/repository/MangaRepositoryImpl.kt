@@ -203,8 +203,11 @@ internal class MangaRepositoryImpl(
      * 1. 漫画行按主键 upsert，派生字段随后由补全阶段覆盖，这里只写发现阶段已知的值；
      * 2. 章节按 `documentId` 在扫描结果内 upsert，**不做整体删除再插入**——章节行
      *    的 ID 会被阅读进度与译文引用，删掉再建会静默丢用户数据（开发文档 15.3）；
-     * 3. 只有「锚点目录已被完整枚举」时才删除消失的章节；`fullyEnumeratedContainers`
+     * 3. 只有「锚点目录已被完整枚举」**且**「扫描器声明这份章节清单完整」
+     *    （`chapterCountKnown`）时才删除消失的章节；`fullyEnumeratedContainers`
      *    为空（扫描被取消或 IO 失败）时一律不删（验收 A07）。
+     *    两个条件缺一不可：发现阶段会完整枚举锚点目录却只发出部分章节，
+     *    只判前者会把用户手动补齐的章节列表删掉（真机 NovaSamus 59 个 zip 的归档）。
      */
     override suspend fun upsertScanResult(result: ScanResult): ScanPersistReport =
         database.withTransaction {
@@ -251,7 +254,21 @@ internal class MangaRepositoryImpl(
             // kind（理论上不同来源种类才会发生），留下的旧行会让 upsert 撞唯一约束。
             val obsolete = existingIds - incomingIds
             val anchorEnumerated = manga.anchorDocumentId in result.fullyEnumeratedContainers
-            val removed = if (obsolete.isNotEmpty() && anchorEnumerated) {
+            // 删除必须同时满足"锚点目录被完整枚举"与"扫描器声明这份章节清单是完整的"。
+            //
+            // 只判 `anchorEnumerated` 是不够的，而且会毁数据：多章节发现阶段的
+            // `scanManga` 通过 `enumerateOnce()` 把锚点目录记入 `fullyEnumerated`
+            // （它确实列了该目录），但随后只发出**部分**章节。于是用户手动「更新章节」
+            // 补齐的章节列表，会被下一次扫描用"这份清单里没有你"删掉。
+            // 真机样例：`/Tachiyomi/local/NovaSamus/` 有 59 个 zip，发现阶段只发 1 个，
+            // 用户点「更新章节」补齐 60 章后，下一次扫描会把另外 59 行删掉，
+            // 连带删掉引用它们的 `reading_progress`（该表没有外键级联）。
+            //
+            // `chapterCountKnown` 正是"这份清单完整"的既有声明（开发文档 5.1：
+            // 不得把探测到一章伪报成完整的一章），因此用它当删除的前提。
+            // 部分枚举时章节数会被重算为已发现数（见下方 else 分支），不会虚报。
+            val incomingIsComplete = anchorEnumerated && manga.chapterCountKnown
+            val removed = if (obsolete.isNotEmpty() && incomingIsComplete) {
                 chapterDao.deleteByDocumentIds(manga.mangaId, obsolete.toList())
                 obsolete.size
             } else {

@@ -214,18 +214,24 @@ class StructureScannerBehaviorTest {
         )
         assertFalse("授权根「local」不得成为卡片", harness.names.contains("local"))
         assertEquals(listOf("Swarm_Chapter 3"), harness.chaptersOf("10000-nichi no 7"))
-        // 压缩包章节按名称自然序取第一个即可断定这是一部漫画（其余靠"深入"阶段枚举）。
+        // 压缩包章节必须**全部**登记：归档清单零额外 IO，一次列全才能给出确定章节数。
         // 注意自然序里空格排在数字之前，所以 "…OOHS 2 - …" 先于 "…OOHS1 - …"
         // （这与真机 Jyminish  OOHS/ 目录里的两个 .zip 完全一致）。
         val archiveChapters = harness.resultOf("Jyminish  OOHS").chapters
         assertEquals(
-            listOf("Jyminish  OOHS 2 - A Goddess In Distress (EN)"),
+            listOf(
+                "Jyminish  OOHS 2 - A Goddess In Distress (EN)",
+                "Jyminish  OOHS1 - A Loss Of Influence (EN)",
+            ),
             archiveChapters.map { it.title },
         )
-        assertEquals(
+        assertTrue(
             "压缩包章节的种类必须是 ARCHIVE",
-            ChapterKind.ARCHIVE,
-            archiveChapters.single().kind,
+            archiveChapters.all { it.kind == ChapterKind.ARCHIVE },
+        )
+        assertTrue(
+            "列出全部直接归档后章节数是确定的",
+            harness.chapterCountKnown("Jyminish  OOHS"),
         )
     }
 
@@ -369,13 +375,13 @@ class StructureScannerBehaviorTest {
         )
         harness.run()
 
-        // 发现阶段只探测第一个归档，因此只登记它的元数据候选；
-        // 其余归档在「深入」阶段枚举章节时再登记（开发文档 6.1）。
+        // 归档章节清单是零额外 IO 的，发现阶段就把每个直接归档登记为元数据候选；
+        // 真正要留到「深入」阶段的是**打开归档**定位其中的 ComicInfo.xml。
         val candidates = harness.resultOf("作品").metadataCandidates
-        assertEquals(1, candidates.size)
+        assertEquals(2, candidates.size)
         assertTrue(candidates.all { it.ownerType == MetadataOwnerType.CHAPTER })
         assertTrue(candidates.all { it.archiveMemberPath == null })
-        assertEquals(setOf("/作品/01.cbz"), candidates.map { it.ownerDocumentId }.toSet())
+        assertEquals(setOf("/作品/01.cbz", "/作品/02.pdf"), candidates.map { it.ownerDocumentId }.toSet())
         assertTrue(candidates.all { it.label.contains("归档") })
     }
 
