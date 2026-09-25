@@ -62,4 +62,6 @@ data class ScanPersistReport(
     val chaptersInserted: Int,
     val chaptersRemoved: Int,
     val mangasMarkedUnavailable: Int,
+    /** false 表示来源版本已变，本次结果被门禁拒绝且未写入。 */
+    val accepted: Boolean = true,
 )

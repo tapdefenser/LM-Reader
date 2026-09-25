@@ -100,6 +100,7 @@ class MangaUpsertIntegrityTest {
         val report = repository.upsertScanResult(result)
 
         assertEquals(0, report.mangasInserted)
+        assertEquals(false, report.accepted)
         assertEquals(null, database.mangaDao().getById("stale-manga"))
         assertEquals(0, database.chapterDao().countByManga("stale-manga"))
     }

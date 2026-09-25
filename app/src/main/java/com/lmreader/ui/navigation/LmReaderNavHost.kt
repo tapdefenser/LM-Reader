@@ -21,6 +21,7 @@ import androidx.navigation.compose.rememberNavController
 import com.lmreader.core.storage.settings.AppPreferences
 import com.lmreader.di.AppContainer
 import com.lmreader.ui.bookshelf.BookshelfScreen
+import com.lmreader.ui.detail.MangaDetailScreen
 import com.lmreader.ui.library.LibraryScreen
 import com.lmreader.ui.settings.SettingsHomeScreen
 import com.lmreader.ui.settings.paths.GalleryPathsScreen
@@ -154,12 +155,9 @@ fun LmReaderNavHost(
 
                 composable(Routes.MANGA_DETAIL) { entry ->
                     val mangaId = entry.arguments?.getString("mangaId").orEmpty()
-                    NotImplementedScreen(
-                        title = "漫画详情",
-                        stage = "第二步（P2）实现",
-                        details = "漫画详情页需要章节列表、加入书架、更新章节、阅读、翻译、" +
-                            "筛选排序与漫画级设置。当前已识别到 mangaId=$mangaId，但详情与阅读器" +
-                            "尚未实现，因此这里不显示任何占位数据。",
+                    MangaDetailScreen(
+                        container = container,
+                        mangaId = mangaId,
                         onBack = { navController.popBackStack() },
                     )
                 }

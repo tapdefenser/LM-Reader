@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Context
 import com.lmreader.core.database.DatabaseProvider
 import com.lmreader.core.index.StructureScanner
+import com.lmreader.core.index.ChapterResolver
 import com.lmreader.core.model.MangaRepository
 import com.lmreader.core.model.ShelfRepository
 import com.lmreader.core.model.SourceRepository
@@ -11,6 +12,7 @@ import com.lmreader.core.storage.access.StorageAccessCoordinator
 import com.lmreader.core.storage.access.TreeAccess
 import com.lmreader.core.storage.saf.SafTreeAccess
 import com.lmreader.core.storage.scan.LibraryScanCoordinator
+import com.lmreader.core.storage.scan.MangaChapterSyncer
 import com.lmreader.core.storage.scan.MetadataBackfillWorker
 import com.lmreader.core.storage.scan.SourceScanRunner
 import com.lmreader.core.storage.settings.AppPreferences
@@ -92,6 +94,15 @@ class AppContainer(private val application: Application) {
             context = application,
             treeAccess = treeAccess,
             mangaRepository = mangaRepository,
+        )
+    }
+
+    val mangaChapterSyncer by lazy {
+        MangaChapterSyncer(
+            treeAccess = treeAccess,
+            resolver = ChapterResolver(),
+            mangaRepository = mangaRepository,
+            sourceRepository = sourceRepository,
         )
     }
 

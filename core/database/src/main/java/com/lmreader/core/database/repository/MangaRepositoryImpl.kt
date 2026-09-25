@@ -213,6 +213,7 @@ internal class MangaRepositoryImpl(
                     chaptersInserted = 0,
                     chaptersRemoved = 0,
                     mangasMarkedUnavailable = 0,
+                    accepted = false,
                 )
             }
             val sourceOrder = source.orderIndex

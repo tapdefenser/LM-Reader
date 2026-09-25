@@ -1,0 +1,74 @@
+package com.lmreader.core.index
+
+import com.lmreader.core.model.LayoutMode
+import com.lmreader.core.model.MangaAvailability
+import com.lmreader.core.model.MangaRecord
+import com.lmreader.core.model.SourceKind
+import kotlinx.coroutines.test.runTest
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertIs
+import kotlin.test.assertTrue
+
+class ChapterResolverTest {
+    @Test
+    fun `resolves direct leaf directories and archives in natural order`() = runTest {
+        val factory = InMemoryTreeFactory(
+            rootName = "Manga",
+            paths = listOf(
+                "10/001.jpg",
+                "2/001.png",
+                "1/001.webp",
+                "extras/nested/001.jpg",
+                "mixed/cover.jpg",
+                "mixed/chapter.cbz",
+                "3.cbz",
+            ),
+        )
+
+        val result = ChapterResolver(clock = { 42L }).resolve(
+            manga = manga(),
+            existingChapters = emptyList(),
+            anchor = factory.root,
+            factory = factory,
+        )
+
+        val success = assertIs<ChapterResolution.Success>(result)
+        assertEquals(listOf("1", "2", "3", "10"), success.chapters.map { it.title })
+        assertEquals(listOf("/1", "/2", "/3.cbz", "/10"), success.chapters.map { it.documentId })
+        assertTrue(success.chapters.all { it.discoveredAt == 42L })
+    }
+
+    @Test
+    fun `returns failure when any direct child cannot be enumerated`() = runTest {
+        val factory = InMemoryTreeFactory(
+            rootName = "Manga",
+            paths = listOf("1/001.jpg", "2/001.jpg"),
+        ).apply { failingPaths = setOf("/2") }
+
+        val result = ChapterResolver().resolve(manga(), emptyList(), factory.root, factory)
+
+        val failure = assertIs<ChapterResolution.Failure>(result)
+        assertTrue(failure.reason.contains("2"))
+    }
+
+    private fun manga() = MangaRecord(
+        mangaId = "manga",
+        anchorDocumentId = "/",
+        sourceId = "source",
+        sourceKind = SourceKind.IMAGE_DIRECTORY,
+        layoutMode = LayoutMode.MULTI_CHAPTER,
+        displayName = "Manga",
+        author = null,
+        hasMetadata = false,
+        summary = null,
+        coverDocumentId = null,
+        coverChapterId = null,
+        chapterCount = 1,
+        chapterCountKnown = false,
+        availability = MangaAvailability.AVAILABLE,
+        discoveryGeneration = 7L,
+        discoveredAt = 1L,
+        updatedAt = 1L,
+    )
+}
