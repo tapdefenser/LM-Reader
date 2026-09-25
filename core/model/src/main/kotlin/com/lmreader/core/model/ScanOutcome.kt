@@ -13,6 +13,13 @@ package com.lmreader.core.model
 data class ScanResult(
     val sourceId: String,
     val sourceKind: SourceKind,
+    /**
+     * 启动本轮扫描时的来源配置版本。
+     *
+     * 落库方必须与 library_sources.revision 比较；不一致表示用户已在扫描途中
+     * 修改类型、递归或目录，旧结果不得覆盖新配置（验收 A09）。
+     */
+    val sourceRevision: Long,
     val generation: Long,
     val manga: MangaRecord,
     val chapters: List<ChapterRecord>,

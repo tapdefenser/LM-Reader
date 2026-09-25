@@ -479,6 +479,7 @@ private class ScanRun(
         val result = ScanResult(
             sourceId = request.sourceId,
             sourceKind = request.sourceKind,
+            sourceRevision = request.sourceRevision,
             generation = request.generation,
             manga = manga,
             chapters = chapterRecords,

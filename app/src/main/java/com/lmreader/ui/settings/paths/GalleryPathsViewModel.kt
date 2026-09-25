@@ -261,12 +261,17 @@ class GalleryPathsViewModel(
                     sourceRepository.saveSource(replaced)
                     sourceRepository.deleteSource(current.sourceId)
                     safAccess.release(current.treeUri)
+                    // 换目录后旧 sourceId 的行已经不存在，重扫必须指向新身份，
+                    // 否则扫描落到已删除的来源上，新目录永远拿不到卡片。
+                    replaced.sourceId
                 } else {
+                    // 只改名/改显示名时身份不变，仍按原 sourceId 重扫。
                     sourceRepository.saveSource(renamed)
+                    renamed.sourceId
                 }
-            }.onSuccess {
+            }.onSuccess { rescanSourceId ->
                 _state.update { it.copy(editor = null, hint = "已保存") }
-                scanCoordinator.rescanSource(editor.sourceId, ScanReason.SAVED_SOURCE)
+                scanCoordinator.rescanSource(rescanSourceId, ScanReason.SAVED_SOURCE)
             }.onFailure { error ->
                 _state.update {
                     it.copy(editor = editor.copy(error = "保存失败：${error.message ?: "无法写入本地索引"}"))

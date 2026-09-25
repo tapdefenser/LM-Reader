@@ -31,6 +31,8 @@ data class ScanRequest(
      * 已有卡片的 ID 变化、连带丢掉书架与阅读进度。
      */
     val sourceKind: SourceKind,
+    /** 本轮捕获的来源配置版本；随结果传给落库层做 A09 版本门禁。 */
+    val sourceRevision: Long,
     val rootDocumentId: String,
     val layoutMode: LayoutMode,
     val recursive: Boolean,

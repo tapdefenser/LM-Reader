@@ -3,12 +3,16 @@ package com.lmreader.core.storage.scan
 import com.lmreader.core.model.MangaRepository
 import com.lmreader.core.model.SourceRepository
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
@@ -54,6 +58,7 @@ class LibraryScanCoordinator(
     val runnerStates: StateFlow<Map<String, ScanState>> get() = runner.states
 
     private var activeJob: Job? = null
+    private var pendingAllReason: ScanReason? = null
 
     init {
         // 直接订阅各来源状态：进度与「正在扫描：xxx」必须跟着每次 Progress 事件走。
@@ -71,22 +76,21 @@ class LibraryScanCoordinator(
      * 两轮并发会互相删除对方的章节。
      */
     fun rescanAll(reason: ScanReason): Job = scope.launch {
-        var followUp = false
-        schedulingLock.withLock {
+        val loopJob = schedulingLock.withLock {
             val running = activeJob
             if (running?.isActive == true) {
-                followUp = true
-                return@withLock
-            }
-            activeJob = launch { runAll(reason) }
-        }
-        if (followUp) {
-            // 补一轮：等当前任务结束后再排一次，把扫描期间发生的配置变化纳入。
-            activeJob?.join()
-            schedulingLock.withLock {
-                if (activeJob?.isActive != true) activeJob = launch { runAll(reason) }
+                pendingAllReason = mergeReason(pendingAllReason, reason)
+                running
+            } else {
+                val created = scope.launch(start = CoroutineStart.LAZY) { runAllLoop(reason) }
+                activeJob = created
+                created.start()
+                created
             }
         }
+        // 调用方拿到的 Job 覆盖当前轮及扫描期间合并进来的补扫，不能在只“排队”后
+        // 就提前完成，否则刷新状态和测试都会误判扫描已经结束。
+        loopJob.join()
     }
 
     /** 扫描单个来源（保存路径、更新章节、权限恢复都走这里）。 */
@@ -94,16 +98,26 @@ class LibraryScanCoordinator(
         val source = sourceRepository.getSource(sourceId) ?: return@launch
         sourceGate.withPermit {
             updateOverall { it.copy(running = true, runningSources = it.runningSources + 1) }
-            runner.requestScan(source, force = force).join()
-            updateOverall { it.copy(runningSources = (it.runningSources - 1).coerceAtLeast(0)) }
-            backfillPending()
-            publishOverall()
+            try {
+                runner.requestScan(source, force = force).join()
+                backfillPending()
+            } finally {
+                updateOverall { it.copy(runningSources = (it.runningSources - 1).coerceAtLeast(0)) }
+                publishOverall()
+            }
         }
     }
 
-    fun cancelAll() {
+    fun cancelAll(): Job = scope.launch {
+        val allJob = schedulingLock.withLock {
+            pendingAllReason = null
+            activeJob.also { activeJob = null }
+        }
+        allJob?.cancelAndJoin()
+        // runner 使用独立 SupervisorJob；只取消 coordinator 的等待协程不会向下传播，
+        // 必须显式取消并等待每个实际来源任务，才能保证“停止”真的停止 IO 与落库。
         runner.cancelAll()
-        updateOverall { it.copy(running = false, runningSources = 0) }
+        updateOverall { it.copy(running = false, runningSources = 0, currentPath = null) }
     }
 
     suspend fun cancel(sourceId: String) {
@@ -111,28 +125,60 @@ class LibraryScanCoordinator(
         publishOverall()
     }
 
-    private suspend fun runAll(reason: ScanReason) {
-        updateOverall { it.copy(running = true, lastFailure = null) }
-        // 只有一张路径表：一次遍历同时解释图片与归档（见 StructureScanner）。
-        val sources = sourceRepository.getSources()
-        if (sources.isEmpty()) {
-            updateOverall { it.copy(running = false, runningSources = 0) }
-            return
-        }
-
-        for (source in sources) {
-            sourceGate.withPermit {
-                updateOverall { it.copy(runningSources = it.runningSources + 1) }
-                runner.requestScan(source, force = reason == ScanReason.FORCE_REBUILD).join()
-                updateOverall { it.copy(runningSources = (it.runningSources - 1).coerceAtLeast(0)) }
-                // 每扫完一个来源就补全一批：用户不必等整库扫完才看到封面
-                // （开发文档 6.1「当前可见卡片优先补封面」的近似实现）。
-                backfillPending()
+    private suspend fun runAllLoop(initialReason: ScanReason) {
+        val self = currentCoroutineContext()[Job] ?: return
+        var reason = initialReason
+        try {
+            while (currentCoroutineContext().isActive) {
+                runAll(reason)
+                val next = schedulingLock.withLock {
+                    pendingAllReason.also { pendingAllReason = null }.also { queued ->
+                        if (queued == null && activeJob === self) activeJob = null
+                    }
+                } ?: break
+                reason = next
+            }
+        } finally {
+            schedulingLock.withLock {
+                if (activeJob === self) {
+                    activeJob = null
+                    pendingAllReason = null
+                }
             }
         }
-        updateOverall { it.copy(running = false, runningSources = 0) }
-        publishOverall()
     }
+
+    private suspend fun runAll(reason: ScanReason) {
+        updateOverall { it.copy(running = true, lastFailure = null) }
+        try {
+            // 只有一张路径表：一次遍历同时解释图片与归档（见 StructureScanner）。
+            val sourceSnapshots = sourceRepository.getSources()
+            for (snapshot in sourceSnapshots) {
+                // 保存设置会提升 revision；不要把全库扫描开始时捕获的旧对象交给 runner。
+                val source = sourceRepository.getSource(snapshot.sourceId) ?: continue
+                sourceGate.withPermit {
+                    updateOverall { it.copy(runningSources = it.runningSources + 1) }
+                    try {
+                        runner.requestScan(source, force = reason == ScanReason.FORCE_REBUILD).join()
+                        // 每扫完一个来源就补全一批：用户不必等整库扫完才看到封面。
+                        backfillPending()
+                    } finally {
+                        updateOverall { it.copy(runningSources = (it.runningSources - 1).coerceAtLeast(0)) }
+                    }
+                }
+            }
+        } finally {
+            updateOverall { it.copy(running = false, runningSources = 0) }
+            publishOverall()
+        }
+    }
+
+    private fun mergeReason(pending: ScanReason?, incoming: ScanReason): ScanReason =
+        if (pending == ScanReason.FORCE_REBUILD || incoming == ScanReason.FORCE_REBUILD) {
+            ScanReason.FORCE_REBUILD
+        } else {
+            incoming
+        }
 
     /**
      * 补全一批待补全漫画。

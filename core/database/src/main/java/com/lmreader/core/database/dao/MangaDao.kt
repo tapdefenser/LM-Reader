@@ -4,6 +4,7 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Upsert
 import com.lmreader.core.database.entity.MangaEntity
 import com.lmreader.core.model.LayoutMode
 import com.lmreader.core.model.MangaAvailability
@@ -41,6 +42,12 @@ data class CardQueryRow(
     val shelfCategoryId: Long?,
 )
 
+/** 图源筛选栏的持久计数投影。 */
+data class SourceVisibleCountRow(
+    val sourceId: String,
+    val itemCount: Int,
+)
+
 /**
  * 漫画与卡片的查询（开发文档 6.4、8.1）。
  *
@@ -51,7 +58,14 @@ data class CardQueryRow(
 @Dao
 interface MangaDao {
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    /**
+     * 必须使用真正的 UPDATE/INSERT upsert，不能使用 INSERT OR REPLACE。
+     *
+     * SQLite 的 REPLACE 会先删除旧的 mangas 父行；chapters 与 shelf_entries 对
+     * mangaId 都配置了 ON DELETE CASCADE，因此一次普通重扫就会清空章节和书架关系。
+     * Room 的 [Upsert] 在主键已存在时执行 UPDATE，父行身份不会被删除。
+     */
+    @Upsert
     suspend fun upsert(entity: MangaEntity)
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
@@ -75,6 +89,16 @@ interface MangaDao {
 
     @Query("SELECT COUNT(*) FROM mangas WHERE availability != 'STALE'")
     fun observeCount(): Flow<Int>
+
+    @Query(
+        """
+        SELECT sourceId, COUNT(*) AS itemCount
+        FROM mangas
+        WHERE availability != 'STALE'
+        GROUP BY sourceId
+        """,
+    )
+    fun observeVisibleCountsBySource(): Flow<List<SourceVisibleCountRow>>
 
     /**
      * 单调递增的发现进度。

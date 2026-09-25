@@ -82,14 +82,8 @@ class LibraryViewModel(
             }
         }
         viewModelScope.launch {
-            scanCoordinator.runnerStates.collect { states ->
-                _state.update { current ->
-                    current.copy(
-                        discoveredBySource = states
-                            .filterValues { it.discovered > 0 }
-                            .mapValues { (_, state) -> state.discovered },
-                    )
-                }
+            mangaRepository.observeVisibleCountsBySource().collect { counts ->
+                _state.update { current -> current.copy(discoveredBySource = counts) }
             }
         }
         viewModelScope.launch {

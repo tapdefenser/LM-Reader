@@ -19,6 +19,7 @@ import com.lmreader.core.model.ScanPersistReport
 import com.lmreader.core.model.ScanResult
 import androidx.room.withTransaction
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 
 /**
  * 漫画仓储实现（开发文档 6.4、8.1；框架 3.6、5.2）。
@@ -97,6 +98,11 @@ internal class MangaRepositoryImpl(
         mangaDao.markUndiscoveredAsStale(sourceId, generation)
 
     override suspend fun markOrphanedAsStale(): Int = mangaDao.markOrphanedAsStale()
+
+    override fun observeVisibleCountsBySource(): Flow<Map<String, Int>> =
+        mangaDao.observeVisibleCountsBySource().map { rows ->
+            rows.associate { row -> row.sourceId to row.itemCount }
+        }
 
     /**
      * 取补全工作投影。
@@ -195,7 +201,21 @@ internal class MangaRepositoryImpl(
     override suspend fun upsertScanResult(result: ScanResult): ScanPersistReport =
         database.withTransaction {
             val manga = result.manga
-            val sourceOrder = sourceOrderOf(manga.sourceId)
+            val source = database.sourceDao().getById(manga.sourceId)
+            // A09 版本门禁：扫描期间修改类型/递归/目录会使 revision 自增。
+            // 旧扫描即使随后才发出结果，也只能得到一个空报告，绝不能覆盖新配置。
+            // 这次来源查询原本就用于读取 sourceOrderIndex，因此版本校验不增加每部
+            // 漫画的数据库往返次数。
+            if (source == null || source.revision != result.sourceRevision) {
+                return@withTransaction ScanPersistReport(
+                    mangasInserted = 0,
+                    mangasUpdated = 0,
+                    chaptersInserted = 0,
+                    chaptersRemoved = 0,
+                    mangasMarkedUnavailable = 0,
+                )
+            }
+            val sourceOrder = source.orderIndex
             val existing = mangaDao.getById(manga.mangaId)
 
             val entity = if (existing == null) {
@@ -258,10 +278,6 @@ internal class MangaRepositoryImpl(
         mangaDao.delete(mangaId)
     }
 
-    /** 冗余的来源顺序列：来源不存在时给一个很大的值，让它排在最后而不是消失。 */
-    private suspend fun sourceOrderOf(sourceId: String): Int =
-        database.sourceDao().getById(sourceId)?.orderIndex ?: UNKNOWN_SOURCE_ORDER
-
     private suspend fun pageOf(rows: List<CardQueryRow>, offset: Int, limit: Int): MangaPage {
         val items = rows.map { it.toCard() }
         val total = mangaDao.count()
@@ -277,8 +293,6 @@ internal class MangaRepositoryImpl(
     }
 
     private companion object {
-        const val UNKNOWN_SOURCE_ORDER = Int.MAX_VALUE
-
         /** LIKE 通配符转义；`\` 是 SQL 里声明的 ESCAPE 字符（与 DAO 查询一致）。 */
         fun escapeLike(raw: String): String = buildString(raw.length) {
             raw.forEach { ch ->

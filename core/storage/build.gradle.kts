@@ -25,4 +25,5 @@ dependencies {
     // 不引入 espresso 等无关依赖，避免把测试栈变成新的构建风险。
     androidTestImplementation(libs.androidx.test.core)
     androidTestImplementation(libs.androidx.test.junit)
+    androidTestImplementation(libs.androidx.test.runner)
 }

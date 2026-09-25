@@ -26,6 +26,7 @@ class ScanHarness(
     val request = ScanRequest(
         sourceId = SOURCE_ID,
         sourceKind = kind,
+        sourceRevision = 0,
         rootDocumentId = InMemoryTreeFactory.ROOT_DOCUMENT_ID,
         layoutMode = mode,
         recursive = recursive,

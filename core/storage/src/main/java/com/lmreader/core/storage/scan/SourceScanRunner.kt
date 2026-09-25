@@ -11,10 +11,13 @@ import com.lmreader.core.model.SourcePermissionState
 import com.lmreader.core.model.SourceRepository
 import com.lmreader.core.storage.access.TreeAccess
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -24,6 +27,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -47,6 +51,9 @@ class SourceScanRunner(
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val jobs = mutableMapOf<String, Job>()
+    private val currentCommands = mutableMapOf<String, ScanCommand>()
+    private val pendingCommands = mutableMapOf<String, ScanCommand>()
+    private val activeRunJobs = mutableMapOf<String, Job>()
     private val lock = Mutex()
     private val generationCounter = AtomicLong(0)
 
@@ -74,46 +81,119 @@ class SourceScanRunner(
      * @return 本次（或已在进行中的）扫描作业。重复请求合并到正在跑的任务上。
      */
     fun requestScan(source: LibrarySource, force: Boolean = false): Job = scope.launch {
-        // 锁内只做"检查并占位"，真正的扫描在锁外执行，否则第二个来源会被第一个
-        // 的整轮扫描挡住，而开发文档 6.3 要求按源轮转而不是串成一条长队。
-        val job = lock.withLock {
+        val command = ScanCommand(source, force)
+        val loopJob = lock.withLock {
             val existing = jobs[source.sourceId]
             if (existing?.isActive == true) {
-                // 已有任务在跑：本次请求合并到它上面。返回的 Job 仍然可以 join，
-                // 语义是"这个来源的这一轮扫描已经结束"。
+                val current = currentCommands.getValue(source.sourceId)
+                val pending = pendingCommands[source.sourceId]
+                val merged = mergeCommand(current, pending, command)
+                if (merged != null) {
+                    // 新 revision（类型/递归/目录变更）或更强的 force 请求不能被旧扫描
+                    // 吞掉。保留最新命令，并尽快取消当前实际扫描；外层循环随后补跑。
+                    pendingCommands[source.sourceId] = merged
+                    activeRunJobs[source.sourceId]?.cancel()
+                }
                 existing
             } else {
-                scope.launch { runScan(source, force) }.also { jobs[source.sourceId] = it }
+                val created = scope.launch(start = CoroutineStart.LAZY) { runScanLoop(command) }
+                jobs[source.sourceId] = created
+                currentCommands[source.sourceId] = command
+                created.start()
+                created
             }
         }
-        // 结束后清理登记，允许同一来源再次扫描。
-        job.invokeOnCompletion {
-            scope.launch { lock.withLock { jobs.remove(source.sourceId, job) } }
-        }
-        // 必须等**真正那一轮扫描**结束才返回。本方法返回的 Job 是调用方表达
-        // "这一轮扫描完成了"的唯一句柄：`LibraryScanCoordinator` 用它限制同时扫描的
-        // 来源数（`sourceGate` 的许可只有在 join 真的等待时才有意义），并在扫完后立刻
-        // 补全封面/简介。早先的写法在登记完成后外层协程就结束了，`join()` 立即返回——
-        // 结果是来源数上限形同虚设、补全提前开始、"已结束"的汇总也会早报。
-        job.join()
+        // 返回句柄等待当前扫描以及因更新配置而排入的补扫全部结束。
+        loopJob.join()
     }
 
     suspend fun cancel(sourceId: String) {
-        val job = lock.withLock { jobs.remove(sourceId) }
-        job?.cancel()
+        val job = lock.withLock {
+            pendingCommands.remove(sourceId)
+            currentCommands.remove(sourceId)
+            activeRunJobs.remove(sourceId)
+            jobs.remove(sourceId)
+        }
+        job?.cancelAndJoin()
         updateState(sourceId) { it.copy(running = false, status = ScanRunStatus.CANCELLED) }
     }
 
-    fun cancelAll() {
-        scope.launch {
-            lock.withLock {
-                jobs.values.forEach { it.cancel() }
-                jobs.clear()
+    suspend fun cancelAll() {
+        val running = lock.withLock {
+            val snapshot = jobs.values.toList()
+            jobs.clear()
+            currentCommands.clear()
+            pendingCommands.clear()
+            activeRunJobs.clear()
+            snapshot
+        }
+        running.forEach { it.cancel() }
+        running.forEach { it.join() }
+    }
+
+    /** 同一来源的调度循环：任何时刻只有一个 [runScan]，但允许排一个“最新配置”补扫。 */
+    private suspend fun runScanLoop(initial: ScanCommand) {
+        val sourceId = initial.source.sourceId
+        val self = currentCoroutineContext()[Job] ?: return
+        var command = initial
+        try {
+            while (currentCoroutineContext().isActive) {
+                lock.withLock { currentCommands[sourceId] = command }
+                val actual = CoroutineScope(currentCoroutineContext()).launch {
+                    runScan(command.source, command.force)
+                }
+                lock.withLock { activeRunJobs[sourceId] = actual }
+                actual.join()
+
+                val next = lock.withLock {
+                    if (activeRunJobs[sourceId] === actual) activeRunJobs.remove(sourceId)
+                    pendingCommands.remove(sourceId).also { queued ->
+                        if (queued == null && jobs[sourceId] === self) {
+                            jobs.remove(sourceId)
+                            currentCommands.remove(sourceId)
+                        }
+                    }
+                } ?: break
+                command = next
             }
+        } finally {
+            lock.withLock {
+                if (jobs[sourceId] === self) {
+                    jobs.remove(sourceId)
+                    currentCommands.remove(sourceId)
+                    pendingCommands.remove(sourceId)
+                    activeRunJobs.remove(sourceId)
+                }
+            }
+        }
+    }
+
+    /** 返回 null 表示新请求与当前/已排队请求等价，只需合并等待。 */
+    private fun mergeCommand(
+        current: ScanCommand,
+        pending: ScanCommand?,
+        incoming: ScanCommand,
+    ): ScanCommand? {
+        val baseline = pending ?: current
+        val latestSource = if (incoming.source.revision >= baseline.source.revision) {
+            incoming.source
+        } else {
+            baseline.source
+        }
+        val merged = ScanCommand(
+            source = latestSource,
+            force = baseline.force || incoming.force,
+        )
+        return merged.takeIf {
+            it.source.revision != current.source.revision || (it.force && !current.force)
         }
     }
 
     private suspend fun runScan(source: LibrarySource, force: Boolean) {
+        // 全库扫描拿到的是来源快照；真正开跑前再次做 revision 门禁，避免保存配置后
+        // 仍用旧的类型/递归设置启动一次扫描（验收 A09）。
+        if (!isCurrentSource(source)) return
+
         val generation = generationCounter.incrementAndGet()
         android.util.Log.i(
             TAG,
@@ -147,6 +227,7 @@ class SourceScanRunner(
         // 单目录 SAF 授权时查持久授权记录并确认系统放行。原因直接来自那里，
         // 因此用户看到的是"目录不存在"或"请重新授权"这类可操作结论。
         treeAccess.checkReadable(source.treeUri)?.let { reason ->
+            if (!isCurrentSource(source)) return
             sourceRepository.updatePermission(source.sourceId, SourcePermissionState.LOST)
             sourceRepository.updateScanResult(source.sourceId, clock(), ScanRunStatus.FAILED, reason)
             updateState(source.sourceId) {
@@ -157,6 +238,7 @@ class SourceScanRunner(
 
         val root = treeAccess.open(source.treeUri, source.displayPath)
         if (root == null) {
+            if (!isCurrentSource(source)) return
             val message = "无法打开该目录，可能已被移动或删除"
             sourceRepository.updateScanResult(source.sourceId, clock(), ScanRunStatus.FAILED, message)
             updateState(source.sourceId) {
@@ -172,6 +254,7 @@ class SourceScanRunner(
         val request = ScanRequest(
             sourceId = source.sourceId,
             sourceKind = source.kind,
+            sourceRevision = source.revision,
             rootDocumentId = treeAccess.rootDocumentId(source.treeUri),
             layoutMode = source.mode,
             recursive = source.recursive,
@@ -180,6 +263,7 @@ class SourceScanRunner(
         )
 
         val factory = treeAccess.treeFactory(source.treeUri)
+        var persistenceFailure: String? = null
         val summary = try {
             // 关键：工厂必须**按本次扫描的授权树**传进去。
             // 扫描器实例是共享的（结构扫描本身无状态），它不能持有某个具体来源的
@@ -190,16 +274,39 @@ class SourceScanRunner(
                 request,
                 root,
                 factory = factory,
-                events = { event -> onEvent(source.sourceId, event, failureReasons) },
+                events = { event ->
+                    onEvent(source.sourceId, event, failureReasons)?.let { message ->
+                        persistenceFailure = persistenceFailure ?: message
+                    }
+                },
             )
         } catch (cancellation: CancellationException) {
             // [StructureScanner] 按契约把取消表达为 `completed = false` 而不是抛出，
             // 但调度层若在别处取消了这个协程（例如取消整个全库扫描），异常仍会到这里。
-            sourceRepository.updateScanResult(source.sourceId, clock(), ScanRunStatus.CANCELLED, null)
-            updateState(source.sourceId) {
-                it.copy(running = false, status = ScanRunStatus.CANCELLED, finishedAt = clock())
+            withContext(NonCancellable) {
+                val superseded = hasPending(source.sourceId) || !isCurrentSource(source)
+                if (!superseded) {
+                    sourceRepository.updateScanResult(source.sourceId, clock(), ScanRunStatus.CANCELLED, null)
+                }
+                updateState(source.sourceId) {
+                    it.copy(running = false, status = ScanRunStatus.CANCELLED, finishedAt = clock())
+                }
             }
             throw cancellation
+        }
+
+        // 用户在扫描期间保存了新配置：事件落库层已经按 revision 拒绝旧结果；这里还要
+        // 禁止旧代次继续标记陈旧卡片或覆盖新来源的最终状态。
+        if (!isCurrentSource(source)) {
+            updateState(source.sourceId) {
+                it.copy(
+                    running = false,
+                    currentPath = null,
+                    status = ScanRunStatus.CANCELLED,
+                    finishedAt = clock(),
+                )
+            }
+            return
         }
 
         // 取消与失败必须区分：取消是用户意图，不该在路径状态里显示成红色错误。
@@ -208,6 +315,7 @@ class SourceScanRunner(
         val cancelled = !currentCoroutineContext().isActive
         val status = when {
             cancelled -> ScanRunStatus.CANCELLED
+            persistenceFailure != null -> ScanRunStatus.FAILED
             !summary.completed -> ScanRunStatus.FAILED
             else -> ScanRunStatus.COMPLETED
         }
@@ -223,15 +331,18 @@ class SourceScanRunner(
         // 判定依据是行上的 `discoveryGeneration`：发现阶段每次写入都带上本次代次，
         // 因此"本轮是否发现"不需要回传一份 ID 清单。标记只改 availability、不删行，
         // 章节、书架关系、阅读进度与译文全部保留，卡片被重新发现时自动回到可见。
+        var staleFailure: String? = null
         val staleMarked = if (status == ScanRunStatus.COMPLETED) {
             runCatching { mangaRepository.markUndiscoveredAsStale(source.sourceId, generation) }
-                .onFailure { error ->
-                    android.util.Log.e(TAG, "标记陈旧卡片失败 source=${source.sourceId}", error)
+                .onFailure { failure ->
+                    android.util.Log.e(TAG, "标记陈旧卡片失败 source=${source.sourceId}", failure)
+                    staleFailure = failure.message ?: "更新陈旧卡片状态失败"
                 }
                 .getOrDefault(0)
         } else {
             0
         }
+        val finalStatus = if (staleFailure != null) ScanRunStatus.FAILED else status
         // 诊断：把"打开子目录次数 / 枚举次数 / 命中叶子判定次数"打出来，
         // 用来验证"找到一个章节就跳过其余文件夹"是否真的生效（而不是靠感觉）。
         android.util.Log.i(
@@ -239,13 +350,16 @@ class SourceScanRunner(
             "扫描结束 ${source.displayPath}：漫画=${summary.mangas} 遍历目录=${summary.directoriesVisited} " +
                 "章节探测=${summary.leafChapterProbes}",
         )
-        val error = if (cancelled) {
-            null
-        } else {
-            // 汇总里只有路径，原因在 failureReasons（事件回调时记下的）。
-            // 拼成"路径：原因"才能在界面上回答"为什么失败"。
-            summary.failedPaths.firstOrNull()?.let { path ->
-                failureReasons[path]?.let { "$path：$it" } ?: path
+        val error = when {
+            cancelled -> null
+            persistenceFailure != null -> persistenceFailure
+            staleFailure != null -> staleFailure
+            else -> {
+                // 汇总里只有路径，原因在 failureReasons（事件回调时记下的）。
+                // 拼成"路径：原因"才能在界面上回答"为什么失败"。
+                summary.failedPaths.firstOrNull()?.let { path ->
+                    failureReasons[path]?.let { "$path：$it" } ?: path
+                }
             }
         }
         android.util.Log.i(
@@ -257,7 +371,7 @@ class SourceScanRunner(
             source.sourceId,
             if (summary.failedPaths.isEmpty()) SourcePermissionState.OK else SourcePermissionState.PARTIAL,
         )
-        sourceRepository.updateScanResult(source.sourceId, clock(), status, error)
+        sourceRepository.updateScanResult(source.sourceId, clock(), finalStatus, error)
         updateState(source.sourceId) {
             it.copy(
                 running = false,
@@ -268,7 +382,7 @@ class SourceScanRunner(
                 staleMarked = staleMarked,
                 currentPath = null,
                 lastError = error,
-                status = status,
+                status = finalStatus,
                 finishedAt = clock(),
             )
         }
@@ -278,42 +392,52 @@ class SourceScanRunner(
         sourceId: String,
         event: ScanEvent,
         failureReasons: MutableMap<String, String>,
-    ) {
-        when (event) {
-            is ScanEvent.MangaDiscovered -> {
-                // 边发现边落库：失败只影响这一部作品，其它卡片照常出现（开发文档 6.1）。
-                runCatching { mangaRepository.upsertScanResult(event.result) }
-                    .onFailure { error ->
-                        android.util.Log.e(TAG, "写入索引失败 manga=${event.result.manga.displayName}", error)
-                        updateState(sourceId) { it.copy(lastError = error.message ?: "写入索引失败") }
-                    }
-                updateState(sourceId) { it.copy(discovered = event.totalDiscovered) }
+    ): String? = when (event) {
+        is ScanEvent.MangaDiscovered -> {
+            // 边发现边落库：失败只影响这一部作品，其它卡片照常出现（开发文档 6.1）。
+            val failure = runCatching { mangaRepository.upsertScanResult(event.result) }.exceptionOrNull()
+            if (failure != null) {
+                android.util.Log.e(TAG, "写入索引失败 manga=${event.result.manga.displayName}", failure)
+                updateState(sourceId) { it.copy(lastError = failure.message ?: "写入索引失败") }
             }
+            updateState(sourceId) { it.copy(discovered = event.totalDiscovered) }
+            failure?.message ?: failure?.let { "写入索引失败" }
+        }
 
-            is ScanEvent.Progress -> updateState(sourceId) {
+        is ScanEvent.Progress -> {
+            updateState(sourceId) {
                 it.copy(
                     visited = event.directoriesVisited,
                     chapters = event.chaptersDiscovered,
                     currentPath = event.currentPath ?: it.currentPath,
                 )
             }
+            null
+        }
 
-            is ScanEvent.Diagnostic -> {
-                // 诊断不算失败：混放目录只是提示，不该把路径状态标红（开发文档 5.1）。
-                // 保留原文供"扫描诊断"查看，P1 再做逐条展示页。
-                appendDiagnostic(sourceId, "诊断 ${event.path}：${event.message}")
-            }
+        is ScanEvent.Diagnostic -> {
+            // 诊断不算失败：混放目录只是提示，不该把路径状态标红（开发文档 5.1）。
+            // 保留原文供"扫描诊断"查看，P1 再做逐条展示页。
+            appendDiagnostic(sourceId, "诊断 ${event.path}：${event.message}")
+            null
+        }
 
-            is ScanEvent.Failed -> {
-                val detail = "${event.path}：${event.message}"
-                // 完整失败原因（路径 + 异常类型 + message）必须能被用户看到：
-                // 真机（MIUI）会吞掉应用 logcat，只藏在日志里等于没有错误提示。
-                failureReasons[event.path] = event.message
-                appendDiagnostic(sourceId, detail)
-                updateState(sourceId) { it.copy(lastError = detail) }
-            }
+        is ScanEvent.Failed -> {
+            val detail = "${event.path}：${event.message}"
+            // 完整失败原因（路径 + 异常类型 + message）必须能被用户看到：
+            // 真机（MIUI）会吞掉应用 logcat，只藏在日志里等于没有错误提示。
+            failureReasons[event.path] = event.message
+            appendDiagnostic(sourceId, detail)
+            updateState(sourceId) { it.copy(lastError = detail) }
+            null
         }
     }
+
+    private suspend fun isCurrentSource(source: LibrarySource): Boolean =
+        sourceRepository.getSource(source.sourceId)?.revision == source.revision
+
+    private suspend fun hasPending(sourceId: String): Boolean =
+        lock.withLock { pendingCommands.containsKey(sourceId) }
 
     /** 诊断列表有上限：扫描万级目录时不能无限增长（UI 只展示最近若干条）。 */
     private fun appendDiagnostic(sourceId: String, line: String) {
@@ -330,7 +454,10 @@ class SourceScanRunner(
         }
     }
 
-    private fun documentIdOf(treeUri: String): String = treeAccess.rootDocumentId(treeUri)
+    private data class ScanCommand(
+        val source: LibrarySource,
+        val force: Boolean,
+    )
 
     private companion object {
         const val TAG = "SourceScanRunner"

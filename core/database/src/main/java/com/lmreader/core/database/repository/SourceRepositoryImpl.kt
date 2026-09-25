@@ -70,7 +70,22 @@ internal class SourceRepositoryImpl(
     }
 
     override suspend fun reorder(orderedSourceIds: List<String>) {
-        dao.applyOrder(orderedSourceIds)
+        // `library_sources.orderIndex` 是配置，`mangas.sourceOrderIndex` 是图库排序用的
+        // 冗余投影。两者必须在同一个事务里落盘，避免路径表与图库顺序永久分叉。
+        database.withTransaction {
+            // 与 SourceDao.applyOrder 用同一套下标规则：调用方给出的 ID 按下标 0..n-1，
+            // 未出现在本次列表里的来源行推到表尾并从 n 开始编号。
+            val existing = dao.getAllOrdered()
+            val offset = orderedSourceIds.size
+            val omitted = existing.filter { it.sourceId !in orderedSourceIds }
+            dao.applyOrder(orderedSourceIds)
+            orderedSourceIds.forEachIndexed { index, sourceId ->
+                mangaDao.updateSourceOrder(sourceId, index)
+            }
+            omitted.forEachIndexed { index, entity ->
+                mangaDao.updateSourceOrder(entity.sourceId, offset + index)
+            }
+        }
     }
 
     override suspend fun updateScanResult(

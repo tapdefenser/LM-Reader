@@ -50,6 +50,14 @@ interface MangaRepository {
     fun observeVisibleCount(inShelfOnly: Boolean, categoryId: Long?): Flow<Int>
 
     /**
+     * 各来源当前可见卡片数。
+     *
+     * 图源筛选栏必须读取持久索引，而不是读取本进程的扫描状态；否则冷启动按要求
+     * 不自动扫描时，每个来源都会错误显示“共 0 项”。
+     */
+    fun observeVisibleCountsBySource(): Flow<Map<String, Int>>
+
+    /**
      * 扫描写入进度信号，只增不减；每次插入一行漫画就发射一次。
      *
      * 与 [observeVisibleCount] 的分工：后者给出「现在该显示多少」（绝对值，会因删除
