@@ -14,6 +14,10 @@ import com.lmreader.core.storage.scan.LibraryScanCoordinator
 import com.lmreader.core.storage.scan.MetadataBackfillWorker
 import com.lmreader.core.storage.scan.SourceScanRunner
 import com.lmreader.core.storage.settings.AppPreferences
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 /**
  * 依赖装配（开发文档 15.2：`app / navigation` 负责"导航、依赖装配、主题"）。
@@ -27,6 +31,30 @@ import com.lmreader.core.storage.settings.AppPreferences
 class AppContainer(private val application: Application) {
 
     private val databaseComponents by lazy { DatabaseProvider.create(application) }
+
+    /**
+     * 启动时的一次性索引维护（不参与依赖图，失败不影响使用）。
+     *
+     * 目前只做一件事：把"来源行已经不存在的"孤儿卡片标成陈旧（只改可用性、不删行）。
+     * `mangas` 没有指向 `library_sources` 的外键，早期版本删掉一条路径之后卡片会永远
+     * 留在图库里——真机实测 4749 张卡片里有 4595 张是这种孤儿，图库界面因此完全没法看。
+     *
+     * 容器构建本身不做 IO（见类注释），所以放在独立作用域里跑；结果只记日志，
+     * 因为它是维护而不是启动前提。
+     */
+    private val maintenanceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    init {
+        maintenanceScope.launch {
+            runCatching { mangaRepository.markOrphanedAsStale() }
+                .onSuccess { hidden ->
+                    if (hidden > 0) {
+                        android.util.Log.i(TAG, "启动维护：隐藏孤儿卡片 $hidden 张（来源行已删除，只隐藏不删除）")
+                    }
+                }
+                .onFailure { error -> android.util.Log.e(TAG, "启动维护：孤儿卡片清扫失败", error) }
+        }
+    }
 
     val database get() = databaseComponents.database
     val sourceRepository: SourceRepository get() = databaseComponents.sources
@@ -93,6 +121,8 @@ class AppContainer(private val application: Application) {
     }
 
     companion object {
+        private const val TAG = "AppContainer"
+
         /**
          * 失败即报错的占位工厂。
          *

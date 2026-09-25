@@ -126,6 +126,12 @@ private class ScanRun(
      *    章节，要么是这部作品的附属内容，都不是新的漫画。因此每部作品最多只打开
      *    一个子目录，而不是枚举几百个章节文件夹。
      *
+     * 第 1 条成立的前提是"章节"判得准。[isLeafImageChapter] 因此要求子目录
+     * **既没有子目录、也没有 CBZ/ZIP/PDF**：真机 `/Tachiyomi/local` 里
+     * `Jyminish  OOHS/`（`cover.jpg` + 两个章节 `.zip`，没有子目录）曾被当成章节，
+     * 于是授权根被判成一部叫 `local` 的漫画、其余 41 个子文件夹全部没被检查。
+     * 这类目录归「CBZ/ZIP/PDF 导入列表」管，不是图片章节。
+     *
      * 反过来说：判定"这里不是漫画"必须把直接子目录都检查完（否则会把漫画误判成
      * 包裹目录，继续往下把「第一章」当成新作品）。
      *
@@ -219,9 +225,17 @@ private class ScanRun(
         val children = dir.enumerateOnce() ?: return
         val childDirs = children.filter { it.isDirectory }
         val hasDirectImage = children.any { it.isSupportedImage() }
+        // 直接含 CBZ/ZIP/PDF 的目录属于「归档表」的解释范围，不是图片单章节。
+        // 少了这一条，一张 `cover.jpg` + 几个章节压缩包就会看起来像"有图片且没有子文件夹"，
+        // 于是父目录被误判成单章节、其余子文件夹全部被跳过（真机 `/Tachiyomi/local` 实测：
+        // 51 个子文件夹只扫出 1 张名叫 local 的卡片）。
+        val hasDirectArchive = children.any { it.isArchiveFile() }
 
         if (childDirs.isEmpty()) {
             when {
+                // 只有"图片 + 压缩包"同时存在时才值得提示：那种目录正好会被误认成图片单章节。
+                hasDirectArchive -> if (hasDirectImage) diagnose(dir.path, MESSAGE_ARCHIVE_CHAPTER)
+
                 hasDirectImage -> emitManga(
                     anchor = dir,
                     chapters = listOf(ChapterSpec(dir.documentId, dir.name, ChapterKind.IMAGE_DIRECTORY)),
@@ -378,11 +392,20 @@ private class ScanRun(
     }
 
     /**
-     * leafChapter(d)：直接子项中至少有一张受支持图片，且没有子目录（开发文档 5.1）。
+     * leafChapter(d)：直接子项中至少有一张受支持图片、**没有**子目录、且**没有** CBZ/ZIP/PDF
+     * （开发文档 5.1，见下面对压缩包这一条的说明）。
      *
      * 判定顺序是「先确认没有子目录，再确认有图片」（框架 4.3）：先看到图片不能
      * 断言没有子目录（验收 A04）。这里用 [ContentTree.hasDirectoryChildren] 提前
      * 短路，避免为判定叶子而枚举整棵子树。
+     *
+     * **为什么要排除含压缩包的目录**（真机实测补上的规则）：Tachiyomi 的本地库里，
+     * "章节就是压缩包"的漫画文件夹长这样：`漫画名/cover.jpg` + `漫画名/第1话.zip`……
+     * 它没有子目录，唯一的一张图片是封面。按"有图片且没有子目录"判定它就是单章节，
+     * 于是它的**父目录**（来源目录或授权根）被判定成漫画、其余子文件夹全部跳过——
+     * 真机 `/Tachiyomi/local`（51 个子文件夹）因此只扫出 1 张名叫 `local` 的卡片。
+     * 这类目录的正确归属是「CBZ/ZIP/PDF 导入列表」：归档表按"包含至少一个直接归档
+     * 文件的目录是一部漫画"解释它，章节是那些压缩包（开发文档 5.2）。
      */
     private suspend fun isLeafImageChapter(parent: DirRef, child: ChildNode): Boolean {
         leafProbes++
@@ -392,10 +415,18 @@ private class ScanRun(
             // 若判定为章节就到此为止（用户要求的跳过），若判定为包裹目录，
             // 后面的递归会直接复用这份结果，不再重读同一个目录。
             val children = ref.enumerateOnce() ?: return false
-            if (children.any { it.isDirectory }) {
-                false
-            } else {
-                children.any { it.isSupportedImage() }
+            when {
+                children.any { it.isDirectory } -> false
+
+                children.any { it.isArchiveFile() } -> {
+                    // 只有"图片 + 压缩包"同时存在时才提示：那种目录最容易被误认成图片章节。
+                    if (children.any { it.isSupportedImage() }) {
+                        diagnose("${parent.path}/${child.name}", MESSAGE_ARCHIVE_CHAPTER)
+                    }
+                    false
+                }
+
+                else -> children.any { it.isSupportedImage() }
             }
         } catch (cancellation: CancellationException) {
             throw cancellation
@@ -600,6 +631,17 @@ private class ScanRun(
         const val MESSAGE_MIXED = "目录同时包含图片和子目录，未按叶子章节处理（开发文档 5.1）"
         const val MESSAGE_ROOT_LEAF = "根目录自身是叶子图片目录，按根特例生成共 1 章的漫画（开发文档 5.1）"
         const val MESSAGE_NO_IMAGE = "目录内没有受支持的图片，未生成卡片（开发文档 5.1）"
+
+        /**
+         * 含 CBZ/ZIP/PDF 的目录在图片解释下的提示。
+         *
+         * 必须显式提示而不是静默跳过：这类目录（Tachiyomi 本地库里"章节就是压缩包"的
+         * 漫画）在图片表里本来就不该出卡片，但用户只会在图库里"少了一部漫画"，
+         * 不知道该把它加到另一张表。
+         */
+        const val MESSAGE_ARCHIVE_CHAPTER =
+            "目录内有 CBZ/ZIP/PDF，按归档表解释（请把该目录加入「CBZ / ZIP / PDF 导入列表」），" +
+                "不作为图片单章节（开发文档 5.2）"
         const val MESSAGE_NO_ARCHIVE = "目录内没有可导入的 CBZ/ZIP/PDF（开发文档 5.2）"
     }
 }

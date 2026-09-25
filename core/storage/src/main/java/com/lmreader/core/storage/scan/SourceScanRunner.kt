@@ -78,15 +78,24 @@ class SourceScanRunner(
         // 的整轮扫描挡住，而开发文档 6.3 要求按源轮转而不是串成一条长队。
         val job = lock.withLock {
             val existing = jobs[source.sourceId]
-            if (existing?.isActive == true) return@launch
-            val started = scope.launch { runScan(source, force) }
-            jobs[source.sourceId] = started
-            started
+            if (existing?.isActive == true) {
+                // 已有任务在跑：本次请求合并到它上面。返回的 Job 仍然可以 join，
+                // 语义是"这个来源的这一轮扫描已经结束"。
+                existing
+            } else {
+                scope.launch { runScan(source, force) }.also { jobs[source.sourceId] = it }
+            }
         }
         // 结束后清理登记，允许同一来源再次扫描。
         job.invokeOnCompletion {
             scope.launch { lock.withLock { jobs.remove(source.sourceId, job) } }
         }
+        // 必须等**真正那一轮扫描**结束才返回。本方法返回的 Job 是调用方表达
+        // "这一轮扫描完成了"的唯一句柄：`LibraryScanCoordinator` 用它限制同时扫描的
+        // 来源数（`sourceGate` 的许可只有在 join 真的等待时才有意义），并在扫完后立刻
+        // 补全封面/简介。早先的写法在登记完成后外层协程就结束了，`join()` 立即返回——
+        // 结果是来源数上限形同虚设、补全提前开始、"已结束"的汇总也会早报。
+        job.join()
     }
 
     suspend fun cancel(sourceId: String) {
@@ -202,6 +211,27 @@ class SourceScanRunner(
             !summary.completed -> ScanRunStatus.FAILED
             else -> ScanRunStatus.COMPLETED
         }
+
+        // 本轮没有再发现的旧卡片要隐藏掉，否则切换解释方式（多章节 ↔ 单章节）、
+        // 改动"子目录"勾选或把路径重新指向另一个目录之后，图库里会同时留着新旧两套
+        // 卡片——用户看到的现象就是"单章节模式里出现了名字是带子文件夹的目录的卡片"。
+        //
+        // 只有 `COMPLETED` 才有资格做这个判定：取消、目录读取失败（completed=false）、
+        // 授权失效时必须原样保留旧卡片，否则会把"这次没读到"误判成"已经不存在"
+        // （验收 A07「失败不删索引」）。
+        //
+        // 判定依据是行上的 `discoveryGeneration`：发现阶段每次写入都带上本次代次，
+        // 因此"本轮是否发现"不需要回传一份 ID 清单。标记只改 availability、不删行，
+        // 章节、书架关系、阅读进度与译文全部保留，卡片被重新发现时自动回到可见。
+        val staleMarked = if (status == ScanRunStatus.COMPLETED) {
+            runCatching { mangaRepository.markUndiscoveredAsStale(source.sourceId, generation) }
+                .onFailure { error ->
+                    android.util.Log.e(TAG, "标记陈旧卡片失败 source=${source.sourceId}", error)
+                }
+                .getOrDefault(0)
+        } else {
+            0
+        }
         // 诊断：把"打开子目录次数 / 枚举次数 / 命中叶子判定次数"打出来，
         // 用来验证"找到一个章节就跳过其余文件夹"是否真的生效（而不是靠感觉）。
         android.util.Log.i(
@@ -221,7 +251,7 @@ class SourceScanRunner(
         android.util.Log.i(
             TAG,
             "扫描结束 source=${source.sourceId} 漫画=${summary.mangas} 目录=${summary.directoriesVisited} " +
-                "completed=${summary.completed} 失败路径=${summary.failedPaths.size}",
+                "completed=${summary.completed} 失败路径=${summary.failedPaths.size} 陈旧卡片=$staleMarked",
         )
         sourceRepository.updatePermission(
             source.sourceId,
@@ -235,6 +265,7 @@ class SourceScanRunner(
                 chapters = summary.chapters,
                 visited = summary.directoriesVisited,
                 leafProbes = summary.leafChapterProbes,
+                staleMarked = staleMarked,
                 currentPath = null,
                 lastError = error,
                 status = status,

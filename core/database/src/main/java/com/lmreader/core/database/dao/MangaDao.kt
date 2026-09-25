@@ -54,10 +54,17 @@ interface MangaDao {
     @Query("SELECT * FROM mangas WHERE anchorDocumentId = :documentId AND sourceKind = :kind")
     suspend fun getByAnchor(documentId: String, kind: SourceKind): MangaEntity?
 
-    @Query("SELECT COUNT(*) FROM mangas")
+    /**
+     * 可见卡片总数。
+     *
+     * `availability != 'STALE'`：陈旧卡片（本来源最近一次完整扫描没有再发现的旧卡片）
+     * 默认不出现在图库/书架，总数必须与列表同一口径，否则界面会显示"共 N 项"却只滚
+     * 得到更少的卡片。
+     */
+    @Query("SELECT COUNT(*) FROM mangas WHERE availability != 'STALE'")
     suspend fun count(): Int
 
-    @Query("SELECT COUNT(*) FROM mangas")
+    @Query("SELECT COUNT(*) FROM mangas WHERE availability != 'STALE'")
     fun observeCount(): Flow<Int>
 
     /**
@@ -88,6 +95,7 @@ interface MangaDao {
         LEFT JOIN shelf_entries AS s ON s.mangaId = m.mangaId
         LEFT JOIN metadata_records AS md
                ON md.ownerId = m.mangaId AND md.ownerType = 'MANGA'
+        WHERE m.availability != 'STALE'
         ORDER BY m.sourceOrderIndex ASC, m.sortKey ASC, m.mangaId ASC
         LIMIT :limit OFFSET :offset
         """,
@@ -119,6 +127,7 @@ interface MangaDao {
         LEFT JOIN metadata_records AS md
                ON md.ownerId = m.mangaId AND md.ownerType = 'MANGA'
         WHERE m.sourceId IN (:sourceIds)
+          AND m.availability != 'STALE'
         ORDER BY m.sourceOrderIndex ASC, m.sortKey ASC, m.mangaId ASC
         LIMIT :limit OFFSET :offset
         """,
@@ -143,6 +152,7 @@ interface MangaDao {
         JOIN shelf_entries AS s ON s.mangaId = m.mangaId
         LEFT JOIN metadata_records AS md
                ON md.ownerId = m.mangaId AND md.ownerType = 'MANGA'
+        WHERE m.availability != 'STALE'
         ORDER BY m.sourceOrderIndex ASC, m.sortKey ASC, m.mangaId ASC
         LIMIT :limit OFFSET :offset
         """,
@@ -168,6 +178,7 @@ interface MangaDao {
         LEFT JOIN metadata_records AS md
                ON md.ownerId = m.mangaId AND md.ownerType = 'MANGA'
         WHERE s.categoryId = :categoryId
+          AND m.availability != 'STALE'
         ORDER BY m.sourceOrderIndex ASC, m.sortKey ASC, m.mangaId ASC
         LIMIT :limit OFFSET :offset
         """,
@@ -223,18 +234,36 @@ interface MangaDao {
         LEFT JOIN shelf_entries AS s ON s.mangaId = m.mangaId
         LEFT JOIN metadata_records AS md
                ON md.ownerId = m.mangaId AND md.ownerType = 'MANGA'
-        WHERE m.displayName LIKE :pattern ESCAPE '\'
-           OR md.normalizedSearchText LIKE :pattern ESCAPE '\'
+        WHERE (m.displayName LIKE :pattern ESCAPE '\'
+           OR md.normalizedSearchText LIKE :pattern ESCAPE '\')
+          AND m.availability != 'STALE'
         ORDER BY m.sourceOrderIndex ASC, m.sortKey ASC, m.mangaId ASC
         LIMIT :limit OFFSET :offset
         """,
     )
     suspend fun search(pattern: String, offset: Int, limit: Int): List<CardQueryRow>
 
-    @Query("SELECT COUNT(*) FROM shelf_entries")
+    /**
+     * 书架条目数。陈旧卡片不算进去：它们默认不出现在书架上（行本身保留，
+     * 卡片被重新发现时会自动回到书架）。
+     */
+    @Query(
+        """
+        SELECT COUNT(*) FROM shelf_entries AS e
+        JOIN mangas AS m ON m.mangaId = e.mangaId
+        WHERE m.availability != 'STALE'
+        """,
+    )
     fun observeShelfTotal(): Flow<Int>
 
-    @Query("SELECT COUNT(*) FROM shelf_entries WHERE categoryId = :categoryId")
+    @Query(
+        """
+        SELECT COUNT(*) FROM shelf_entries AS e
+        JOIN mangas AS m ON m.mangaId = e.mangaId
+        WHERE e.categoryId = :categoryId
+          AND m.availability != 'STALE'
+        """,
+    )
     fun observeShelfCountInCategory(categoryId: Long): Flow<Int>
 
     @Query("DELETE FROM mangas WHERE mangaId = :mangaId")
@@ -301,4 +330,57 @@ interface MangaDao {
 
     @Query("UPDATE mangas SET availability = :availability WHERE sourceId = :sourceId")
     suspend fun updateAvailabilityBySource(sourceId: String, availability: MangaAvailability)
+
+    /**
+     * 把该来源里"不是本轮发现的"卡片标成陈旧（[MangaAvailability.STALE]）。
+     *
+     * 只在来源扫描**完整跑完**之后调用（调用点见
+     * [com.lmreader.core.model.MangaRepository.markUndiscoveredAsStale]）：取消、目录读取
+     * 失败、授权失效时一律不能调用，否则会把"这次没读到"误判成"已经不存在"（验收 A07）。
+     *
+     * `discoveryGeneration` 是发现阶段每次写入都带上的本次扫描代次，所以"本轮是否发现"
+     * 不需要回传一份 ID 清单；`availability != 'STALE'` 让返回值正好等于"本次新隐藏的
+     * 数量"，重复调用不会把同一批卡片反复计数。
+     *
+     * 只改可用性、不删行：章节、书架关系、阅读进度与译文全部保留（外键级联删除会
+     * 把这些一起带走，因此这里绝不能改成 DELETE）。
+     */
+    @Query(
+        """
+        UPDATE mangas
+        SET availability = 'STALE'
+        WHERE sourceId = :sourceId
+          AND discoveryGeneration != :generation
+          AND availability != 'STALE'
+        """,
+    )
+    suspend fun markUndiscoveredAsStale(sourceId: String, generation: Long): Int
+
+    /**
+     * 把一个来源的**全部**卡片标成陈旧；删除该来源行之前调用。
+     *
+     * 为什么不是删行：用户可能只是想换一个目录，过一会儿又把原目录加回来。漫画行
+     * 按稳定 ID 保存，加回来再扫一次就会重新发现同一批 ID，卡片、书架关系、阅读进度
+     * 与译文都会原样回来；删行则会级联带走这些用户数据（开发文档 4.1「授权在所有
+     * 引用释放后再释放」的同一思路：先保住数据，再谈清理）。
+     */
+    @Query("UPDATE mangas SET availability = 'STALE' WHERE sourceId = :sourceId AND availability != 'STALE'")
+    suspend fun markSourceAsStale(sourceId: String): Int
+
+    /**
+     * 把"来源行已经不存在的"卡片标成陈旧（孤儿卡片清扫）。
+     *
+     * 历史遗留：`mangas` 没有指向 `library_sources` 的外键，早期版本删掉一条路径之后
+     * 卡片会永远留在图库里（真机实测 4749 张卡片里 4595 张是这种孤儿）。这条清扫在
+     * 启动时跑一次，把它们归入陈旧、从图库/书架隐藏，但**不删行**。
+     */
+    @Query(
+        """
+        UPDATE mangas
+        SET availability = 'STALE'
+        WHERE availability != 'STALE'
+          AND sourceId NOT IN (SELECT sourceId FROM library_sources)
+        """,
+    )
+    suspend fun markOrphanedAsStale(): Int
 }

@@ -24,8 +24,17 @@ enum class LayoutMode { MULTI_CHAPTER, SINGLE_CHAPTER }
  */
 enum class SourcePermissionState { OK, CHECKING, LOST, PARTIAL }
 
-/** 漫画可用性：来源不可用时卡片仍然存在，只是不可阅读（开发文档 4.1）。 */
-enum class MangaAvailability { AVAILABLE, SOURCE_UNAVAILABLE }
+/**
+ * 漫画可用性：来源不可用时卡片仍然存在，只是不可阅读（开发文档 4.1）。
+ *
+ * [STALE] 表示"本来源最近一次**完整跑完**的扫描没有再发现这张卡片"——例如用户把这一行
+ * 的解释方式从多章节改成单章节（锚点目录随之从"漫画目录"变成"叶子目录"，[StableId.mangaId]
+ * 因此完全不同），或者目录已经被删掉/移走。它只说明"当前配置下不该再出现这张卡片"，
+ * **不是**"文件被删了"：漫画行、章节、书架关系、阅读进度与译文一律保留，下一次扫描
+ * 重新发现它时会自动回到 [AVAILABLE]（用户要求：旧卡片不能一直留在图库里，但也不能
+ * 用删除来实现——那会级联删掉书架项与用户数据）。
+ */
+enum class MangaAvailability { AVAILABLE, SOURCE_UNAVAILABLE, STALE }
 
 /** 章节种类：物理形式是叶子图片目录还是归档/PDF 文件（开发文档 2、5.2）。 */
 enum class ChapterKind { IMAGE_DIRECTORY, ARCHIVE }

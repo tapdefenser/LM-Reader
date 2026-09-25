@@ -7,6 +7,7 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.lmreader.core.model.Category
 import com.lmreader.core.model.LibraryDisplayMode
+import com.lmreader.core.model.MangaAvailability
 import com.lmreader.core.model.MangaCard
 import com.lmreader.core.model.MangaRepository
 import com.lmreader.core.model.ShelfRepository
@@ -20,6 +21,9 @@ import com.lmreader.ui.paging.PagingState
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
@@ -62,6 +66,27 @@ class BookshelfViewModel(
         viewModelScope.launch {
             mangaRepository.observeDiscoveryProgress().collect {
                 if (paging.hasFreeSlot()) loadMore()
+            }
+        }
+        // 可见收藏**变小**时（扫描完整结束后把"本轮没再发现"的旧卡片标成陈旧），
+        // 已经加载进内存的卡片不会自己消失：确认后重建分页会话，否则用户点过刷新
+        // 仍会看到不该出现的旧卡片——与图库同一处理。
+        viewModelScope.launch {
+            _state.map { it.selectedCategoryId }.distinctUntilChanged().collectLatest { categoryId ->
+                var previous = -1
+                mangaRepository.observeVisibleCount(inShelfOnly = true, categoryId = categoryId)
+                    .collect { visible ->
+                        val shrank = previous >= 0 && visible < previous
+                        previous = visible
+                        val loaded = _state.value.items
+                        if (!shrank || loaded.isEmpty()) return@collect
+                        val hasStaleCard = mangaRepository.getCards(loaded.map { it.mangaId })
+                            .any { it.availability == MangaAvailability.STALE }
+                        if (hasStaleCard) {
+                            paging.reset()
+                            loadMore()
+                        }
+                    }
             }
         }
         // 冷启动进书架同样**只读本地缓存**，不触发扫描（用户要求）。

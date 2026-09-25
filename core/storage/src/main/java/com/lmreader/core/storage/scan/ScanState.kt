@@ -15,6 +15,14 @@ data class ScanState(
     val visited: Int = 0,
     /** 为确认章节而打开检查子目录的次数；"找到一个就跳过其余"规则的可观测指标。 */
     val leafProbes: Int = 0,
+    /**
+     * 本次扫描结束时被标成陈旧、从图库/书架隐藏的旧卡片数。
+     *
+     * 只在扫描**完整跑完**后可能大于 0：取消或失败时旧卡片必须原样保留
+     * （验收 A07）。显示它是为了让"切换解释方式后旧卡片消失"这件事可核对，
+     * 而不是让用户凭感觉猜。
+     */
+    val staleMarked: Int = 0,
     val lastError: String? = null,
     /** 正在枚举的目录（相对授权根的可读路径），用于「正在扫描：xxx」提示。 */
     val currentPath: String? = null,

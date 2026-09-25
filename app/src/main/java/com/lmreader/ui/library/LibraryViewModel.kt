@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.lmreader.core.model.LibraryDisplayMode
+import com.lmreader.core.model.MangaAvailability
 import com.lmreader.core.model.MangaCard
 import com.lmreader.core.model.LibrarySource
 import com.lmreader.core.model.MangaRepository
@@ -104,6 +105,29 @@ class LibraryViewModel(
             mangaRepository.observeDiscoveryProgress().collect {
                 if (paging.hasFreeSlot()) loadMore()
             }
+        }
+        // 可见集合**变小**时（扫描完整结束后把"本轮没再发现"的旧卡片标成陈旧），
+        // 已经加载进内存的卡片不会自己消失：必须重建分页会话，否则用户看到的是
+        // "刷新过了，旧卡片还在"——正是"单章节模式里还有带子文件夹的卡片"那类现象。
+        //
+        // 只在计数下降时检查，并且先用**已加载的 ID** 确认里面确实有陈旧卡片才重建：
+        // 扫描中的插入会让计数频繁变化，无条件重建会把用户滚了很远的列表打回第一页。
+        viewModelScope.launch {
+            var previous = -1
+            mangaRepository.observeVisibleCount(inShelfOnly = false, categoryId = null)
+                .distinctUntilChanged()
+                .collect { visible ->
+                    val shrank = previous >= 0 && visible < previous
+                    previous = visible
+                    val loaded = _state.value.items
+                    if (!shrank || loaded.isEmpty()) return@collect
+                    val hasStaleCard = mangaRepository.getCards(loaded.map { it.mangaId })
+                        .any { it.availability == MangaAvailability.STALE }
+                    if (hasStaleCard) {
+                        paging.reset()
+                        loadMore()
+                    }
+                }
         }
         viewModelScope.launch {
             observeQuery()

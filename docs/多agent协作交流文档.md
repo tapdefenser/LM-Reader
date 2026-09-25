@@ -166,3 +166,111 @@
 5. 分页仍是 `LIMIT/OFFSET`（非会话顺序表）；搜索只做子串匹配，无 2-gram 侧表。
 6. 多选批量操作只有"加入/移出书架"；翻译、导出待 P3/P4。
 7. 万级库的峰值内存、扫描总时长、封面解码并发尚未按开发文档 16 的性能目标做基准测试。
+
+---
+
+## 2026-09-25（第四次）：单/多章节判定核对（"漫画文件夹里多一张封面图片"）
+
+用户提出"单章节扫描似乎有问题"，并给出规则与触发结构。核对结论：**判定逻辑本身是对的**，
+两条规则在实现里是同一条判定的两份实现；需要单独记下来的是它的两个后果。
+
+### 规则（用户原话复述）
+
+| 模式 | 规则 |
+|---|---|
+| 单章节 | **必须"里面没有子文件夹并且有图片"**，这个文件夹名才是单章节 |
+| 多章节 | 只要子文件夹里**有一个**属于单章节（隐含那个子文件夹自己没有子文件夹），父文件夹名就是漫画名 |
+
+### 实现核对（无改动，只补测试）
+
+- 单章节：`scanImageSingle` 的 `childDirs.isEmpty() && hasDirectImage`；
+- 多章节：`isLeafImageChapter(child)` 的「子目录为空 && 有图片」。
+- 两者等价，判定顺序都是**先证"没有子目录"，再证"有图片"**（验收 A04）。
+  **封面图片只是一个普通文件**：它既不会让"有子文件夹"这一半失效（带章节子目录的
+  漫画文件夹不是单章节），也不会让"有图片"这一半失效（封面与页同层、没有子目录的
+  文件夹就是一张单章节卡片）。
+- 用**真实文件系统**（`FileContentTree`，与真机同一条路径）+ 真实扫描器跑了 27 种结构
+  （含"封面与页同层""封面在漫画文件夹、页在章节目录""叶子目录里有空子目录/隐藏子目录"
+  "根自身是叶子""两层容器"等），逐条与上表一致。
+- 新增两条回归测试锁住封面图片情形：`封面图片不影响单章节判定`、`封面图片不影响多章节判定`
+  （`StructureScannerBehaviorTest`）。
+
+### 三个后果（前两个已在真机上修掉，第三个待决定）
+
+#### 1.（已修）旧卡片永远不会被清理 —— 图库因此完全没法看
+
+`mangaId = derive(锚点 documentId, sourceKind)` **不含解释方式**：把一行从多章节改成单章节后
+锚点由"漫画目录"变成"叶子目录"，新旧 mangaId 完全不同；而 `upsertScanResult` 只 upsert，
+没有任何代码删除或隐藏"本轮未再发现"的漫画行。加上 `mangas` **没有指向 `library_sources`
+的外键**，删掉一条路径之后它的卡片也永远留在图库里。
+
+真机实测（小米 14 Pro，`/Tachiyomi/local` 一条路径）：
+
+```
+mangas 共 4749 张卡片：AVAILABLE 4749 / STALE 0
+  其中 4595 张是孤儿（来源行已删除：EhViewer/download 3833 张、Tachiyomi/downloads 762 张）
+  另有  153 张属于当前来源，是它上一次按单章节扫描留下的旧卡片
+=> 图库界面被 4749 张卡片塞满，用户完全没法看
+```
+
+修复（只标记、不删行，书架关系与阅读进度/译文全部保留，目录加回来再扫一次即恢复）：
+
+- `MangaAvailability.STALE` + `MangaDao.markUndiscoveredAsStale`（`discoveryGeneration` 判定
+  "本轮没再发现"）、`markSourceAsStale`（删来源行前调用）、`markOrphanedAsStale`（孤儿清扫）；
+- `SourceScanRunner` **只在 `completed = true`** 时标记（取消/IO 失败/授权失效一律不动旧卡片，
+  验收 A07）；`SourceRepositoryImpl.deleteSource` 在同一事务里先标记再删来源行；
+  `AppContainer` 启动时跑一次孤儿清扫；
+- 图库/书架/搜索/计数的 SQL 全部过滤陈旧卡片；两个 ViewModel 在"可见计数变小且已加载列表里
+  确实有陈旧卡片"时重建分页会话；诊断弹窗与"复制诊断"显示「已隐藏陈旧卡片 N 张」。
+- 真机验证：启动维护日志 `隐藏孤儿卡片 4595 张`；对当前来源强制重扫日志
+  `陈旧卡片=153`；数据库复查 `AVAILABLE 1 / STALE 4748`，图库只剩 1 张卡片。
+- 覆盖缺口：`core:database` 没有单元测试设施（未引入 Robolectric，无法建 Room in-memory
+  测试），这三条 UPDATE 目前只经过 Room 编译期校验 + 真机验证。补 Room 测试需要先引入
+  Robolectric（离线缓存里没有），列为 P1。
+
+#### 2.（已修，顺带）`requestScan().join()` 其实没有等到扫描结束
+
+`SourceScanRunner.requestScan` 返回的 Job 在"登记完成"时就结束了：真正的扫描跑在嵌套的
+子 Job 里，外层协程登记完 `invokeOnCompletion` 就返回。于是 `LibraryScanCoordinator` 里
+`requestScan(...).join()` 立即返回——来源并发上限（`sourceGate`）形同虚设、每个来源扫完后的
+封面/简介补全提前开始、"扫描已结束"的汇总也会早报。现在返回的 Job 会 `join()` 真正那一轮
+扫描（重复请求合并到同一个 Job 上，语义仍是"这个来源这一轮结束了"）。
+测试：`SourceScanRunnerStaleTest`（完整扫描标记一次 / 读取失败一次都不标记）。
+
+#### 3.（已修）"有归档文件的文件夹"算不算单章节 —— `/Tachiyomi/local` 只扫出 1 部漫画的原因
+
+真机现场：`/Tachiyomi/local` 有 **51 个子文件夹**，其中 `Jyminish  OOHS` 没有子目录，里面是
+`cover.jpg` + 两个 `.zip`（Tachiyomi 用压缩包当章节的漫画）。按原来的叶子规则"有图片且没有
+子目录"，它在**图片目录**解释下就是一个"单章节"，于是：
+
+```
+/Tachiyomi/local（图片目录 · 多章节）
+  自然序第 10 个子项 Jyminish  OOHS 命中"单章节"
+  => 授权根本身被判定成漫画（名字 = local，章节 = Jyminish  OOHS），其余 41 个子文件夹全部跳过
+真机日志：漫画=1 遍历目录=11 章节探测=10（11 = 根 + 10 次探测，正好停在 Jyminish）
+数据库：displayName=local / anchorDocumentId=/storage/emulated/0/Tachiyomi/local
+        layoutMode=MULTI_CHAPTER / chapterCount=1 / chapterCountKnown=0
+排序核对：把 51 个子项按 NaturalOrder.compare 排序后逐项 `ls -la`，只有两项没有子目录
+        （`Jyminish  OOHS`：1 张图片 + 2 个压缩包；`NovaSamus`：1 张图片 + 59 个压缩包），
+        第 10 项正好是 Jyminish —— 与日志的"章节探测=10"完全吻合。
+```
+
+修法（叶子判定加一条）：**直接含 CBZ/ZIP/PDF 的目录不是图片单章节**——它属于「CBZ/ZIP/PDF
+导入列表」的解释范围。单章节与多章节两条路径用的是同一条判定，两处都加；同时发一条可操作
+诊断（"目录内有 CBZ/ZIP/PDF，请把该目录加入导入列表"），避免用户只看到"少了一部漫画"。
+
+真机验证（同一目录、同一份数据）：
+
+| | 修复前 | 修复后 |
+|---|---|---|
+| 扫描结果 | 漫画=1、遍历目录=11、章节探测=10 | **漫画=49、遍历目录=101、章节探测=100** |
+| 卡片 | 一张叫 `local`（章节 = Jyminish  OOHS） | 49 张真实漫画名（10000-nichi no 7、Big Banko…） |
+| 旧卡片 | `local` 那张留在库里 | 本轮标记陈旧：陈旧卡片=1 |
+| 数据库 | AVAILABLE 1 / STALE 4748 | AVAILABLE **49** / STALE 4749 |
+
+剩下 2 部"章节就是压缩包"的漫画（`Jyminish  OOHS`、`NovaSamus`）由用户在
+「CBZ / ZIP / PDF 导入列表」里把同一目录按**多章节**再加一次即可出现——两张表互不混合，
+同一物理目录出现在两张表是文档明确允许的（开发文档 15.3）。
+回归测试：`压缩包章节的漫画文件夹不得被当成单章节而让授权根塌缩`、
+`单章节模式不把含压缩包的目录当成单章节`（`StructureScannerBehaviorTest`）。
+契约文档同步：开发文档 5.1 的 `leafChapter` 定义、框架实现说明 4.3 的术语与 `scanSingle` 伪码。

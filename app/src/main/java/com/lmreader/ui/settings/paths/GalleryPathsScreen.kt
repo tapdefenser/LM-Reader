@@ -267,6 +267,12 @@ fun GalleryPathsScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Text(
+                        text = "已隐藏陈旧卡片 ${scan?.staleMarked ?: 0} 张" +
+                            "（上次完整扫描没再发现的旧卡片；只隐藏不删除，重新发现后自动回来）",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
                         text = "访问方式：${scan?.accessMode ?: "未知"}" +
                             if (scan?.currentPath != null) "，最后枚举：${scan.currentPath}" else "",
                         style = MaterialTheme.typography.labelSmall,
@@ -521,6 +527,7 @@ private fun buildDiagnosticsReport(
         appendLine("上次扫描: ${source.lastScanStatus ?: "未扫描"} @ ${source.lastScanAt ?: "-"}")
         appendLine("汇总错误: ${source.lastScanError ?: "-"}")
         appendLine("已发现: ${scan?.discovered ?: 0}，已访问目录: ${scan?.visited ?: 0}")
+        appendLine("已隐藏陈旧卡片: ${scan?.staleMarked ?: 0}（只隐藏不删除）")
         appendLine("--- 详情 ---")
         scan?.diagnostics.orEmpty().forEach { appendLine(it) }
     },

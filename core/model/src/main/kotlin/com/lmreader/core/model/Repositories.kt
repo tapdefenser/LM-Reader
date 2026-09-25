@@ -75,6 +75,35 @@ interface MangaRepository {
     /** 来源不可用时把其下漫画标灰，但**保留**卡片与用户数据（开发文档 8.2）。 */
     suspend fun setAvailabilityBySource(sourceId: String, availability: MangaAvailability)
 
+    /**
+     * 把该来源里"本轮没有被再发现"的卡片标成 [MangaAvailability.STALE]。
+     *
+     * 调用时机只有一个：该来源的扫描**完整跑完**（`ScanSummary.completed = true`）之后。
+     * 取消、目录读取失败、授权失效时**不得**调用——那会把"这次没读到"误判成"已经不存在"
+     * （验收 A07「失败不删索引」）。开发文档 6.2 的删除判定依据同源：只有完整枚举过的
+     * 容器才能用来判断"什么已经消失"。
+     *
+     * 为什么用 generation 而不是回传一份 ID 清单：发现阶段每次写入都已经把本次
+     * generation 写进卡片行，一条 `UPDATE ... WHERE discoveryGeneration != :generation`
+     * 就能表达"本轮没再发现"，万级来源也不必构造超长 `IN (...)`。
+     *
+     * 只改 `availability`，不删行：书架关系、章节、阅读进度与译文全部保留，
+     * 卡片被重新发现时会自动回到 [MangaAvailability.AVAILABLE]。
+     *
+     * @return 本次**新**标成陈旧的卡片数（已经是陈旧的不重复计数）。
+     */
+    suspend fun markUndiscoveredAsStale(sourceId: String, generation: Long): Int
+
+    /**
+     * 把"来源行已经不存在"的卡片标成陈旧（孤儿卡片清扫），返回本次新标的数量。
+     *
+     * 为什么需要单独一条：`mangas` 没有指向 `library_sources` 的外键，删除一条路径
+     * 不会带走它的卡片。真机实测某次图库里 4749 张卡片中有 4595 张是这种孤儿，
+     * 界面因此完全没法看。启动时跑一次把它们从图库/书架隐藏（仍然只改可用性、
+     * 不删行，用户把原目录加回来再扫一次就会全部恢复）。
+     */
+    suspend fun markOrphanedAsStale(): Int
+
     /** 批量取章节；按自然序（`sortKey`）返回，封面取第一章不依赖调用方再排序。 */
     suspend fun getChapters(mangaId: String): List<ChapterRecord>
 

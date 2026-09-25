@@ -21,7 +21,7 @@ object DatabaseProvider {
 
     fun create(database: LmReaderDatabase): Components = Components(
         database = database,
-        sources = SourceRepositoryImpl(database.sourceDao()),
+        sources = SourceRepositoryImpl(database, database.sourceDao()),
         mangas = MangaRepositoryImpl(database, database.mangaDao()),
         shelf = ShelfRepositoryImpl(database),
     )

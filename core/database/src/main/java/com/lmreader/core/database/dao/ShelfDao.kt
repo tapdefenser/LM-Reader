@@ -67,10 +67,29 @@ interface ShelfDao {
     @Query("SELECT COUNT(*) FROM shelf_entries")
     suspend fun countAll(): Int
 
-    @Query("SELECT COUNT(*) FROM shelf_entries")
+    /**
+     * 书架条目数（含分类栏的角标）。
+     *
+     * 陈旧卡片（本来源最近一次完整扫描没有再发现的卡片）不算进去：它们默认不出现在
+     * 书架上，角标必须与列表同一口径。收藏关系本身保留，卡片被重新发现时自动回来。
+     */
+    @Query(
+        """
+        SELECT COUNT(*) FROM shelf_entries AS e
+        JOIN mangas AS m ON m.mangaId = e.mangaId
+        WHERE m.availability != 'STALE'
+        """,
+    )
     fun observeShelfTotalFlow(): Flow<Int>
 
-    @Query("SELECT COUNT(*) FROM shelf_entries WHERE categoryId = :categoryId")
+    @Query(
+        """
+        SELECT COUNT(*) FROM shelf_entries AS e
+        JOIN mangas AS m ON m.mangaId = e.mangaId
+        WHERE e.categoryId = :categoryId
+          AND m.availability != 'STALE'
+        """,
+    )
     fun observeShelfCountInCategory(categoryId: Long): Flow<Int>
 
     @Query("SELECT COUNT(*) FROM shelf_entries WHERE categoryId = :categoryId")

@@ -93,6 +93,11 @@ internal class MangaRepositoryImpl(
         mangaDao.updateAvailabilityBySource(sourceId, availability)
     }
 
+    override suspend fun markUndiscoveredAsStale(sourceId: String, generation: Long): Int =
+        mangaDao.markUndiscoveredAsStale(sourceId, generation)
+
+    override suspend fun markOrphanedAsStale(): Int = mangaDao.markOrphanedAsStale()
+
     /**
      * 取补全工作投影。
      *

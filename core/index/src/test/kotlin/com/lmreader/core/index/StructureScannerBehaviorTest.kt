@@ -120,6 +120,125 @@ class StructureScannerBehaviorTest {
         assertEquals(listOf("短篇"), multi.chaptersOf("作者"))
     }
 
+    /**
+     * 漫画文件夹里多一张封面图片是常见结构，它不能改变单章节判定。
+     *
+     * 用户复述的规则（真机核对）：单章节**必须"里面没有子文件夹且有图片"**。
+     * 封面图片只是一个普通文件：它不会让"有子文件夹"这一半失效（所以带章节
+     * 子目录的漫画文件夹不是单章节），也不会让"有图片"这一半失效（所以封面与页
+     * 同层、没有子目录的文件夹就是一张单章节卡片）。
+     */
+    @Test
+    fun 封面图片不影响单章节判定() = runTest {
+        // 封面与页在同一层、没有子文件夹 -> 这个文件夹自己就是单章节卡片。
+        val leaf = ScanHarness(
+            rootName = "库",
+            paths = listOf("作品/封面.jpg", "作品/001.jpg", "作品/ComicInfo.xml"),
+            mode = LayoutMode.SINGLE_CHAPTER,
+        )
+        leaf.run()
+        assertEquals(listOf("作品"), leaf.names)
+        assertEquals(listOf(listOf("作品")), leaf.chapterTitles)
+        assertTrue("单章节的 1 章是结构定义", leaf.chapterCountKnown("作品"))
+
+        // 封面在漫画文件夹、页在章节目录 -> 有子文件夹，它**不是**单章节；
+        // 按规则把这个文件夹当普通文件夹继续遍历，卡片落在叶子目录上。
+        val mixed = ScanHarness(
+            rootName = "库",
+            paths = listOf("作品/封面.jpg", "作品/第1话/001.jpg"),
+            mode = LayoutMode.SINGLE_CHAPTER,
+        )
+        mixed.run()
+        assertEquals(listOf("第1话"), mixed.names)
+        assertFalse("有子文件夹的文件夹不得被当成单章节", mixed.names.contains("作品"))
+        assertTrue(
+            "混放要留诊断，不能静默",
+            mixed.diagnostics.any { it.contains("同时包含图片和子目录") },
+        )
+    }
+
+    /**
+     * 同一张封面图片也不能让多章节判定走偏：漫画文件夹（有封面 + 章节子目录）
+     * 不得被当成"单章节"，否则它的父目录会被误判成漫画名。
+     */
+    @Test
+    fun 封面图片不影响多章节判定() = runTest {
+        val harness = ScanHarness(
+            rootName = "库",
+            paths = listOf(
+                "作品/封面.jpg",
+                "作品/第1话/001.jpg",
+                "作品/第2话/002.jpg",
+            ),
+        )
+        harness.run()
+
+        assertEquals(
+            "若「作品」因为有封面图片而被当成单章节，这里的漫画名会变成父目录「库」",
+            listOf("作品"),
+            harness.names,
+        )
+        assertEquals(listOf("第1话"), harness.chaptersOf("作品"))
+    }
+
+    /**
+     * 真机 `/Tachiyomi/local` 的形态：漫画文件夹里用**压缩包**当章节，只有一张封面图片。
+     *
+     * 这种目录有图片、没有子目录，若不额外排除就会被当成"单章节"，于是它的**父目录**
+     * （来源目录/授权根）被判成漫画，其余子文件夹全部跳过——真机上 51 个子文件夹
+     * 只扫出 1 张名叫 `local` 的卡片（日志：漫画=1 遍历目录=11 章节探测=10，
+     * 第 10 次探测正好命中 `Jyminish  OOHS`，后 41 个文件夹一个都没看）。
+     *
+     * 正确行为：它不是图片章节，父目录继续当普通文件夹遍历，同一层的其它漫画照常发现；
+     * 用压缩包当章节的那部作品由「CBZ/ZIP/PDF 导入列表」解释。
+     */
+    @Test
+    fun 压缩包章节的漫画文件夹不得被当成单章节而让授权根塌缩() = runTest {
+        val harness = ScanHarness(
+            rootName = "local",
+            paths = listOf(
+                // 压缩包当章节：cover.jpg + 两个 .zip，没有子目录
+                "Jyminish  OOHS/cover.jpg",
+                "Jyminish  OOHS/Jyminish  OOHS1 - A Loss Of Influence (EN).zip",
+                "Jyminish  OOHS/Jyminish  OOHS 2 - A Goddess In Distress (EN).zip",
+                // 同层的普通图片漫画：章节是图片目录
+                "10000-nichi no 7/Swarm_Chapter 3/001.jpg",
+                "Big Banko/第1话/001.jpg",
+            ),
+        )
+        harness.run()
+
+        assertEquals(
+            "授权根不得因为一个压缩包章节的文件夹而被判定成漫画",
+            listOf("10000-nichi no 7", "Big Banko"),
+            harness.names,
+        )
+        assertFalse("授权根「local」不得成为卡片", harness.names.contains("local"))
+        assertEquals(listOf("Swarm_Chapter 3"), harness.chaptersOf("10000-nichi no 7"))
+        assertTrue(
+            "含压缩包的目录必须给出可操作提示（告诉用户去用导入列表）",
+            harness.diagnostics.any { it.contains("CBZ/ZIP/PDF") },
+        )
+    }
+
+    /** 单章节模式同样不把"封面 + 压缩包"的目录当成单章节。 */
+    @Test
+    fun 单章节模式不把含压缩包的目录当成单章节() = runTest {
+        val harness = ScanHarness(
+            rootName = "local",
+            paths = listOf(
+                "Jyminish  OOHS/cover.jpg",
+                "Jyminish  OOHS/第1话.zip",
+                "短篇/001.jpg",
+            ),
+            mode = LayoutMode.SINGLE_CHAPTER,
+        )
+        harness.run()
+
+        assertEquals("只有真正的图片叶子目录出卡片", listOf("短篇"), harness.names)
+        assertTrue(harness.diagnostics.any { it.contains("CBZ/ZIP/PDF") })
+    }
+
     /** 验收 A04：先见到图片、后枚举到子文件夹，不能误判叶子章节。 */
     @Test
     fun 叶子判定必须先确认没有子目录再看图片() = runTest {

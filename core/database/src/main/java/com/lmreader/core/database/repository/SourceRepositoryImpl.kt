@@ -1,5 +1,7 @@
 package com.lmreader.core.database.repository
 
+import androidx.room.withTransaction
+import com.lmreader.core.database.LmReaderDatabase
 import com.lmreader.core.database.dao.SourceDao
 import com.lmreader.core.database.entity.toDomain
 import com.lmreader.core.database.entity.toEntity
@@ -18,7 +20,12 @@ import kotlinx.coroutines.flow.map
  * 用户可能在扫描途中把「多章节」改成「单章节」，如果 revision 不变，正在跑的旧
  * 扫描结果会覆盖新配置（验收 A09）。自增本身在这里做，调用方不需要记得。
  */
-internal class SourceRepositoryImpl(private val dao: SourceDao) : SourceRepository {
+internal class SourceRepositoryImpl(
+    private val database: LmReaderDatabase,
+    private val dao: SourceDao,
+) : SourceRepository {
+
+    private val mangaDao = database.mangaDao()
 
     override fun observeSources(kind: SourceKind): Flow<List<LibrarySource>> =
         dao.observeByKind(kind).map { list -> list.map { it.toDomain() } }
@@ -52,7 +59,14 @@ internal class SourceRepositoryImpl(private val dao: SourceDao) : SourceReposito
     }
 
     override suspend fun deleteSource(sourceId: String) {
-        dao.delete(sourceId)
+        // 先把这个来源的卡片标成陈旧，再删来源行，同一个事务里完成：
+        // 卡片行只有在来源行还在时才能按 sourceId 定位；顺序反了就只能等下一次
+        // 启动的"孤儿清扫"补救。标记而不是删除，是为了让用户把目录加回来以后
+        // 卡片、书架关系、阅读进度与译文原样回来（同一套逻辑见 MangaDao 的说明）。
+        database.withTransaction {
+            mangaDao.markSourceAsStale(sourceId)
+            dao.delete(sourceId)
+        }
     }
 
     override suspend fun reorder(kind: SourceKind, orderedSourceIds: List<String>) {
