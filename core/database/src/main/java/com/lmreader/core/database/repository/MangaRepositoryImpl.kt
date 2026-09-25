@@ -36,8 +36,19 @@ internal class MangaRepositoryImpl(
     private val chapterDao = database.chapterDao()
     private val metadataDao = database.metadataDao()
 
-    override suspend fun pageLibrary(offset: Int, limit: Int): MangaPage =
-        pageOf(mangaDao.pageLibrary(offset, limit), offset, limit)
+    override suspend fun pageLibrary(
+        offset: Int,
+        limit: Int,
+        sourceFilter: Set<String>?,
+    ): MangaPage {
+        val rows = when {
+            // null = 不筛选；空集合 = 没有匹配（由界面决定怎么解释空筛选）。
+            sourceFilter == null -> mangaDao.pageLibrary(offset, limit)
+            sourceFilter.isEmpty() -> emptyList()
+            else -> mangaDao.pageLibraryFiltered(sourceFilter.toList(), offset, limit)
+        }
+        return pageOf(rows, offset, limit)
+    }
 
     override suspend fun pageShelf(categoryId: Long?, offset: Int, limit: Int): MangaPage {
         val rows = if (categoryId == null) {
@@ -216,8 +227,16 @@ internal class MangaRepositoryImpl(
             if (result.chapters.isNotEmpty()) {
                 chapterDao.upsertAll(result.chapters.map { it.toEntity() })
             }
-            // 章节数只在锚点完整枚举后才敢声明"已知"（开发文档 5.1）。
-            if (anchorEnumerated) chapterDao.refreshChapterCount(manga.mangaId)
+            // 章节数只在锚点完整枚举**且扫描器自己声明已知**时才敢声明"已知"
+            // （开发文档 5.1：不得把探测到一章伪报成完整的一章）。
+            // 多章节的发现阶段只探测一个章节，因此这里是"已发现 N 章，更新中"，
+            // 不是"共 N 章"——完整清单由详情页的「更新章节」枚举。
+            if (anchorEnumerated && manga.chapterCountKnown) {
+                chapterDao.refreshChapterCount(manga.mangaId)
+            } else {
+                // 仍需记录当前已发现的章节数（否则卡片会显示"章节待更新"而看不出有几个）。
+                chapterDao.markChapterCountUnknown(manga.mangaId, result.chapters.size)
+            }
 
             ScanPersistReport(
                 mangasInserted = if (existing == null) 1 else 0,

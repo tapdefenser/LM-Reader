@@ -94,6 +94,37 @@ interface MangaDao {
     )
     suspend fun pageLibrary(offset: Int, limit: Int): List<CardQueryRow>
 
+    /**
+     * 图库分页 + 图源筛选。
+     *
+     * 筛选放在 SQL 里而不是取回后内存过滤：万级图库只勾选一个来源时，
+     * 内存过滤要先读回全部行再丢弃，等于把分页的意义抹掉（开发文档 6.4）。
+     */
+    @Query(
+        """
+        SELECT m.mangaId AS mangaId,
+               m.displayName AS displayName,
+               COALESCE(md.summary, m.summary) AS summaryPreview,
+               m.sourceId AS sourceId,
+               m.coverDocumentId AS coverDocumentId,
+               m.coverChapterId AS coverChapterId,
+               m.sourceKind AS sourceKind,
+               m.layoutMode AS layoutMode,
+               m.chapterCount AS chapterCount,
+               m.chapterCountKnown AS chapterCountKnown,
+               m.availability AS availability,
+               s.categoryId AS shelfCategoryId
+        FROM mangas AS m
+        LEFT JOIN shelf_entries AS s ON s.mangaId = m.mangaId
+        LEFT JOIN metadata_records AS md
+               ON md.ownerId = m.mangaId AND md.ownerType = 'MANGA'
+        WHERE m.sourceId IN (:sourceIds)
+        ORDER BY m.sourceOrderIndex ASC, m.sortKey ASC, m.mangaId ASC
+        LIMIT :limit OFFSET :offset
+        """,
+    )
+    suspend fun pageLibraryFiltered(sourceIds: List<String>, offset: Int, limit: Int): List<CardQueryRow>
+
     @Query(
         """
         SELECT m.mangaId AS mangaId,

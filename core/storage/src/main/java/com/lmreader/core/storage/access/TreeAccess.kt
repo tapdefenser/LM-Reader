@@ -106,6 +106,7 @@ class TreeAccess(
     fun openAt(treeUri: String, documentId: String): ContentTree? =
         openDirectory(documentId) ?: safAccess.openTreeAt(treeUri, documentId)
 
+
     /** 按子节点创建树工厂；扫描器只通过它下钻。 */
     fun treeFactory(treeUri: String): TreeFactory {
         if (!usesDirectFileAccess()) {

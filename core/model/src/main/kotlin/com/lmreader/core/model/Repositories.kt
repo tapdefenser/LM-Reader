@@ -25,8 +25,19 @@ interface SourceRepository {
  * 漫画仓储契约（框架 3.6）。实现在 `core:database`。
  */
 interface MangaRepository {
-    /** 按当前来源顺序与自然名称排序取一页；只返回已发现条目，不阻塞扫描（开发文档 6.4）。 */
-    suspend fun pageLibrary(offset: Int, limit: Int): MangaPage
+    /**
+     * 按当前来源顺序与自然名称排序取一页；只返回已发现条目，不阻塞扫描（开发文档 6.4）。
+     *
+     * @param sourceFilter 图源筛选：`null` = 不筛选（显示全部）。**空集合表示"没有
+     * 匹配项"**而不是"显示全部"——仓储不做这层解释，否则"用户取消了所有勾选"与
+     * "用户没有筛选"无法区分；界面负责决定空筛选按哪种语义处理。
+     */
+    suspend fun pageLibrary(
+        offset: Int,
+        limit: Int,
+        sourceFilter: Set<String>? = null,
+    ): MangaPage
+
     suspend fun pageShelf(categoryId: Long?, offset: Int, limit: Int): MangaPage
 
     /** 订阅「可见集合长度」变化，用于扫描过程中把新条目补进当前额度（开发文档 6.4）。 */

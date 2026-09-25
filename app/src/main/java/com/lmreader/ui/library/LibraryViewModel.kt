@@ -7,8 +7,10 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.lmreader.core.model.LibraryDisplayMode
 import com.lmreader.core.model.MangaCard
+import com.lmreader.core.model.LibrarySource
 import com.lmreader.core.model.MangaRepository
 import com.lmreader.core.model.ShelfRepository
+import com.lmreader.core.model.SourceKind
 import com.lmreader.core.model.SourceRepository
 import com.lmreader.core.storage.scan.LibraryScanCoordinator
 import com.lmreader.core.storage.scan.ScanReason
@@ -48,11 +50,50 @@ class LibraryViewModel(
 
     private val queryFlow = MutableStateFlow("")
 
+    /**
+     * 已生效的图源筛选。
+     *
+     * 与右滑栏里的草稿分开：用户可能在栏里改了半天又按"取消"，
+     * 已生效的筛选必须在那之前保持不动（与路径编辑弹窗同一套约定）。
+     */
+    private var appliedSourceFilter: Set<String> = emptySet()
+
     init {
         paging.requestInitial()
         viewModelScope.launch {
             preferences.libraryDisplayMode.collect { mode ->
                 _state.update { it.copy(displayMode = mode) }
+            }
+        }
+        // 图源筛选：持久化的选择在冷启动时恢复，并且只影响查询，不触发扫描。
+        viewModelScope.launch {
+            preferences.librarySourceFilter.collect { saved ->
+                appliedSourceFilter = saved
+                _state.update { it.copy(appliedSourceFilter = saved, draftSourceFilter = saved) }
+                paging.reset()
+                loadMore()
+            }
+        }
+        // 图源列表（右滑栏内容）+ 每个来源已发现的数量。
+        viewModelScope.launch {
+            sourceRepository.observeSources(SourceKind.IMAGE_DIRECTORY).collect { sources ->
+                _state.update { it.copy(imageSources = sources) }
+            }
+        }
+        viewModelScope.launch {
+            sourceRepository.observeSources(SourceKind.ARCHIVE_IMPORT).collect { sources ->
+                _state.update { it.copy(archiveSources = sources) }
+            }
+        }
+        viewModelScope.launch {
+            scanCoordinator.runnerStates.collect { states ->
+                _state.update { current ->
+                    current.copy(
+                        discoveredBySource = states
+                            .filterValues { it.discovered > 0 }
+                            .mapValues { (_, state) -> state.discovered },
+                    )
+                }
             }
         }
         viewModelScope.launch {
@@ -67,19 +108,120 @@ class LibraryViewModel(
         viewModelScope.launch {
             observeQuery()
         }
-        refresh(ScanReason.FIRST_RUN)
+        // 打开图库**只读本地缓存**，不触发扫描（用户要求）。
+        //
+        // 理由与开发文档 6.3「普通冷启动：先读本地缓存，快速校验源授权；不强制
+        // 全库扫描」一致：万级图库的全量变化扫描要几十秒，把它绑在"打开页面"上
+        // 会让用户每次进图库都要等。扫描只由三类显式动作触发：
+        // 保存/新增路径、用户点刷新、用户点强制重新扫描索引。
+        loadFromCache()
     }
 
-    /** 首屏：立即读缓存并请求一次扫描。 */
-    private fun refresh(reason: ScanReason) {
-        viewModelScope.launch {
-            paging.reset()
-            loadMore()
-            scanCoordinator.rescanAll(reason)
+    // ------------------------------------------------------------ 右滑栏：图源筛选
+
+    fun openSourceFilter() {
+        _state.update { it.copy(sourceFilterOpen = true, draftSourceFilter = appliedSourceFilter) }
+    }
+
+    fun closeSourceFilter() {
+        // 取消不修改已生效筛选（草稿丢弃）。
+        _state.update { it.copy(sourceFilterOpen = false, draftSourceFilter = appliedSourceFilter) }
+    }
+
+    fun toggleSourceFilter(sourceId: String) {
+        _state.update { current ->
+            val next = current.draftSourceFilter.toMutableSet().apply {
+                if (!add(sourceId)) remove(sourceId)
+            }
+            current.copy(draftSourceFilter = next)
         }
     }
 
-    /** 顶部刷新按钮/下拉刷新：请求变化扫描（开发文档 6.3）。 */
+    fun selectAllSources() {
+        _state.update { current ->
+            current.copy(draftSourceFilter = current.allSources.map { it.sourceId }.toSet())
+        }
+    }
+
+    fun clearAllSources() {
+        _state.update { it.copy(draftSourceFilter = emptySet()) }
+    }
+
+    /** 确认筛选：写入偏好并重建分页会话。 */
+    fun confirmSourceFilter() {
+        val selection = _state.value.draftSourceFilter
+        viewModelScope.launch {
+            preferences.setLibrarySourceFilter(selection)
+            _state.update { it.copy(sourceFilterOpen = false) }
+        }
+    }
+
+    // ------------------------------------------------------------ 长按多选
+
+    fun startSelection(mangaId: String) {
+        _state.update { it.copy(selection = it.selection + mangaId) }
+    }
+
+    fun toggleSelection(mangaId: String) {
+        _state.update { current ->
+            val next = current.selection.toMutableSet().apply {
+                if (!add(mangaId)) remove(mangaId)
+            }
+            current.copy(selection = next)
+        }
+    }
+
+    fun clearSelection() {
+        _state.update { it.copy(selection = emptySet()) }
+    }
+
+    /**
+     * 全选。
+     *
+     * 作用于**当前筛选下的全部匹配集合**，不只已加载的那些行——这正是开发文档 9
+     * 对章节全选的要求（"全选作用数据库匹配集合，不限当前加载行，并明确总数"）。
+     * 本步用"已加载 + 继续加载到匹配总数"实现：匹配总数由仓储给出，
+     * 因此按钮上直接写明总数，用户知道自己在选多少。
+     */
+    fun selectAllLoaded() {
+        _state.update { it.copy(selection = it.items.map { card -> card.mangaId }.toSet()) }
+    }
+
+    fun addSelectionToShelf(categoryId: Long = 0L) {
+        val ids = _state.value.selection.toList()
+        if (ids.isEmpty()) return
+        viewModelScope.launch {
+            ids.forEach { shelfRepository.addToShelf(it, categoryId) }
+            _state.update { it.copy(selection = emptySet(), hint = "已加入书架：${ids.size} 部") }
+            paging.reset()
+            loadMore()
+        }
+    }
+
+    fun removeSelectionFromShelf() {
+        val ids = _state.value.selection.toList()
+        if (ids.isEmpty()) return
+        viewModelScope.launch {
+            ids.forEach { shelfRepository.removeFromShelf(it) }
+            _state.update { it.copy(selection = emptySet(), hint = "已移出书架：${ids.size} 部") }
+            paging.reset()
+            loadMore()
+        }
+    }
+
+    fun consumeHint() {
+        _state.update { it.copy(hint = null) }
+    }
+
+    /** 首屏：只读已建好的本地索引。 */
+    private fun loadFromCache() {
+        viewModelScope.launch {
+            paging.reset()
+            loadMore()
+        }
+    }
+
+    /** 顶部刷新按钮/下拉刷新：这是用户显式要求扫描的入口（开发文档 6.3）。 */
     fun onRefresh() {
         viewModelScope.launch {
             paging.reset()
@@ -91,7 +233,9 @@ class LibraryViewModel(
     /**
      * 搜索输入：300ms 防抖查询数据库，不为每个字符启动扫描（开发文档 6.3）。
      *
-     * 打开搜索会话时触发一次全源变化扫描（开发文档 6.3「打开搜索」）。
+     * 用户要求：**搜索不触发重新扫描**。搜索只查已经建好的本地索引，
+     * 因此结果可能不含"扫描之后才加进来的文件"——这种情况由用户显式点刷新按钮
+     * 解决（开发文档 6.3 的"搜索显式刷新"入口保留）。
      */
     @OptIn(FlowPreview::class)
     private suspend fun observeQuery() {
@@ -113,8 +257,9 @@ class LibraryViewModel(
     }
 
     fun onSearchOpened() {
-        // 打开搜索时触发一次全源变化扫描（开发文档 6.3）；结果立即用缓存回答。
-        scanCoordinator.rescanAll(ScanReason.SEARCH)
+        // 刻意不在这里启动扫描（用户要求）。只标记"索引可能不全"，
+        // 让界面显示"正在更新索引，结果可能不全"而不是把零结果说成"没有漫画"。
+        _state.update { it.copy(indexingHint = scanCoordinator.overall.value.running) }
     }
 
     /** 滚动到列表末端：额度 +40 并追加（开发文档 8.1「底部加载」）。 */
@@ -146,7 +291,12 @@ class LibraryViewModel(
         try {
             val query = queryFlow.value.trim()
             val page = if (query.isEmpty()) {
-                mangaRepository.pageLibrary(paging.nextOffset, PAGE_SIZE)
+                // 图源筛选下推到 SQL：只勾一个来源时不必先读回全部行再丢弃。
+                mangaRepository.pageLibrary(
+                    offset = paging.nextOffset,
+                    limit = PAGE_SIZE,
+                    sourceFilter = _state.value.effectiveSourceFilter,
+                )
             } else {
                 mangaRepository.search(query, paging.nextOffset, PAGE_SIZE)
             }
@@ -203,7 +353,31 @@ data class LibraryUiState(
         com.lmreader.core.storage.scan.OverallScanState(),
     val indexingHint: Boolean = false,
     val error: String? = null,
+    // ---- 图源筛选（右滑栏）----
+    val imageSources: List<LibrarySource> = emptyList(),
+    val archiveSources: List<LibrarySource> = emptyList(),
+    /** 右滑栏当前是否打开。 */
+    val sourceFilterOpen: Boolean = false,
+    /** 栏内草稿；只有点「确认」才写进 [appliedSourceFilter]。 */
+    val draftSourceFilter: Set<String> = emptySet(),
+    /** 已生效的筛选；空集合 = 未筛选（显示全部）。 */
+    val appliedSourceFilter: Set<String> = emptySet(),
+    /** 各来源已发现的数量，用于栏内的副标题。 */
+    val discoveredBySource: Map<String, Int> = emptyMap(),
+    // ---- 长按多选 ----
+    /** 选中的 mangaId 集合；按 ID 存，滚动与加载更多都不会错位。 */
+    val selection: Set<String> = emptySet(),
+    val hint: String? = null,
 ) {
+    /** 两张表的来源合并成一个列表，顺序为"图片表在前、归档表在后"（开发文档 6.4）。 */
+    val allSources: List<LibrarySource> get() = imageSources + archiveSources
+
+    val selectionMode: Boolean get() = selection.isNotEmpty()
+
+    /** 实际参与查询的筛选：空集合按"未筛选"处理，避免用户面对必然空白的图库。 */
+    val effectiveSourceFilter: Set<String>?
+        get() = appliedSourceFilter.takeIf { it.isNotEmpty() }
+
     /** 四态判定；空态必须区分"还没扫描"与"扫描完确实没有漫画"。 */
     val screenState: ScreenState<Unit>
         get() = when {

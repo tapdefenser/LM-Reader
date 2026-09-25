@@ -174,7 +174,10 @@ class LibraryScanCoordinator(
                     running = active.isNotEmpty(),
                     runningSources = active.size,
                     currentPath = if (active.size == 1) active.first().currentPath else null,
-                    mangas = states.sumOf { state -> state.discovered },
+                    // 只把多章节来源算作"漫画"，单章节来源单独计（用户要求：
+                    // 漫画与单章节是两个互不相干的概念，不能相加）。
+                    mangas = states.filterNot { it.isSingleChapterSource }.sumOf { it.discovered },
+                    singleChapters = states.filter { it.isSingleChapterSource }.sumOf { it.discovered },
                     chapters = states.sumOf { state -> state.chapters },
                     visited = states.sumOf { state -> state.visited },
                     lastFailure = failure,

@@ -17,6 +17,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BookmarkAdded
 import androidx.compose.material.icons.filled.CloudOff
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -25,6 +26,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.lmreader.core.model.LayoutMode
@@ -48,16 +51,35 @@ fun MangaCardItem(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     onLongClick: (() -> Unit)? = null,
+    /** 多选态下是否被选中；普通态恒为 false。 */
+    selected: Boolean = false,
+    /** 是否处于多选态：为 true 时显示复选框，并让整张卡片参与选中切换。 */
+    selectionMode: Boolean = false,
 ) {
     Surface(
         modifier = modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
             .combinedClickable(onClick = onClick, onLongClick = onLongClick),
-        color = MaterialTheme.colorScheme.surface,
+        // 选中态用容器色区分，而不是只靠边框：深色主题下边框几乎看不见。
+        color = if (selected) {
+            MaterialTheme.colorScheme.secondaryContainer
+        } else {
+            MaterialTheme.colorScheme.surface
+        },
         tonalElevation = 1.dp,
     ) {
         Row(modifier = Modifier.padding(8.dp)) {
+            // 多选态下显示复选框；普通态下完全不占宽度，避免列表跳动。
+            if (selectionMode) {
+                Checkbox(
+                    checked = selected,
+                    onCheckedChange = { onClick() },
+                    modifier = Modifier
+                        .align(Alignment.CenterVertically)
+                        .semantics { contentDescription = "选中 ${card.displayName}" },
+                )
+            }
             CoverImage(
                 request = coverRequest,
                 contentDescription = card.displayName,
@@ -140,12 +162,15 @@ fun MangaGridItem(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     onLongClick: (() -> Unit)? = null,
+    selected: Boolean = false,
+    selectionMode: Boolean = false,
 ) {
     Column(
         modifier = modifier
             .clip(RoundedCornerShape(10.dp))
             .combinedClickable(onClick = onClick, onLongClick = onLongClick),
     ) {
+        Box {
         CoverImage(
             request = coverRequest,
             contentDescription = card.displayName,
@@ -154,6 +179,17 @@ fun MangaGridItem(
                 .aspectRatio(0.7f)
                 .clip(RoundedCornerShape(8.dp)),
         )
+            if (selectionMode) {
+                Checkbox(
+                    checked = selected,
+                    onCheckedChange = { onClick() },
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(4.dp)
+                        .semantics { contentDescription = "选中 ${card.displayName}" },
+                )
+            }
+        }
         Text(
             text = card.displayName,
             style = MaterialTheme.typography.labelMedium,

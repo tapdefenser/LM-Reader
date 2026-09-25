@@ -38,9 +38,14 @@ class StructureAcceptanceTest {
         harness.run()
 
         assertEquals(listOf("网球王子"), harness.names)
-        assertEquals(listOf(listOf("第一章", "第二章")), harness.chapterTitles)
-        assertEquals(2, harness.resultOf("网球王子").manga.chapterCount)
-        assertTrue(harness.resultOf("网球王子").manga.chapterCountKnown)
+        // 发现阶段只探测到自然序第一章；完整章节清单由「更新章节」按需枚举
+        // （用户要求：多章节扫描不遍历所有章节文件夹）。
+        assertEquals(listOf(listOf("第一章")), harness.chapterTitles)
+        assertEquals(1, harness.resultOf("网球王子").manga.chapterCount)
+        assertFalse(
+            "只探测到一个章节时不得声明章节数已知（开发文档 5.1）",
+            harness.chapterCountKnown("网球王子"),
+        )
     }
 
     /** 5.3 第 3 行：`短篇`，单章图片，`001.jpg`、`ComicInfo.xml`。 */
@@ -157,8 +162,9 @@ class StructureAcceptanceTest {
         harness.run()
 
         assertEquals(listOf("作品"), harness.names)
-        assertEquals(listOf(listOf("01", "02", "03")), harness.chapterTitles)
-        assertEquals(3, harness.resultOf("作品").manga.chapterCount)
+        // 与图片多章节同构：只取自然序第一个归档就能断定这是一部漫画。
+        assertEquals(listOf(listOf("01")), harness.chapterTitles)
+        assertFalse(harness.chapterCountKnown("作品"))
     }
 
     /** 5.3 第 11 行：`作品`，多章归档，`01.cbz`、`02.pdf` —— 授权根自身为漫画。 */
@@ -172,22 +178,37 @@ class StructureAcceptanceTest {
         harness.run()
 
         assertEquals(listOf("作品"), harness.names)
-        assertEquals(listOf(listOf("01", "02")), harness.chapterTitles)
+        assertEquals(listOf(listOf("01")), harness.chapterTitles)
         assertEquals(InMemoryTreeFactory.ROOT_DOCUMENT_ID, harness.resultOf("作品").manga.anchorDocumentId)
     }
 
     /** 5.3 第 12 行：根包含直章与深层容器，递归多章 —— 不提前截断整树。 */
+    /**
+     * 开发文档 5.3 第 12 行的样例，在**用户要求的跳过规则**下的结果。
+     *
+     * 原文期望 `库` 与 `另一作品` 都被发现（"根有直章时仍要检查其它直接子目录"）。
+     * 用户明确要求：多章节模式**只要某个文件夹下有一个章节，其余文件夹全部跳过**，
+     * 因为那都是同一部作品的内容。因此这里的期望改为只发现 `库`。
+     *
+     * 这是一处**有意接受的取舍**：代价是"根下既有一部单篇、更深处又另有一整套作品"
+     * 时后者不会被发现；收益是每部作品最多只打开一个子目录。要发现后者，
+     * 应把授权根指向那一层，或改用单章节模式（两条路径本来就是两套逻辑）。
+     */
     @Test
-    fun row12_根有直章时仍要检查其它直接子目录() = runTest {
+    fun row12_找到章节后其余子目录全部跳过() = runTest {
         val harness = ScanHarness(
             rootName = "库",
             paths = listOf("第一章/a.jpg", "作者/另一作品/第一章/b.jpg"),
         )
         harness.run()
 
-        assertEquals(listOf("库", "另一作品"), harness.names)
+        assertEquals(listOf("库"), harness.names)
         assertEquals(listOf("第一章"), harness.chaptersOf("库"))
-        assertEquals(listOf("第一章"), harness.chaptersOf("另一作品"))
+        // 「作者」分支完全没有被打开——这正是性能优化的体现。
+        assertFalse(
+            "找到章节后不应再打开其它子目录，实际调用=${harness.factory.calls}",
+            harness.factory.calls.any { it == "openChild:/作者" },
+        )
     }
 
     /** 5.3 第 13 行：`库`，递归多章图片，`作者/短篇/001.jpg` —— 漫画「作者」，章节「短篇」。 */
@@ -234,7 +255,8 @@ class StructureAcceptanceTest {
         harness.run()
 
         assertEquals(listOf("网球王子"), harness.names)
-        assertEquals(listOf(listOf("第一章", "第二章")), harness.chapterTitles)
+        // 锚点章节必须是**自然序第一章**，不能是目录枚举碰巧返回的那个。
+        assertEquals(listOf(listOf("第一章")), harness.chapterTitles)
     }
 
     /**

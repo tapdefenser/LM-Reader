@@ -4,6 +4,7 @@ import com.lmreader.core.index.ScanEvent
 import com.lmreader.core.index.ScanRequest
 import com.lmreader.core.index.StructureScanner
 import com.lmreader.core.model.LibrarySource
+import com.lmreader.core.model.LayoutMode
 import com.lmreader.core.model.MangaRepository
 import com.lmreader.core.model.ScanRunStatus
 import com.lmreader.core.model.SourcePermissionState
@@ -123,6 +124,9 @@ class SourceScanRunner(
                 // 记录本次实际使用的访问方式：排障时"为什么读不到"的第一个问题
                 // 就是"它到底走的是哪条路径"。
                 accessMode = if (treeAccess.usesDirectFileAccess()) "直接文件访问" else "SAF 授权",
+                // 口径按来源的模式决定：单章节路径只产出"单章节"，
+                // 多章节路径只产出"漫画"，两者不相加（用户要求）。
+                isSingleChapterSource = source.mode == LayoutMode.SINGLE_CHAPTER,
             )
         }
         sourceRepository.updateScanResult(source.sourceId, clock(), ScanRunStatus.RUNNING, null)
@@ -198,6 +202,13 @@ class SourceScanRunner(
             !summary.completed -> ScanRunStatus.FAILED
             else -> ScanRunStatus.COMPLETED
         }
+        // 诊断：把"打开子目录次数 / 枚举次数 / 命中叶子判定次数"打出来，
+        // 用来验证"找到一个章节就跳过其余文件夹"是否真的生效（而不是靠感觉）。
+        android.util.Log.i(
+            TAG,
+            "扫描结束 ${source.displayPath}：漫画=${summary.mangas} 遍历目录=${summary.directoriesVisited} " +
+                "章节探测=${summary.leafChapterProbes}",
+        )
         val error = if (cancelled) {
             null
         } else {
@@ -223,6 +234,7 @@ class SourceScanRunner(
                 discovered = summary.mangas,
                 chapters = summary.chapters,
                 visited = summary.directoriesVisited,
+                leafProbes = summary.leafChapterProbes,
                 currentPath = null,
                 lastError = error,
                 status = status,

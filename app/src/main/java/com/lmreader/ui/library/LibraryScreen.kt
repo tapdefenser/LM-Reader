@@ -61,6 +61,16 @@ import com.lmreader.ui.common.LoadingState
 import com.lmreader.ui.common.MangaCardItem
 import com.lmreader.ui.common.MangaGridItem
 import com.lmreader.ui.common.MessageState
+import androidx.compose.material.icons.filled.FilterList
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.SelectAll
+import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.rememberDrawerState
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import com.lmreader.ui.common.ScreenState
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
@@ -88,6 +98,7 @@ fun LibraryScreen(
     val treeUris = rememberSourceTreeUris(container)
 
     var menuExpanded by remember { mutableStateOf(false) }
+    val snackbarHostState = remember { SnackbarHostState() }
     var searchActive by remember { mutableStateOf(false) }
 
     val listState = rememberLazyListState()
@@ -115,8 +126,58 @@ fun LibraryScreen(
             .collect { viewModel.onLoadMore() }
     }
 
+    // 右滑栏（图源筛选）：用 ModalNavigationDrawer，自带遮罩点击关闭、返回键关闭
+    // 与无障碍语义。抽屉状态由 Compose 持有，ViewModel 只表达"想不想开"。
+    val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
+    val scope = rememberCoroutineScope()
+    LaunchedEffect(state.sourceFilterOpen) {
+        if (state.sourceFilterOpen) drawerState.open() else drawerState.close()
+    }
+    LaunchedEffect(drawerState.currentValue) {
+        if (drawerState.currentValue == DrawerValue.Closed && state.sourceFilterOpen) {
+            viewModel.closeSourceFilter()
+        }
+    }
+    LaunchedEffect(state.hint) {
+        state.hint?.let { message ->
+            snackbarHostState.showSnackbar(message)
+            viewModel.consumeHint()
+        }
+    }
+
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        // 手势关闭可用，但**打开**只靠顶栏按钮：开发文档 8.2 对书架分类栏已定下
+        // "不要求边缘手势"的原则，图库筛选栏保持一致。
+        gesturesEnabled = drawerState.isOpen,
+        drawerContent = {
+            SourceFilterDrawer(
+                sources = state.allSources,
+                draftSelection = state.draftSourceFilter,
+                discoveredBySource = state.discoveredBySource,
+                onToggle = viewModel::toggleSourceFilter,
+                onSelectAll = viewModel::selectAllSources,
+                onClearAll = viewModel::clearAllSources,
+                onConfirm = viewModel::confirmSourceFilter,
+                onDismiss = viewModel::closeSourceFilter,
+            )
+        },
+    ) {
     Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
+            // 选择态与普通态是两条不同的顶栏：选择态下"搜索/刷新/展示方式"都不适用，
+            // 换成批量操作，避免用户在选中 20 部作品时误触刷新丢掉选择。
+            if (state.selectionMode) {
+                SelectionTopBar(
+                    selectedCount = state.selection.size,
+                    loadedCount = state.items.size,
+                    onCancel = viewModel::clearSelection,
+                    onSelectAllLoaded = viewModel::selectAllLoaded,
+                    onAddToShelf = { viewModel.addSelectionToShelf() },
+                    onRemoveFromShelf = viewModel::removeSelectionFromShelf,
+                )
+            } else {
             TopAppBar(
                 title = {
                     if (searchActive) {
@@ -130,7 +191,12 @@ fun LibraryScreen(
                             modifier = Modifier.fillMaxWidth(),
                         )
                     } else {
-                        Text("图库")
+                        Text(
+                            // 生效筛选时在标题上写明范围，用户不必打开栏就知道在看什么。
+                            text = state.effectiveSourceFilter?.let { filter ->
+                                "图库（${filter.size} 个图源）"
+                            } ?: "图库",
+                        )
                     }
                 },
                 navigationIcon = {
@@ -152,6 +218,13 @@ fun LibraryScreen(
                     }
                     IconButton(onClick = viewModel::onRefresh) {
                         Icon(Icons.Filled.Refresh, contentDescription = "刷新（重新扫描变化）")
+                    }
+                    // 图源筛选入口：图标 + 生效数量，避免"有没有在筛"只能靠点开才知道。
+                    IconButton(onClick = viewModel::openSourceFilter) {
+                        Icon(
+                            imageVector = Icons.Filled.FilterList,
+                            contentDescription = "筛选图源",
+                        )
                     }
                     IconButton(onClick = { menuExpanded = true }) {
                         Icon(
@@ -180,6 +253,7 @@ fun LibraryScreen(
                     }
                 },
             )
+            }
         },
     ) { padding ->
         Column(modifier = Modifier.fillMaxSize().padding(padding)) {
@@ -216,8 +290,18 @@ fun LibraryScreen(
                                 MangaCardItem(
                                     card = card,
                                     coverRequest = card.coverRequest(treeUris),
-                                    onClick = { onOpenManga(card.mangaId) },
-                                    onLongClick = { viewModel.addToShelf(card.mangaId) },
+                                    // 普通态单击进详情；选择态单击切换选中。
+                                    onClick = {
+                                        if (state.selectionMode) {
+                                            viewModel.toggleSelection(card.mangaId)
+                                        } else {
+                                            onOpenManga(card.mangaId)
+                                        }
+                                    },
+                                    // 长按进入选择态并选中该卡片（用户要求）。
+                                    onLongClick = { viewModel.startSelection(card.mangaId) },
+                                    selected = card.mangaId in state.selection,
+                                    selectionMode = state.selectionMode,
                                 )
                             }
                             item { ListFooter(state) }
@@ -235,8 +319,16 @@ fun LibraryScreen(
                                 MangaGridItem(
                                     card = card,
                                     coverRequest = card.coverRequest(treeUris),
-                                    onClick = { onOpenManga(card.mangaId) },
-                                    onLongClick = { viewModel.addToShelf(card.mangaId) },
+                                    onClick = {
+                                        if (state.selectionMode) {
+                                            viewModel.toggleSelection(card.mangaId)
+                                        } else {
+                                            onOpenManga(card.mangaId)
+                                        }
+                                    },
+                                    onLongClick = { viewModel.startSelection(card.mangaId) },
+                                    selected = card.mangaId in state.selection,
+                                    selectionMode = state.selectionMode,
                                 )
                             }
                             item { ListFooter(state) }
@@ -246,6 +338,59 @@ fun LibraryScreen(
             }
         }
     }
+    }
+}
+
+/**
+ * 选择态顶栏（用户要求的长按多选）。
+ *
+ * 只放与"已选中集合"有关的操作：批量加入/移出书架，以及全选/取消。
+ * 翻译与导出属于 P3/P4，本步不放按钮——开发文档 17 的完成标准是
+ * "不存在仅摆放未接线的核心控件"，放一个点了没反应的翻译按钮比不放更糟。
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SelectionTopBar(
+    selectedCount: Int,
+    loadedCount: Int,
+    onCancel: () -> Unit,
+    onSelectAllLoaded: () -> Unit,
+    onAddToShelf: () -> Unit,
+    onRemoveFromShelf: () -> Unit,
+) {
+    var actionsExpanded by remember { mutableStateOf(false) }
+    TopAppBar(
+        title = { Text("已选 $selectedCount 项") },
+        navigationIcon = {
+            IconButton(onClick = onCancel) {
+                Icon(Icons.Filled.Close, contentDescription = "退出多选")
+            }
+        },
+        actions = {
+            IconButton(onClick = onSelectAllLoaded) {
+                Icon(Icons.Filled.SelectAll, contentDescription = "全选已加载的 $loadedCount 项")
+            }
+            IconButton(onClick = { actionsExpanded = true }) {
+                Icon(Icons.Filled.MoreVert, contentDescription = "批量操作")
+            }
+            DropdownMenu(expanded = actionsExpanded, onDismissRequest = { actionsExpanded = false }) {
+                DropdownMenuItem(
+                    text = { Text("加入书架") },
+                    onClick = {
+                        actionsExpanded = false
+                        onAddToShelf()
+                    },
+                )
+                DropdownMenuItem(
+                    text = { Text("移出书架") },
+                    onClick = {
+                        actionsExpanded = false
+                        onRemoveFromShelf()
+                    },
+                )
+            }
+        },
+    )
 }
 
 /**

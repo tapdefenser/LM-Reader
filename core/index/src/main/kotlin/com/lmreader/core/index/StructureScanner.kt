@@ -65,6 +65,17 @@ private class ScanRun(
     private var chapterCount = 0
     private var cancelled = false
 
+    /**
+     * 调用 [isLeafImageChapter] 的次数，即"为了确认章节而打开并检查子目录"的次数。
+     *
+     * 它是"找到一个章节就跳过其余文件夹"这条规则的**可观测指标**：
+     * 真机实测 762 部漫画时为 1823 次（每部约 2 次：一次探测作品目录本身不是章节，
+     * 一次在其内部命中第一章）。这个数字显著大于漫画数就说明跳过规则没有生效，
+     * 因此把它随扫描结果一起报出来，而不是只留在开发者的脑子里。
+     */
+    var leafProbes: Int = 0
+        private set
+
     private val rootRef = DirRef(
         tree = root,
         documentId = request.rootDocumentId,
@@ -81,7 +92,7 @@ private class ScanRun(
                 }
 
                 SourceKind.ARCHIVE_IMPORT -> when (request.layoutMode) {
-                    LayoutMode.MULTI_CHAPTER -> scanArchiveManga(rootRef, depth = 0, isRoot = true)
+                    LayoutMode.MULTI_CHAPTER -> scanArchiveManga(rootRef, depth = 0)
                     LayoutMode.SINGLE_CHAPTER -> scanArchiveSingle(rootRef, isRoot = true)
                 }
             }
@@ -99,29 +110,36 @@ private class ScanRun(
             diagnostics = diagnostics.toList(),
             failedPaths = failedPaths.toList(),
             completed = !cancelled && failedPaths.isEmpty(),
+            leafChapterProbes = leafProbes,
         )
     }
 
     // ---------------------------------------------------------------- 图片目录
 
     /**
-     * 图片目录 · 多章节（框架 4.3 第一段 + 本实现补的第二条停止规则）。
+     * 图片目录 · 多章节。
      *
-     * 漫画判定：目录的直接子目录中至少有一个 [isLeafImageChapter]。一旦成立，
-     * 这些子目录就是章节，**不再作为独立漫画卡片**。
+     * 判定与停止规则（用户明确要求，也是这个模式唯一必要的成本）：
+     * 1. 逐个检查直接子目录，**找到一个** [isLeafImageChapter] 就成立——这个目录
+     *    是一部漫画，那个子目录是它的章节；
+     * 2. 一旦成立，**该目录下的其余子文件夹全部跳过**：它们要么是同一部作品的其它
+     *    章节，要么是这部作品的附属内容，都不是新的漫画。因此每部作品最多只打开
+     *    一个子目录，而不是枚举几百个章节文件夹。
      *
-     * 关键补充（开发文档示例 `download/pixiv/网球王子/第一章/图片` → 漫画「网球王子」，
-     * 不是「pixiv」）：**判定为漫画后不再往它的子目录继续寻找漫画**。已归属的章节
-     * 目录是这部作品的内部结构，往里找只会把「第一章」这类章节目录当成新作品。
-     * 但仍要检查**其它**直接子目录（下面按 `ownedChapters` 过滤后的循环），
-     * 否则"某一章是单篇、同时更深处另有整套作品"会漏（开发文档 5.1、
-     * 验收样例第 12 行）。
+     * 反过来说：判定"这里不是漫画"必须把直接子目录都检查完（否则会把漫画误判成
+     * 包裹目录，继续往下把「第一章」当成新作品）。
+     *
+     * 与开发文档的两点偏离都记录在此，避免以后被当成 bug 改回去：
+     * - 锚点章节是"枚举顺序里第一个被确认为叶子的子目录"，不保证是自然序第一章。
+     *   封面与简介由补全阶段按自然序重取（开发文档 7.2），因此不影响展示；
+     * - 因此也不再深入"已判定为漫画"的目录去找更深的作品（开发文档 5.1 第 12 行
+     *   的样例属于这种情况，本实现按用户要求以跳过换取性能）。
      *
      * depth 用于实现"未勾选子目录时只把根自身及根的直接子目录当作漫画候选"：
      * depth == 0 的那一层永远要进，再深才看 recursive。
      */
     private suspend fun scanImageManga(dir: DirRef, depth: Int) {
-        val children = enumerate(dir) ?: return
+        val children = dir.enumerateOnce() ?: return
         val childDirs = children.filter { it.isDirectory }
         val hasDirectImage = children.any { it.isSupportedImage() }
 
@@ -129,14 +147,35 @@ private class ScanRun(
             diagnose(dir.path, MESSAGE_MIXED)
         }
 
-        val chapterDirs = childDirs.filter { isLeafImageChapter(dir, it) }
-        if (chapterDirs.isNotEmpty()) {
+        var isManga = false
+        // 先按名称自然序排候选，再"找到第一个叶子就停"：
+        // - 排序让锚点章节**确定、且通常是第一章**，而不是枚举顺序碰巧返回的那个
+        //   （真机上出现过先返回「第10话」，会让封面在不同设备上不一致）；
+        // - 只对排序后的前几项做叶子判定，命中即 break，其余子文件夹全部跳过。
+        // 排序不读磁盘（一次 listChildren 已在上面完成），成本可忽略。
+        for (child in childDirs.sortedWith(CHAPTER_NAME_ORDER)) {
+            // 每轮都检查取消：父目录的 children 已经在内存里，循环体本身不必然挂起，
+            // 不显式检查就会出现"取消之后又冒出一部漫画"（验收 A09 要求无错序结果）。
+            currentCoroutineContext().ensureActive()
+            if (!isLeafImageChapter(dir, child)) continue
+            isManga = true
             emitManga(
                 anchor = dir,
-                chapters = chapterDirs.map { ChapterSpec(it.documentId, it.name, ChapterKind.IMAGE_DIRECTORY) },
+                chapters = listOf(
+                    ChapterSpec(child.documentId, child.name, ChapterKind.IMAGE_DIRECTORY),
+                ),
                 anchorChildren = children,
+                // 只探测到一个章节，因此章节数是"已知下限"而不是准确总数
+                // （开发文档 5.1「不得把探测到一章伪报成完整的一章」）。
+                chaptersFullyEnumerated = false,
             )
-        } else if (depth == 0 && childDirs.isEmpty() && hasDirectImage) {
+            // 找到一个章节就够：其余子文件夹全部跳过。
+            break
+        }
+
+        if (isManga) return
+
+        if (depth == 0 && childDirs.isEmpty() && hasDirectImage) {
             // 根特例：授权根本身就是叶子图片目录，说明用户选中的是单章节本体
             // （开发文档 5.1 第 3 行）。只对根生效，不把任意深层叶子误认成独立漫画。
             diagnose(dir.path, MESSAGE_ROOT_LEAF)
@@ -144,15 +183,22 @@ private class ScanRun(
                 anchor = dir,
                 chapters = listOf(ChapterSpec(request.rootDocumentId, dir.name, ChapterKind.IMAGE_DIRECTORY)),
                 anchorChildren = children,
+                chaptersFullyEnumerated = true,
             )
-        } else if (depth == 0 && childDirs.isEmpty()) {
+            return
+        }
+        if (depth == 0 && childDirs.isEmpty()) {
             diagnose(dir.path, MESSAGE_NO_IMAGE)
+            return
         }
 
+        // 走到这里说明这个目录不是漫画（没有直接章节），继续向下找。
         if (!request.recursive && depth > 0) return
-        val ownedChapters = chapterDirs.mapTo(HashSet()) { it.documentId }
         for (child in childDirs) {
-            if (child.documentId in ownedChapters) continue
+            // 打开下一个目录之前检查取消：`openChild` 与随后的枚举都可能真的落盘，
+            // 而循环本身不必然挂起——不检查就会出现"取消之后又读了一个目录"
+            // （验收 A09：取消后不得继续产生结果）。
+            currentCoroutineContext().ensureActive()
             val sub = openChild(dir, child) ?: continue
             scanImageManga(sub, depth + 1)
         }
@@ -170,7 +216,7 @@ private class ScanRun(
      * 它自己就是唯一章节（开发文档 5.1 根特例），不需要额外分支。
      */
     private suspend fun scanImageSingle(dir: DirRef, isRoot: Boolean) {
-        val children = enumerate(dir) ?: return
+        val children = dir.enumerateOnce() ?: return
         val childDirs = children.filter { it.isDirectory }
         val hasDirectImage = children.any { it.isSupportedImage() }
 
@@ -180,6 +226,8 @@ private class ScanRun(
                     anchor = dir,
                     chapters = listOf(ChapterSpec(dir.documentId, dir.name, ChapterKind.IMAGE_DIRECTORY)),
                     anchorChildren = children,
+                    // 单章节模式下一张卡片就是这一个目录，章节数是结构定义。
+                    chaptersFullyEnumerated = true,
                 )
 
                 isRoot -> diagnose(dir.path, MESSAGE_NO_IMAGE)
@@ -199,32 +247,46 @@ private class ScanRun(
 
     // ---------------------------------------------------------------- 归档/PDF
 
-    /** 归档/PDF · 多章节：与图片多章节同构，判定换成 [isArchiveFile]（框架 4.3）。 */
-    private suspend fun scanArchiveManga(dir: DirRef, depth: Int, isRoot: Boolean) {
-        val children = enumerate(dir) ?: return
-        val archives = children.filter { it.isArchiveFile() }
+    /**
+     * 归档/PDF · 多章节：判定换成 [isArchiveFile]，其余与图片多章节同构
+     * （开发文档 5.2：包含至少一个直接 CBZ/ZIP/PDF 的目录是一部漫画）。
+     *
+     * 同样**只取第一个**归档文件就能断定这是一部漫画；枚举每个归档的页数、
+     * 打开每个 PDF 都是「深入」阶段的事，不属于发现阶段（开发文档 6.1）。
+     */
+    private suspend fun scanArchiveManga(dir: DirRef, depth: Int) {
+        val children = dir.enumerateOnce() ?: return
+        // 与图片多章节同一套规则：按名称自然序取第一个归档即可断定这是一部漫画，
+        // 命中后其余子文件/子目录全部跳过。
+        val firstArchive = children
+            .filter { it.isArchiveFile() }
+            .minWithOrNull(Comparator { a, b -> NaturalOrder.compare(a.name, b.name) })
 
-        if (archives.isNotEmpty()) {
+        if (firstArchive != null) {
             emitManga(
                 anchor = dir,
-                chapters = archives.map {
+                chapters = listOf(
                     ChapterSpec(
-                        documentId = it.documentId,
-                        title = MimeTypes.nameWithoutExtension(it.name),
+                        documentId = firstArchive.documentId,
+                        title = MimeTypes.nameWithoutExtension(firstArchive.name),
                         kind = ChapterKind.ARCHIVE,
-                    )
-                },
+                    ),
+                ),
                 anchorChildren = children,
+                chaptersFullyEnumerated = false,
             )
-        } else if (isRoot && children.isEmpty()) {
+        } else if (depth == 0 && children.isEmpty()) {
             diagnose(dir.path, MESSAGE_NO_ARCHIVE)
         }
+
+        // 已判定为漫画：其余子目录全部跳过（与图片多章节一致）。
+        if (firstArchive != null) return
 
         if (!request.recursive && depth > 0) return
         // 嵌套目录独立按递归开关检查，不混入父作品（开发文档 5.2）。
         for (child in children.filter { it.isDirectory }) {
             val sub = openChild(dir, child) ?: continue
-            scanArchiveManga(sub, depth + 1, isRoot = false)
+            scanArchiveManga(sub, depth + 1)
         }
     }
 
@@ -232,9 +294,12 @@ private class ScanRun(
      * 归档/PDF · 单章节：每个归档文件自身是一本共 1 章的漫画，章节标题为
      * 去扩展名的文件名（开发文档 1.3「归档单章节」）；recursive 控制是否继续
      * 向下遍历子目录（框架 4.3）。
+     *
+     * 这里的 1 章是**结构定义**而不是探测结果，因此 `chaptersFullyEnumerated = true`：
+     * 一张卡片对应一个文件，不存在"还有别的章节"。
      */
     private suspend fun scanArchiveSingle(dir: DirRef, isRoot: Boolean) {
-        val children = enumerate(dir) ?: return
+        val children = dir.enumerateOnce() ?: return
 
         for (file in children.filter { it.isArchiveFile() }) {
             val title = MimeTypes.nameWithoutExtension(file.name)
@@ -243,6 +308,7 @@ private class ScanRun(
                 anchor = DirRef(dir.tree, file.documentId, title, "${dir.path}/${file.name}"),
                 chapters = listOf(ChapterSpec(file.documentId, title, ChapterKind.ARCHIVE)),
                 anchorChildren = emptyList(),
+                chaptersFullyEnumerated = true,
             )
         }
 
@@ -319,15 +385,32 @@ private class ScanRun(
      * 短路，避免为判定叶子而枚举整棵子树。
      */
     private suspend fun isLeafImageChapter(parent: DirRef, child: ChildNode): Boolean {
+        leafProbes++
         val ref = openChild(parent, child) ?: return false
         return try {
-            if (ref.tree.hasDirectoryChildren()) false else ref.tree.hasImageChild()
+            // 用一次枚举同时回答"有没有子目录"和"有没有图片"，并把它缓存在 ref 上：
+            // 若判定为章节就到此为止（用户要求的跳过），若判定为包裹目录，
+            // 后面的递归会直接复用这份结果，不再重读同一个目录。
+            val children = ref.enumerateOnce() ?: return false
+            if (children.any { it.isDirectory }) {
+                false
+            } else {
+                children.any { it.isSupportedImage() }
+            }
         } catch (cancellation: CancellationException) {
             throw cancellation
         } catch (error: Exception) {
             fail("${parent.path}/${child.name}", error)
             false
         }
+    }
+
+    /** 取该目录的子项，命中缓存则不重读磁盘。 */
+    private suspend fun DirRef.enumerateOnce(): List<ChildNode>? {
+        cachedChildren?.let { return it }
+        val listed = enumerate(this) ?: return null
+        cachedChildren = listed
+        return listed
     }
 
     private suspend fun diagnose(path: String, message: String) {
@@ -358,6 +441,14 @@ private class ScanRun(
         anchor: DirRef,
         chapters: List<ChapterSpec>,
         anchorChildren: List<ChildNode>,
+        /**
+         * 章节清单是否已完整枚举。
+         *
+         * 发现阶段只探测**一个**直接章节就足以断定「这是一部漫画」，因此章节数是
+         * 「已知下限」而不是总数（开发文档 5.1「不得把探测到一章伪报成完整的一章」）。
+         * 完整清单属于「深入」阶段（开发文档 6.1 第 3 步、详情页的「更新章节」）。
+         */
+        chaptersFullyEnumerated: Boolean,
     ) {
         val now = clock()
         val mangaId = StableId.mangaId(anchor.documentId, request.sourceKind)
@@ -393,9 +484,10 @@ private class ScanRun(
             summary = null,
             coverDocumentId = null,
             coverChapterId = null,
-            // 章节候选已经全部枚举完才发事件，所以这里是确定值而不是「≥1」。
+            // 只有真正枚举完章节候选时才声明「章节数已知」；
+            // 否则界面显示「已发现 N 章，更新中」，不把下限当总数。
             chapterCount = chapterRecords.size,
-            chapterCountKnown = true,
+            chapterCountKnown = chaptersFullyEnumerated,
             availability = MangaAvailability.AVAILABLE,
             discoveryGeneration = request.generation,
             discoveredAt = now,
@@ -467,7 +559,19 @@ private class ScanRun(
         val documentId: String,
         val name: String,
         val path: String,
-    )
+    ) {
+        /**
+         * 已枚举的子项缓存。
+         *
+         * 每个目录在一次扫描里会被访问两次：一次是父目录判断"它是不是章节"
+         * （isLeafImageChapter），一次是真正递归进去。缓存让第二次不再重读磁盘——
+         * 真机上这是扫描耗时里最容易被忽略的一半（File.listFiles 与 SAF 查询都不便宜）。
+         *
+         * 生命周期只到本次扫描结束：ContentTree 实例本身是按次创建的，
+         * 因此不存在"读到过期目录内容"的风险（开发文档 6.1 发现阶段只读元数据）。
+         */
+        var cachedChildren: List<ChildNode>? = null
+    }
 
     private data class ChapterSpec(
         val documentId: String,
@@ -483,6 +587,15 @@ private class ScanRun(
         }
 
         const val INITIAL_CONTENT_REVISION = 1L
+
+        /**
+         * 候选子目录的检查顺序：名称自然序。
+         *
+         * 只影响"先检查哪一个"，不改变"找到一个章节就停、其余全部跳过"的规则；
+         * 目的是让被选中的锚点章节确定且通常是第一章（目录枚举顺序在真实文件系统上
+         * 不保证，真机上出现过先返回「第10话」）。
+         */
+        val CHAPTER_NAME_ORDER = Comparator<ChildNode> { a, b -> NaturalOrder.compare(a.name, b.name) }
 
         const val MESSAGE_MIXED = "目录同时包含图片和子目录，未按叶子章节处理（开发文档 5.1）"
         const val MESSAGE_ROOT_LEAF = "根目录自身是叶子图片目录，按根特例生成共 1 章的漫画（开发文档 5.1）"

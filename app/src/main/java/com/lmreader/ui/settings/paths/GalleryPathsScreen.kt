@@ -261,6 +261,12 @@ fun GalleryPathsScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Text(
+                        text = "章节探测 ${scan?.leafProbes ?: 0} 次" +
+                            "（每部漫画约 1–2 次；明显偏大说明跳过规则失效）",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
                         text = "访问方式：${scan?.accessMode ?: "未知"}" +
                             if (scan?.currentPath != null) "，最后枚举：${scan.currentPath}" else "",
                         style = MaterialTheme.typography.labelSmall,

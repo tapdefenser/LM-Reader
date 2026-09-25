@@ -50,8 +50,41 @@ class AppPreferences(private val context: Context) {
         context.preferencesStore.edit { it[KEY_LIBRARY_DISPLAY_MODE] = mode.name }
     }
 
+    /**
+     * 图库的图源筛选（用户勾选的来源 ID 集合）。
+     *
+     * 空集合表示"没有筛选"，与"用户取消勾选全部"在界面上是同一件事：
+     * 两者都显示全部条目——与其给用户一个必然空白的图库，不如把空筛选当作
+     * 未筛选，并在右滑栏里保留他的勾选状态。
+     *
+     * 存 DataStore 而不是数据库：它是界面偏好，且与"打开页面不扫描"配合时
+     * 必须能立即读出来，不能等 Room 打开。
+     */
+    val librarySourceFilter: Flow<Set<String>> = context.preferencesStore.data
+        .map { prefs ->
+            prefs[KEY_LIBRARY_SOURCE_FILTER]
+                ?.split(SEPARATOR)
+                ?.filter { it.isNotBlank() }
+                ?.toSet()
+                .orEmpty()
+        }
+
+    suspend fun setLibrarySourceFilter(sourceIds: Set<String>) {
+        context.preferencesStore.edit { prefs ->
+            if (sourceIds.isEmpty()) {
+                prefs.remove(KEY_LIBRARY_SOURCE_FILTER)
+            } else {
+                prefs[KEY_LIBRARY_SOURCE_FILTER] = sourceIds.joinToString(SEPARATOR)
+            }
+        }
+    }
+
     private companion object {
         val KEY_ONBOARDING_COMPLETED = booleanPreferencesKey("onboarding_completed")
         val KEY_LIBRARY_DISPLAY_MODE = stringPreferencesKey("library_display_mode")
+        val KEY_LIBRARY_SOURCE_FILTER = stringPreferencesKey("library_source_filter")
+
+        /** 来源 ID 是 `s_` + 十六进制，不含逗号，因此逗号分隔是安全的。 */
+        const val SEPARATOR = ","
     }
 }

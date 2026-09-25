@@ -58,4 +58,21 @@ interface ChapterDao {
         """,
     )
     suspend fun refreshChapterCount(mangaId: String)
+
+    /**
+     * 写入"已发现的章节数"，但**保留** `chapterCountKnown = 0`。
+     *
+     * 使用场景：多章节发现阶段只探测到第一个章节（用户要求不遍历所有章节文件夹），
+     * 因此这里记录的是下限。界面据此显示「已发现 N 章，更新中」而不是「共 N 章」
+     * （开发文档 5.1、8.1 明确禁止把探测到一章伪报成完整的一章）。
+     */
+    @Query(
+        """
+        UPDATE mangas
+        SET chapterCount = :discovered,
+            chapterCountKnown = 0
+        WHERE mangaId = :mangaId
+        """,
+    )
+    suspend fun markChapterCountUnknown(mangaId: String, discovered: Int)
 }

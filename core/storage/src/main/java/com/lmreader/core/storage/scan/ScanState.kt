@@ -13,6 +13,8 @@ data class ScanState(
     val running: Boolean = false,
     val discovered: Int = 0,
     val visited: Int = 0,
+    /** 为确认章节而打开检查子目录的次数；"找到一个就跳过其余"规则的可观测指标。 */
+    val leafProbes: Int = 0,
     val lastError: String? = null,
     /** 正在枚举的目录（相对授权根的可读路径），用于「正在扫描：xxx」提示。 */
     val currentPath: String? = null,
@@ -25,6 +27,14 @@ data class ScanState(
     val accessMode: String? = null,
     /** 已发现的章节总数（含单章节漫画自身的 1 章）。 */
     val chapters: Int = 0,
+    /**
+     * 本来源的解释方式是否为单章节。
+     *
+     * 用户明确要求"漫画"与"单章节"是两个互不相干的概念：单章节路径只按单章节
+     * 方式扫描，多章节路径只按多章节方式扫描，因此统计口径与文案必须按来源区分，
+     * 不能把两种结果加在一起说成"漫画"。
+     */
+    val isSingleChapterSource: Boolean = false,
     /**
      * 最近若干条诊断/失败详情（原始异常文本）。
      *
@@ -39,10 +49,14 @@ data class ScanState(
 ) {
     val phaseLabel: String
         get() = when {
-            running -> "正在扫描：已找到 $discovered 部漫画 / $chapters 章，已遍历 $visited 个目录"
+            running && isSingleChapterSource ->
+                "正在扫描：已找到 $discovered 个单章节，已遍历 $visited 个目录"
+
+            running -> "正在扫描：已找到 $discovered 部漫画，已遍历 $visited 个目录"
             lastError != null -> "扫描失败：$lastError"
             status == ScanRunStatus.CANCELLED -> "已取消扫描"
-            discovered > 0 -> "已找到 $discovered 部漫画，共 $chapters 章"
+            discovered > 0 && isSingleChapterSource -> "已找到 $discovered 个单章节"
+            discovered > 0 -> "已找到 $discovered 部漫画"
             else -> "尚未扫描"
         }
 }
@@ -60,7 +74,11 @@ data class OverallScanState(
     val running: Boolean = false,
     val runningSources: Int = 0,
     val currentPath: String? = null,
+    /** 多章节来源发现的漫画数（单章节来源不计入这里）。 */
     val mangas: Int = 0,
+    /** 单章节来源发现的单章节数；与 [mangas] 是两套口径，不相加。 */
+    val singleChapters: Int = 0,
+    /** 已发现的章节总数（仅多章节来源有意义）。 */
     val chapters: Int = 0,
     val visited: Int = 0,
     val lastFailure: String? = null,
@@ -74,10 +92,11 @@ data class OverallScanState(
      */
     val statusLabel: String
         get() = when {
-            running -> "正在扫描：已找到 $mangas 部漫画，$chapters 章，已遍历 $visited 个目录"
+            // 用户口径：漫画与单章节互不相加，始终分列两个数字。
+            running -> "正在扫描：已找到 $mangas 部漫画，$singleChapters 个单章节，已遍历 $visited 个目录"
             lastFailure != null -> "上次扫描出错：$lastFailure"
-            mangas > 0 || visited > 0 ->
-                "已找到 $mangas 部漫画，$chapters 章，已遍历 $visited 个目录"
+            mangas > 0 || singleChapters > 0 || visited > 0 ->
+                "已找到 $mangas 部漫画，$singleChapters 个单章节，已遍历 $visited 个目录"
 
             else -> "还没有扫描结果"
         }
@@ -87,23 +106,32 @@ data class OverallScanState(
         get() = currentPath?.takeIf { running && it.isNotBlank() }?.let { "正在扫描：$it" }
 }
 
-/** 触发扫描的原因（开发文档 6.3 的触发表）。 */
+/**
+ * 触发扫描的原因。
+ *
+ * **本应用只在三类显式动作下扫描**（用户要求，也是开发文档 6.3 的收敛结果）：
+ * 1. 保存/新增了一条路径（[SAVED_SOURCE]）；
+ * 2. 用户点了刷新（[REFRESH]）；
+ * 3. 用户点了强制重新扫描索引（[FORCE_REBUILD]）。
+ *
+ * 打开图库、打开书架、冷启动、搜索**都不触发扫描**：它们只读已建好的本地索引。
+ * 万级图库的一次全量变化扫描要几十秒，把它绑在"打开某个页面"上会让用户每次
+ * 进页面都要等。
+ *
+ * [PERMISSION_RESTORED] 保留给权限恢复/外部变动通知（开发文档 6.3 的触发表），
+ * 目前没有调用点——等"变化扫描算法"落地时它会用上：那时需要一个独立入口在
+ * 检测到外部变化后按需补一轮，而不是在每个页面的 onResume 里扫。
+ */
 enum class ScanReason {
-    /** 首次点"下一步"或保存新路径。 */
-    FIRST_RUN,
-
-    /** 保存/修改了一个来源。 */
+    /** 保存或新增了一个来源。 */
     SAVED_SOURCE,
 
-    /** 用户显式刷新。 */
+    /** 用户显式刷新（图库顶部刷新按钮 / 路径页的刷新）。 */
     REFRESH,
 
-    /** 打开搜索时触发一次全源变化扫描。 */
-    SEARCH,
-
-    /** 强制重新扫描索引。 */
+    /** 强制重新扫描索引：丢弃目录快照并全量重建（开发文档 4.1）。 */
     FORCE_REBUILD,
 
-    /** 权限恢复或外部变动通知。 */
+    /** 权限恢复或外部文件变动通知。 */
     PERMISSION_RESTORED,
 }

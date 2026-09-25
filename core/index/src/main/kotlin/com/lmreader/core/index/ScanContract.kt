@@ -77,4 +77,12 @@ data class ScanSummary(
     val failedPaths: List<String>,
     /** false = 被取消或存在无法恢复的 IO 错误。 */
     val completed: Boolean,
+    /**
+     * 为了确认"某个子目录是不是章节"而打开并检查它的次数。
+     *
+     * 用户要求的跳过规则使这个数字应当接近**漫画数**：一个作品目录里只探测一个
+     * 子目录就停。它与 [directoriesVisited] 不是一回事——后者包含为了找到漫画
+     * 而必须走到的每一层目录，因此天然更大。
+     */
+    val leafChapterProbes: Int = 0,
 )

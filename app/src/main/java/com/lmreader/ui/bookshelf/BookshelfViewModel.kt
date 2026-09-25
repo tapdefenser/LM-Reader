@@ -64,10 +64,11 @@ class BookshelfViewModel(
                 if (paging.hasFreeSlot()) loadMore()
             }
         }
-        // 冷启动进书架时先读缓存，再请求一次变化扫描（开发文档 6.3）。
+        // 冷启动进书架同样**只读本地缓存**，不触发扫描（用户要求）。
+        // 书架是"已收藏"的引用，用户打开它是为了继续读，不是为了等索引更新；
+        // 需要更新时由用户点刷新（开发文档 6.3）。
         viewModelScope.launch {
             loadMore()
-            scanCoordinator.rescanAll(ScanReason.FIRST_RUN)
         }
     }
 
