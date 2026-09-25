@@ -126,6 +126,15 @@ fun SourceFilterDrawer(
     }
 }
 
+/**
+ * 图源在界面上的名称。
+ *
+ * 规则只有一条：**用户起的名字优先，否则用路径**。这样既不会出现空标题，
+ * 也不会在标题里重复显示同一份信息（路径重复出现在小标题是上一版的冗余）。
+ */
+private fun LibrarySource.displayLabel(): String =
+    displayName?.takeIf { it.isNotBlank() } ?: displayPath
+
 @Composable
 private fun SourceFilterRow(
     source: LibrarySource,
@@ -137,22 +146,28 @@ private fun SourceFilterRow(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 8.dp, vertical = 2.dp)
-            .semantics { contentDescription = "图源 ${source.displayName ?: source.displayPath}" },
+            // 无障碍朗读用"名称 + 数量"，与视觉层级一致（标题是名称，不是路径）。
+            .semantics { contentDescription = "图源 ${source.displayLabel()}" },
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Checkbox(checked = checked, onCheckedChange = { onToggle() })
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                // 路径名优先显示用户起的名字：SAF 的系统路径常常是
-                // `primary:Tachiyomi/downloads` 这种，同名来源无法区分。
-                text = source.displayName?.takeIf { it.isNotBlank() } ?: source.displayPath,
+                // 大标题就是图源名称；用户没起名字时用路径，绝不出现空标题。
+                // （SAF 的系统路径常常是 `primary:Tachiyomi/downloads` 这种，
+                // 所以给用户留了自定义名称的入口。）
+                text = source.displayLabel(),
                 style = MaterialTheme.typography.bodyMedium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
+                // 小标题**不再重复路径**（标题里已经有了），第一项改为条目数量——
+                // 这是用户在筛选时真正需要判断的信息：这个图源里到底有多少东西。
                 text = buildString {
-                    append(source.displayPath)
+                    append("共 ")
+                    append(discovered ?: 0)
+                    append(" 项")
                     append(" · ")
                     append(
                         when (source.kind) {
@@ -167,10 +182,6 @@ private fun SourceFilterRow(
                             LayoutMode.SINGLE_CHAPTER -> "单章节"
                         },
                     )
-                    if (discovered != null) {
-                        append(" · 已发现 ")
-                        append(discovered)
-                    }
                 },
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
