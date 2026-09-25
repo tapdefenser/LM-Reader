@@ -45,6 +45,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -84,6 +87,9 @@ fun BookshelfScreen(
     var movingManga by remember { mutableStateOf<MangaCard?>(null) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
 
+    /** 右边缘召出手势的累计位移（像素）。 */
+    var dragAccumulated by remember { mutableFloatStateOf(0f) }
+
     val listState = rememberLazyListState()
     LaunchedEffect(listState) {
         snapshotFlow {
@@ -116,6 +122,7 @@ fun BookshelfScreen(
         )
     }
 
+    Box(modifier = Modifier.fillMaxSize()) {
     Scaffold(
             topBar = {
                 TopAppBar(
@@ -185,6 +192,33 @@ fun BookshelfScreen(
                 }
             }
         }
+    // 右边缘的召出手势：从屏幕右边缘向左滑打开筛选栏。
+    // 之所以用一条**窄**（16dp）覆盖条而不是让整页参与拖动：
+    // 早先版本用的是 24dp 宽的手势区，正好压住距边缘约 20dp 的顶栏按钮、把点击吃掉；
+    // 16dp 落在按钮之外，同时仍然提供"从边缘滑出"这个习惯动作。
+    // 它只在关闭时存在，因此不会妨碍面板内部的滑动。
+    if (!state.sidePanelOpen) {
+        Box(
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .fillMaxHeight()
+                .width(16.dp)
+                .pointerInput(Unit) {
+                    detectHorizontalDragGestures { _, delta ->
+                        // 向左拖（负值）累积到阈值即召出面板；
+                        // 只累积不消费事件，因此不会影响同一位置的其它手势。
+                        dragAccumulated += delta
+                        if (dragAccumulated < -EDGE_SUMMON_THRESHOLD_PX) {
+                            dragAccumulated = 0f
+                            viewModel.setSidePanelOpen(true)
+                        }
+                    }
+                },
+        )
+    }
+
+
+    }
 
     if (newCategoryDialog) {
         NameInputDialog(
@@ -462,3 +496,6 @@ private fun rememberSourceTreeUris(container: AppContainer): Map<String, String>
 }
 
 private const val PREFETCH_DISTANCE = 6
+
+/** 右边缘向左滑多少像素才召出筛选面板。 */
+private const val EDGE_SUMMON_THRESHOLD_PX = 24f

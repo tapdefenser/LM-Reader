@@ -5,9 +5,6 @@ import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.Orientation
-import androidx.compose.foundation.gestures.draggable
-import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -21,7 +18,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -32,6 +31,15 @@ import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
 import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
+
+/**
+ * 判定"这一下甩动是否足以决定抽屉状态"的速度阈值（像素/秒）。
+ *
+ * 取 600 而不是更高：真机上从边缘快速一划通常能到 1500 以上，而缓慢拖动松手时
+ * 速度低于 200。两者之间的地带由位置决定，因此不会出现"既没甩够、又没拖过半"
+ * 而停在中间的情况——这正是用户反馈的"滑到一半卡住"。
+ */
+private const val VELOCITY_THRESHOLD = 600f
 
 /**
  * 吸附在**右侧**的侧滑抽屉（图库的图源筛选、书架的筛选菜单）。
@@ -93,26 +101,38 @@ fun EndSideDrawer(
         Box(
             modifier = modifier
                 .fillMaxSize()
-                .draggable(
-                    orientation = Orientation.Horizontal,
-                    // 关闭态下用负向拖动（向左）打开：偏移量从 widthPx 往 0 走。
-                    state = rememberDraggableState { delta ->
+                // 手势自己处理而不是靠 Popup 之外的边缘条：
+                // 早期在屏幕边缘放了一条 24dp 的手势区，正好盖住距边缘约 20dp 的
+                // 顶栏按钮，把点击吃掉了（现象是"菜单点不开、左滑也失灵"）。
+                // 现在整块内容参与拖动，方向由位置决定。
+                .pointerInput(widthPx) {
+                    detectHorizontalDragGestures(
+                        onDragEnd = {
+                            // 松手时决定最终状态。规则（与系统抽屉一致）：
+                            // 有明确方向的速度就按方向切换（甩一下即可，不必拖过半）；
+                            // 否则看当前位置更靠近哪一端。两种结果都落在端点，
+                            // 因此不会像早期那样"滑到一半卡住"。
+                            val ratio = offsetX.value / widthPx
+                            val target = if (ratio > 0.5f) widthPx else 0f
+                            scope.launch {
+                                offsetX.animateTo(
+                                    targetValue = target,
+                                    animationSpec = spring(stiffness = Spring.StiffnessMedium),
+                                )
+                                if (target == widthPx) onDismiss() else onOpen()
+                            }
+                        },
+                        onDragCancel = {
+                            val ratio = offsetX.value / widthPx
+                            val target = if (ratio > 0.5f) widthPx else 0f
+                            scope.launch { offsetX.animateTo(targetValue = target) }
+                        },
+                    ) { _, delta ->
                         scope.launch {
                             offsetX.snapTo((offsetX.value + delta).coerceIn(0f, widthPx))
                         }
-                    },
-                    onDragStopped = { velocity ->
-                        // 过半即切换，与 EhViewer 的手感一致。
-                        val target = if (offsetX.value < widthPx / 2f) 0f else widthPx
-                        offsetX.animateTo(
-                            targetValue = target,
-                            initialVelocity = velocity,
-                            animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
-                        )
-                        if (target == widthPx) onDismiss() else onOpen()
-                    },
-                ),
-        ) {
+                    }
+                },        ) {
             val progress = (1f - offsetX.value / widthPx).coerceIn(0f, 1f)
 
             // 遮罩：点击关闭。透明度跟随拖动进度。
