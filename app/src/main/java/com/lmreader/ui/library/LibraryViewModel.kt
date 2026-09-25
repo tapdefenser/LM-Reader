@@ -176,15 +176,24 @@ class LibraryViewModel(
     }
 
     /**
-     * 全选。
+     * 反选（用户要求，替代原来的全选按钮）。
      *
-     * 作用于**当前筛选下的全部匹配集合**，不只已加载的那些行——这正是开发文档 9
-     * 对章节全选的要求（"全选作用数据库匹配集合，不限当前加载行，并明确总数"）。
-     * 本步用"已加载 + 继续加载到匹配总数"实现：匹配总数由仓储给出，
-     * 因此按钮上直接写明总数，用户知道自己在选多少。
+     * 语义：把"当前已加载的条目"里未选中的选上、已选中的去掉。已加载集合之外的
+     * 条目不受影响——它们既没有被选中过，也无法在没有加载的情况下被取消选中。
+     *
+     * 为什么反选比全选更合用：用户多选时的典型动作是"先点掉几个不要的"，
+     * 反选一次就能把剩下的都选上；而全选要求用户先自己想清楚再逐个排除。
+     *
+     * 开发文档 9 要求批量选择明确"作用范围与总数"，因此状态栏显示的是
+     * 已选数量，而反选只作用于已加载的 N 项（网格与列表都会显示这个 N）。
      */
-    fun selectAllLoaded() {
-        _state.update { it.copy(selection = it.items.map { card -> card.mangaId }.toSet()) }
+    fun invertSelection() {
+        _state.update { current ->
+            val loaded = current.items.map { card -> card.mangaId }.toSet()
+            // 只反转"已加载集合"内的选择，已加载之外的选中项原样保留。
+            val inverted = loaded.filterNot { it in current.selection }.toSet()
+            current.copy(selection = inverted)
+        }
     }
 
     fun addSelectionToShelf(categoryId: Long = 0L) {

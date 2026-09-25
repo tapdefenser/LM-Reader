@@ -68,6 +68,14 @@ fun LmReaderNavHost(
         startDestination = if (completed) Routes.BOOKSHELF else Routes.ONBOARDING
     }
 
+    // 主菜单抽屉用框架的 ModalNavigationDrawer：
+    // - 它吸附在起始侧，正是主菜单需要的方向；
+    // - 它自带"从屏幕左边缘向右滑打开"的手势（用户要求），而且**关闭时不会吃掉
+    //   顶栏按钮的点击**。自实现版本在这一点上踩过坑：24dp 的边缘手势区正好盖住
+    //   了距边缘 20dp 的汉堡按钮，导致"菜单点不开、左滑也失灵"。
+    //
+    // 右侧的图源筛选栏用自实现的 EndSideDrawer：框架组件没有选择吸附侧别的参数，
+    // 而"把子树设成 RTL"会把面板内容整体镜像（真机上标题与数量文案都会反过来）。
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val openMenu: () -> Unit = { scope.launch { drawerState.open() } }
@@ -76,6 +84,7 @@ fun LmReaderNavHost(
 
     ModalNavigationDrawer(
         drawerState = drawerState,
+        gesturesEnabled = true,
         drawerContent = {
             MainMenuSheet(
                 onNavigate = { target ->

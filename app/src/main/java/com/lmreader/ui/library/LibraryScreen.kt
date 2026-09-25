@@ -57,18 +57,16 @@ import com.lmreader.core.model.MangaCard
 import com.lmreader.core.model.SourceKind
 import com.lmreader.di.AppContainer
 import com.lmreader.ui.common.CoverRequest
+import com.lmreader.ui.common.EndSideDrawer
 import com.lmreader.ui.common.LoadingState
 import com.lmreader.ui.common.MangaCardItem
 import com.lmreader.ui.common.MangaGridItem
 import com.lmreader.ui.common.MessageState
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.SelectAll
-import androidx.compose.material3.DrawerValue
-import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.launch
 import com.lmreader.ui.common.ScreenState
@@ -126,43 +124,27 @@ fun LibraryScreen(
             .collect { viewModel.onLoadMore() }
     }
 
-    // 右滑栏（图源筛选）：用 ModalNavigationDrawer，自带遮罩点击关闭、返回键关闭
-    // 与无障碍语义。抽屉状态由 Compose 持有，ViewModel 只表达"想不想开"。
-    val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
-    val scope = rememberCoroutineScope()
-    LaunchedEffect(state.sourceFilterOpen) {
-        if (state.sourceFilterOpen) drawerState.open() else drawerState.close()
-    }
-    LaunchedEffect(drawerState.currentValue) {
-        if (drawerState.currentValue == DrawerValue.Closed && state.sourceFilterOpen) {
-            viewModel.closeSourceFilter()
-        }
-    }
-    LaunchedEffect(state.hint) {
-        state.hint?.let { message ->
-            snackbarHostState.showSnackbar(message)
-            viewModel.consumeHint()
-        }
+    // 图源筛选栏：吸附在**右侧**的抽屉（用户要求）。点顶栏按钮可打开，
+    // 也可以从屏幕右边缘向左滑打开。
+    // 用自实现的 EndSideDrawer（Popup 覆盖层）而不是 ModalNavigationDrawer：
+    // 后者只能吸附起始侧、会跑到左边；把子树设成 RTL 又会镜像面板内容。
+    EndSideDrawer(
+        open = state.sourceFilterOpen,
+        onOpen = viewModel::openSourceFilter,
+        onDismiss = viewModel::closeSourceFilter,
+    ) {
+        SourceFilterDrawer(
+            sources = state.allSources,
+            draftSelection = state.draftSourceFilter,
+            discoveredBySource = state.discoveredBySource,
+            onToggle = viewModel::toggleSourceFilter,
+            onSelectAll = viewModel::selectAllSources,
+            onClearAll = viewModel::clearAllSources,
+            onConfirm = viewModel::confirmSourceFilter,
+            onDismiss = viewModel::closeSourceFilter,
+        )
     }
 
-    ModalNavigationDrawer(
-        drawerState = drawerState,
-        // 手势关闭可用，但**打开**只靠顶栏按钮：开发文档 8.2 对书架分类栏已定下
-        // "不要求边缘手势"的原则，图库筛选栏保持一致。
-        gesturesEnabled = drawerState.isOpen,
-        drawerContent = {
-            SourceFilterDrawer(
-                sources = state.allSources,
-                draftSelection = state.draftSourceFilter,
-                discoveredBySource = state.discoveredBySource,
-                onToggle = viewModel::toggleSourceFilter,
-                onSelectAll = viewModel::selectAllSources,
-                onClearAll = viewModel::clearAllSources,
-                onConfirm = viewModel::confirmSourceFilter,
-                onDismiss = viewModel::closeSourceFilter,
-            )
-        },
-    ) {
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
@@ -173,7 +155,7 @@ fun LibraryScreen(
                     selectedCount = state.selection.size,
                     loadedCount = state.items.size,
                     onCancel = viewModel::clearSelection,
-                    onSelectAllLoaded = viewModel::selectAllLoaded,
+                    onInvertSelection = viewModel::invertSelection,
                     onAddToShelf = { viewModel.addSelectionToShelf() },
                     onRemoveFromShelf = viewModel::removeSelectionFromShelf,
                 )
@@ -338,7 +320,6 @@ fun LibraryScreen(
             }
         }
     }
-    }
 }
 
 /**
@@ -354,7 +335,7 @@ private fun SelectionTopBar(
     selectedCount: Int,
     loadedCount: Int,
     onCancel: () -> Unit,
-    onSelectAllLoaded: () -> Unit,
+    onInvertSelection: () -> Unit,
     onAddToShelf: () -> Unit,
     onRemoveFromShelf: () -> Unit,
 ) {
@@ -367,8 +348,12 @@ private fun SelectionTopBar(
             }
         },
         actions = {
-            IconButton(onClick = onSelectAllLoaded) {
-                Icon(Icons.Filled.SelectAll, contentDescription = "全选已加载的 $loadedCount 项")
+            IconButton(onClick = onInvertSelection) {
+                Icon(
+                    // 反选：两个方向相反的箭头，比"全选"更能表达"选中状态取反"。
+                    imageVector = Icons.Filled.SwapVert,
+                    contentDescription = "反选已加载的 $loadedCount 项",
+                )
             }
             IconButton(onClick = { actionsExpanded = true }) {
                 Icon(Icons.Filled.MoreVert, contentDescription = "批量操作")

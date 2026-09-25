@@ -19,12 +19,11 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Category
+import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -32,20 +31,17 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -58,6 +54,7 @@ import com.lmreader.core.model.SourceKind
 import com.lmreader.core.model.StyleMode
 import com.lmreader.di.AppContainer
 import com.lmreader.ui.common.CoverRequest
+import com.lmreader.ui.common.EndSideDrawer
 import com.lmreader.ui.common.LoadingState
 import com.lmreader.ui.common.MangaCardItem
 import com.lmreader.ui.common.MessageState
@@ -98,34 +95,28 @@ fun BookshelfScreen(
             .collect { viewModel.onLoadMore() }
     }
 
-    // 分类侧栏用 ModalNavigationDrawer 而不是自己写滑出层：它自带遮罩点击关闭、
-    // 返回键关闭与无障碍语义。抽屉状态由 Compose 持有，ViewModel 只表达"想不想开"。
-    val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
-    val scope = rememberCoroutineScope()
-    LaunchedEffect(state.sidePanelOpen) {
-        if (state.sidePanelOpen) drawerState.open() else drawerState.close()
-    }
-    LaunchedEffect(drawerState.currentValue) {
-        if (drawerState.currentValue == DrawerValue.Closed) viewModel.setSidePanelOpen(false)
+    // 分类侧栏：吸附在**右侧**的抽屉（用户要求），与图库的图源筛选栏同一侧、同一套手势。
+    // 点右上角筛选按钮可打开，也可以从屏幕右边缘向左滑打开。
+    // 参考 EhViewer 的 DownloadsScreen：它的分类/筛选面板就是右侧面板。
+    // 用自实现的 EndSideDrawer（Popup 覆盖层）而不是 ModalNavigationDrawer：
+    // 后者只能吸附起始侧、会跑到左边；把子树设成 RTL 又会镜像面板内容。
+    EndSideDrawer(
+        open = state.sidePanelOpen,
+        onOpen = { viewModel.setSidePanelOpen(true) },
+        onDismiss = { viewModel.setSidePanelOpen(false) },
+        drawerWidth = 300.dp,
+    ) {
+        CategorySidePanel(
+            state = state,
+            onSelect = viewModel::selectCategory,
+            onCreate = { newCategoryDialog = true },
+            onRename = { renaming = it.categoryId to it.name },
+            onMove = viewModel::moveCategory,
+            onDelete = viewModel::deleteCategory,
+        )
     }
 
-    ModalNavigationDrawer(
-        drawerState = drawerState,
-        // 手势关闭：开发文档 8.2 明确"不要求边缘手势"也能打开分类栏，
-        // 但不禁止手势关闭，避免用户被困在侧栏里。
-        gesturesEnabled = drawerState.isOpen,
-        drawerContent = {
-            CategorySidePanel(
-                state = state,
-                onSelect = viewModel::selectCategory,
-                onCreate = { newCategoryDialog = true },
-                onRename = { renaming = it.categoryId to it.name },
-                onMove = viewModel::moveCategory,
-                onDelete = viewModel::deleteCategory,
-            )
-        },
-    ) {
-        Scaffold(
+    Scaffold(
             topBar = {
                 TopAppBar(
                     title = { Text("书架 · ${state.selectedCategoryName}") },
@@ -139,7 +130,7 @@ fun BookshelfScreen(
                             Icon(Icons.Filled.Refresh, contentDescription = "刷新")
                         }
                         IconButton(onClick = { viewModel.setSidePanelOpen(true) }) {
-                            Icon(Icons.Filled.Category, contentDescription = "分类")
+                            Icon(Icons.Filled.FilterList, contentDescription = "筛选与分类")
                         }
                     },
                 )
@@ -194,7 +185,6 @@ fun BookshelfScreen(
                 }
             }
         }
-    }
 
     if (newCategoryDialog) {
         NameInputDialog(
