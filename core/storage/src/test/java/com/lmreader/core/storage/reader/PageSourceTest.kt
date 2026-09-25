@@ -10,10 +10,12 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
 import java.io.ByteArrayInputStream
+import java.io.FileNotFoundException
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 
 class PageSourceTest {
@@ -64,6 +66,50 @@ class PageSourceTest {
 
         assertContentEquals(bytes, first)
         assertContentEquals(bytes, second)
+    }
+
+    /**
+     * 尺寸探测失败必须是"尺寸未知"而不是"页面不可读"。
+     *
+     * 这个用例在普通 JVM 单元测试里跑，`BitmapFactory` 是桩实现、解不出任何尺寸，
+     * 因此正好覆盖"图像头部读不出宽高"这条路径。真实的尺寸解码由真机验证覆盖
+     * （Android 的 `BitmapFactory` 在 JVM 单测里没有可用实现）。
+     */
+    @Test
+    fun `probe 对无法解码的内容返回 null 而不是抛异常`() = runTest {
+        val treeAccess = mockk<TreeAccess>()
+        every { treeAccess.openAt(TREE_URI, CHAPTER_DOCUMENT_ID) } returns StaticTree(listOf(image("1.jpg")))
+        every { treeAccess.openInputStream(TREE_URI, "$CHAPTER_DOCUMENT_ID/1.jpg") } answers {
+            ByteArrayInputStream(byteArrayOf(0, 1, 2, 3))
+        }
+        val source = assertIs<PageSourceOpenResult.Ready>(
+            PageSourceFactory(treeAccess).open(TREE_URI, chapter()),
+        ).source
+
+        val geometry = source.probe(source.pages().single())
+
+        assertEquals(null, geometry, "读不到尺寸应降级为 null，让调用方用占位高度")
+    }
+
+    /** 页面已不在章节里仍然要抛 [java.io.FileNotFoundException]：那是章级问题，不是尺寸问题。 */
+    @Test
+    fun `probe 对不属于本章的页面抛出文件未找到`() = runTest {
+        val treeAccess = mockk<TreeAccess>()
+        every { treeAccess.openAt(TREE_URI, CHAPTER_DOCUMENT_ID) } returns StaticTree(listOf(image("1.jpg")))
+        val source = assertIs<PageSourceOpenResult.Ready>(
+            PageSourceFactory(treeAccess).open(TREE_URI, chapter()),
+        ).source
+
+        assertFailsWith<FileNotFoundException> {
+            source.probe(
+                ReaderPage(
+                    pageId = "p_stale",
+                    ordinal = 0,
+                    displayName = "gone.jpg",
+                    documentId = "$CHAPTER_DOCUMENT_ID/gone.jpg",
+                ),
+            )
+        }
     }
 
     private fun chapter() = ChapterRecord(
