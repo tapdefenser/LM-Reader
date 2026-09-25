@@ -46,7 +46,9 @@
 | `core:storage` | SAF 与直接文件两套 `ContentTree`、授权检测、扫描调度、封面与元数据补全 |
 | `:app` | 图库路径配置页（两张表）、图库页、书架页、导航、设置首页、全部文件访问说明页 |
 
-验证结果：`.\gradlew.bat build` 通过（含 lint）；单元测试 61 个（`core:index` 57 + `core:storage` 4，其中 1 个按机器条件跳过）。真机扫描 `/sdcard/Tachiyomi/downloads` 实测索引出 **762 部漫画、28543 章**（扫描仍在继续时读取的中间值）。
+验证结果：`.\gradlew.bat build` 通过（含 lint）；单元测试 61 个（`core:index` 57 + `core:storage` 4，其中 1 个按机器条件跳过）。真机扫描 `/sdcard/Tachiyomi/downloads` 实测索引出 **762 部漫画、28543 章、235 条 ComicInfo 记录，其中 235 部已补出封面**（扫描仍在继续时读取的中间值，因此不是最终总数）。
+
+封面与元数据的补全只覆盖图片目录章节：归档（CBZ/ZIP/PDF）与 PDF 的封面、内部 ComicInfo 属于"深入"阶段，本步未实现，卡片会显示来源徽标而不是假装有封面。
 
 ### DeepSeek 分工与主审复核
 
