@@ -22,7 +22,12 @@ import com.lmreader.core.model.StyleMode
  * 两边字段名保持同名，避免"两个名字指同一件事"的长期歧义。
  */
 
-/** 路径表一行；两张表共用此表，用 [kind] 区分（开发文档 4.1）。 */
+/**
+ * 路径表一行（只有一张表）。
+ *
+ * [kind] 不再决定扫描行为——一次遍历同时识别图片章节与归档章节（见 `StructureScanner`），
+ * 它只作为来源身份与卡片身份（`mangaId`）的判别位保留。
+ */
 @Entity(
     tableName = "library_sources",
     indices = [Index(value = ["kind", "orderIndex"])],
@@ -49,8 +54,9 @@ data class LibrarySourceEntity(
 /**
  * 漫画行。
  *
- * 唯一约束是 `(anchorDocumentId, sourceKind)` 而不是 documentId 单列：同一个物理
- * 目录可以分别被图片表和归档表识别，两张卡片各自成立（开发文档 15.3）。
+ * 唯一约束是 `(anchorDocumentId, sourceKind)` 而不是 documentId 单列：`sourceKind` 是
+ * `mangaId` 的判别位（开发文档 15.3），改它会让已有卡片换 ID、连带丢掉书架与阅读进度。
+ * 卡片内容（章节是图片目录还是压缩包）由 `chapters.kind` 表达，不由这里表达。
  */
 @Entity(
     tableName = "mangas",

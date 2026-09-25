@@ -33,7 +33,6 @@ import androidx.compose.ui.unit.dp
 import com.lmreader.core.model.LayoutMode
 import com.lmreader.core.model.MangaAvailability
 import com.lmreader.core.model.MangaCard
-import com.lmreader.core.model.SourceKind
 
 /**
  * 图库/书架卡片（开发文档 8.1「卡片」）。
@@ -131,12 +130,12 @@ fun MangaCardItem(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    Badge(
-                        text = when (card.sourceKind) {
-                            SourceKind.IMAGE_DIRECTORY -> "图片"
-                            SourceKind.ARCHIVE_IMPORT -> "归档"
-                        },
-                    )
+                    // 只有"章节是压缩包"的卡片才多一个徽标：一次遍历同时识别图片与归档，
+                    // 来源种类已经不再说明卡片内容，而归档阅读是 P2，用户需要知道
+                    // 哪几张卡暂时打不开（开发文档 8.1「卡片字段」）。
+                    if (card.hasArchiveChapters) {
+                        Badge(text = "压缩包章节")
+                    }
                     Badge(
                         text = when (card.layoutMode) {
                             LayoutMode.MULTI_CHAPTER -> "多章节"

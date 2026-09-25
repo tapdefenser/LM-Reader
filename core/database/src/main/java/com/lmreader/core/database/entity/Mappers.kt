@@ -187,4 +187,5 @@ internal fun CardQueryRow.toCard(): MangaCard = MangaCard(
     chapterCountKnown = chapterCountKnown,
     inShelf = shelfCategoryId != null,
     availability = availability,
+    hasArchiveChapters = hasArchiveChapters,
 )

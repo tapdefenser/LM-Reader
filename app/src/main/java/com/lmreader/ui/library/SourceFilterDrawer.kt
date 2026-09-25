@@ -29,7 +29,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.lmreader.core.model.LayoutMode
 import com.lmreader.core.model.LibrarySource
-import com.lmreader.core.model.SourceKind
 
 /**
  * 图库的图源筛选右滑栏（用户要求）。
@@ -164,17 +163,11 @@ private fun SourceFilterRow(
             Text(
                 // 小标题**不再重复路径**（标题里已经有了），第一项改为条目数量——
                 // 这是用户在筛选时真正需要判断的信息：这个图源里到底有多少东西。
+                // 来源种类不再出现在这里：一次扫描同时识别图片与归档，种类只是身份标签。
                 text = buildString {
                     append("共 ")
                     append(discovered ?: 0)
                     append(" 项")
-                    append(" · ")
-                    append(
-                        when (source.kind) {
-                            SourceKind.IMAGE_DIRECTORY -> "图片目录"
-                            SourceKind.ARCHIVE_IMPORT -> "归档/PDF"
-                        },
-                    )
                     append(" · ")
                     append(
                         when (source.mode) {

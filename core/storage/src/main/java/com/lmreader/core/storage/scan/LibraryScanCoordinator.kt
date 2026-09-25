@@ -1,7 +1,6 @@
 package com.lmreader.core.storage.scan
 
 import com.lmreader.core.model.MangaRepository
-import com.lmreader.core.model.SourceKind
 import com.lmreader.core.model.SourceRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -114,8 +113,8 @@ class LibraryScanCoordinator(
 
     private suspend fun runAll(reason: ScanReason) {
         updateOverall { it.copy(running = true, lastFailure = null) }
-        // 两张表都要扫：图片表与归档表是独立的解释方式（开发文档 4.1）。
-        val sources = SourceKind.entries.flatMap { sourceRepository.getSources(it) }
+        // 只有一张路径表：一次遍历同时解释图片与归档（见 StructureScanner）。
+        val sources = sourceRepository.getSources()
         if (sources.isEmpty()) {
             updateOverall { it.copy(running = false, runningSources = 0) }
             return

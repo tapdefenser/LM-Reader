@@ -9,14 +9,20 @@ import kotlinx.coroutines.flow.Flow
  * 与 UI（`:app`）都要用同一组签名，若接口跟着 Room 走，双方都会被拖去依赖数据库模块。
  */
 interface SourceRepository {
-    fun observeSources(kind: SourceKind): Flow<List<LibrarySource>>
-    suspend fun getSources(kind: SourceKind): List<LibrarySource>
+    /**
+     * 全部路径来源，按用户排序（`orderIndex`）。
+     *
+     * 只有**一张**路径表：一次遍历同时解释图片目录与 CBZ/ZIP/PDF，来源的 `kind`
+     * 不再区分表，只保留为身份与徽标（见 `SourceKind`）。
+     */
+    fun observeSources(): Flow<List<LibrarySource>>
+    suspend fun getSources(): List<LibrarySource>
     suspend fun saveSource(source: LibrarySource): LibrarySource
     suspend fun deleteSource(sourceId: String)
     suspend fun getSource(sourceId: String): LibrarySource?
 
-    /** 拖动排序：立即持久化，只在同表内移动（开发文档 4.1）。 */
-    suspend fun reorder(kind: SourceKind, orderedSourceIds: List<String>)
+    /** 拖动排序：立即持久化（开发文档 4.1）。 */
+    suspend fun reorder(orderedSourceIds: List<String>)
     suspend fun updateScanResult(sourceId: String, at: Long, status: ScanRunStatus, error: String?)
     suspend fun updatePermission(sourceId: String, permission: SourcePermissionState)
 }

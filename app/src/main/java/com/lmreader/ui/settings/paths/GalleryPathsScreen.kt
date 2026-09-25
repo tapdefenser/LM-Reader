@@ -56,7 +56,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.lmreader.core.model.SourceKind
+import com.lmreader.core.model.LayoutMode
 import com.lmreader.core.storage.access.StorageAccess
 import com.lmreader.core.storage.scan.ScanState
 import com.lmreader.di.AppContainer
@@ -67,8 +67,8 @@ import kotlinx.coroutines.launch
  * 图库路径配置页（开发文档 4，按用户要求修订交互）。
  *
  * 既是首次引导页，也是设置里的同一个页面（开发文档 4 段首："不维护两份逻辑"）。
- * 两张表各有独立滚动区域，底部操作条固定并且让出手势导航条高度——否则
- * "下一步/完成"会被系统手势条挡住（真机已复现）。
+ * 只有一张路径表（2026-09-25 由两张表合并：一次扫描同时识别图片与 CBZ/ZIP/PDF），
+ * 底部操作条固定并且让出手势导航条高度——否则"下一步/完成"会被系统手势条挡住（真机已复现）。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -87,14 +87,10 @@ fun GalleryPathsScreen(
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
 
-    // 两张表各自一个选择器：必须在同一个回调里区分是哪张表触发的，
-    // 否则点归档表的 + 会写进图片表（开发文档 4.1 两张表的对象类型不同）。
-    val imagePicker = rememberLauncherForActivityResult(
+    // 只有一个选择器：一次扫描同时解释图片与 CBZ/ZIP/PDF，不再区分"加到哪张表"。
+    val directoryPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree(),
-    ) { uri -> viewModel.onDirectoryPicked(SourceKind.IMAGE_DIRECTORY, uri) }
-    val archivePicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocumentTree(),
-    ) { uri -> viewModel.onDirectoryPicked(SourceKind.ARCHIVE_IMPORT, uri) }
+    ) { uri -> viewModel.onDirectoryPicked(uri) }
     val editorPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree(),
     ) { uri -> viewModel.onEditorDirectoryPicked(uri) }
@@ -177,38 +173,21 @@ fun GalleryPathsScreen(
             }
 
             SourceTable(
-                table = state.imageTable,
+                table = state.table,
                 scanStates = state.scanStates,
-                onAdd = { imagePicker.launch(null) },
-                onOpenEditor = { viewModel.openEditor(SourceKind.IMAGE_DIRECTORY, it) },
-                onToggleRecursive = { id, value ->
-                    viewModel.setRecursive(SourceKind.IMAGE_DIRECTORY, id, value)
-                },
-                onChangeMode = { id, mode -> viewModel.setMode(SourceKind.IMAGE_DIRECTORY, id, mode) },
-                onDelete = { viewModel.requestDelete(SourceKind.IMAGE_DIRECTORY, it) },
-                onMove = { from, to -> viewModel.moveRow(SourceKind.IMAGE_DIRECTORY, from, to) },
-                onShowDiagnostics = { viewModel.openDiagnostics(SourceKind.IMAGE_DIRECTORY, it) },
-            )
-
-            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
-
-            SourceTable(
-                table = state.archiveTable,
-                scanStates = state.scanStates,
-                onAdd = { archivePicker.launch(null) },
-                onOpenEditor = { viewModel.openEditor(SourceKind.ARCHIVE_IMPORT, it) },
-                onToggleRecursive = { id, value ->
-                    viewModel.setRecursive(SourceKind.ARCHIVE_IMPORT, id, value)
-                },
-                onChangeMode = { id, mode -> viewModel.setMode(SourceKind.ARCHIVE_IMPORT, id, mode) },
-                onDelete = { viewModel.requestDelete(SourceKind.ARCHIVE_IMPORT, it) },
-                onMove = { from, to -> viewModel.moveRow(SourceKind.ARCHIVE_IMPORT, from, to) },
-                onShowDiagnostics = { viewModel.openDiagnostics(SourceKind.ARCHIVE_IMPORT, it) },
+                onAdd = { directoryPicker.launch(null) },
+                onOpenEditor = { viewModel.openEditor(it) },
+                onToggleRecursive = { id, value -> viewModel.setRecursive(id, value) },
+                onChangeMode = { id, mode -> viewModel.setMode(id, mode) },
+                onDelete = { viewModel.requestDelete(it) },
+                onMove = { from, to -> viewModel.moveRow(from, to) },
+                onShowDiagnostics = { viewModel.openDiagnostics(it) },
             )
 
             Text(
-                text = "路径列表与导入列表互不混合：图片目录只按图片目录解释，归档表只读取 " +
-                    "CBZ/ZIP/PDF。点击某一行可以改名或重新选择该目录。",
+                text = "一次扫描同时识别目录里的图片与 CBZ/ZIP/PDF：图片章节取叶子图片目录，" +
+                    "归档章节取直接的压缩包/PDF 文件，不需要把同一个目录加两遍。" +
+                    "点击某一行可以改名或重新选择该目录。",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(16.dp),
@@ -365,7 +344,7 @@ private fun SourceEditDialog(
     val context = LocalContext.current
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(if (editor.kind == SourceKind.IMAGE_DIRECTORY) "图库路径" else "导入路径") },
+        title = { Text("图库路径") },
         text = {
             Column {
                 OutlinedTextField(

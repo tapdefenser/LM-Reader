@@ -55,8 +55,7 @@ class GalleryPathsViewModel(
     private val _state = MutableStateFlow(
         GalleryPathsUiState(
             isOnboarding = isOnboarding,
-            imageTable = SourceTableState.forKind(SourceKind.IMAGE_DIRECTORY, emptyList()),
-            archiveTable = SourceTableState.forKind(SourceKind.ARCHIVE_IMPORT, emptyList()),
+            table = SourceTableState.forKind(),
         ),
     )
     val state: StateFlow<GalleryPathsUiState> = _state.asStateFlow()
@@ -66,13 +65,10 @@ class GalleryPathsViewModel(
         // SD 卡之后，界面必须立刻显示"授权失效，点击重新选择"，而不是让用户面对
         // 一个空图库猜原因（用户要求「每次启动都要有授权检测」）。
         viewModelScope.launch { runAccessCheck() }
+        // 只有一张路径表：一次遍历同时解释图片与归档，因此只订阅一份来源列表。
         viewModelScope.launch {
-            SourceKind.entries.forEach { kind ->
-                launch {
-                    sourceRepository.observeSources(kind).collect { sources ->
-                        _state.update { it.withSavedRows(kind, sources) }
-                    }
-                }
+            sourceRepository.observeSources().collect { sources ->
+                _state.update { it.withSavedRows(sources) }
             }
         }
         viewModelScope.launch {
@@ -90,7 +86,7 @@ class GalleryPathsViewModel(
      * 选择成功时立刻取持久授权并写库，然后马上对该来源发起扫描——用户不需要
      * 再点任何按钮就能在图库里看到结果。
      */
-    fun onDirectoryPicked(kind: SourceKind, uri: Uri?) {
+    fun onDirectoryPicked(uri: Uri?) {
         if (uri == null) return
         val granted = safAccess.takePersistablePermission(uri)
         if (!granted) {
@@ -107,7 +103,7 @@ class GalleryPathsViewModel(
             providerLabel = description.providerLabel,
         )
         viewModelScope.launch {
-            val existing = _state.value.table(kind).rows
+            val existing = _state.value.table.rows
                 .mapNotNull { it.source }
                 .firstOrNull { it.treeUri == picked.treeUri.toString() }
             if (existing != null) {
@@ -115,15 +111,17 @@ class GalleryPathsViewModel(
                 return@launch
             }
             safAccess.retain(picked.treeUri.toString())
-            addSource(kind, picked)
+            addSource(picked)
         }
     }
 
     /** 立即新增一条来源并开始扫描。 */
-    private suspend fun addSource(kind: SourceKind, picked: PickedDirectory) {
+    private suspend fun addSource(picked: PickedDirectory) {
         val source = LibrarySource(
             sourceId = StableId.sourceId(picked.treeUri.toString()),
-            kind = kind,
+            // 来源种类不再决定扫描行为（一次遍历同时找图片与归档章节），
+            // 只作为卡片身份与徽标保留，因此新来源统一用图片目录这一支。
+            kind = SourceKind.IMAGE_DIRECTORY,
             treeUri = picked.treeUri.toString(),
             displayPath = picked.displayPath,
             providerLabel = picked.providerLabel,
@@ -149,13 +147,13 @@ class GalleryPathsViewModel(
     }
 
     /** 子目录复选框：改动即保存，保存后重新协调该来源（开发文档 4.1）。 */
-    fun setRecursive(kind: SourceKind, sourceId: String, recursive: Boolean) {
-        mutate(kind, sourceId) { it.copy(recursive = recursive) }
+    fun setRecursive(sourceId: String, recursive: Boolean) {
+        mutate(sourceId) { it.copy(recursive = recursive) }
     }
 
     /** 类型开关：改动即保存，随后重识别该来源。 */
-    fun setMode(kind: SourceKind, sourceId: String, mode: LayoutMode) {
-        mutate(kind, sourceId) { it.copy(mode = mode) }
+    fun setMode(sourceId: String, mode: LayoutMode) {
+        mutate(sourceId) { it.copy(mode = mode) }
     }
 
     /**
@@ -165,7 +163,6 @@ class GalleryPathsViewModel(
      * 界面会显示与配置不符的旧卡片（开发文档 4.1「行保存后重新协调该源索引」）。
      */
     private fun mutate(
-        kind: SourceKind,
         sourceId: String,
         transform: (LibrarySource) -> LibrarySource,
     ) {
@@ -182,21 +179,21 @@ class GalleryPathsViewModel(
     }
 
     /** 拖动/上移下移排序：唯一即时保存的配置操作（开发文档 4.1）。 */
-    fun moveRow(kind: SourceKind, fromIndex: Int, toIndex: Int) {
-        val rows = _state.value.table(kind).rows
+    fun moveRow(fromIndex: Int, toIndex: Int) {
+        val rows = _state.value.table.rows
         if (fromIndex !in rows.indices || toIndex !in rows.indices || fromIndex == toIndex) return
         val ids = rows.mapNotNull { it.source?.sourceId }
         if (ids.size != rows.size) return
         val reordered = ids.toMutableList().apply { add(toIndex, removeAt(fromIndex)) }
-        viewModelScope.launch { sourceRepository.reorder(kind, reordered) }
+        viewModelScope.launch { sourceRepository.reorder(reordered) }
     }
 
     // ------------------------------------------------------------ 路径编辑弹窗
 
-    fun openEditor(kind: SourceKind, sourceId: String) {
-        val source = _state.value.table(kind).rows.firstOrNull { it.source?.sourceId == sourceId }?.source
+    fun openEditor(sourceId: String) {
+        val source = _state.value.table.rows.firstOrNull { it.source?.sourceId == sourceId }?.source
             ?: return
-        _state.update { it.copy(editor = SourceEditDialogState.from(source, kind)) }
+        _state.update { it.copy(editor = SourceEditDialogState.from(source)) }
     }
 
     fun closeEditor() {
@@ -281,10 +278,10 @@ class GalleryPathsViewModel(
     // ------------------------------------------------------------ 删除与扫描
 
     /** 请求删除：先弹确认（唯一保留确认的操作）。 */
-    fun requestDelete(kind: SourceKind, sourceId: String) {
-        val source = _state.value.table(kind).rows.firstOrNull { it.source?.sourceId == sourceId }?.source
+    fun requestDelete(sourceId: String) {
+        val source = _state.value.table.rows.firstOrNull { it.source?.sourceId == sourceId }?.source
             ?: return
-        _state.update { it.copy(pendingDelete = PendingDelete(kind, source)) }
+        _state.update { it.copy(pendingDelete = PendingDelete(source)) }
     }
 
     fun cancelDelete() {
@@ -338,7 +335,7 @@ class GalleryPathsViewModel(
      * permission 字段并汇总量级给横幅显示。
      */
     private suspend fun runAccessCheck() {
-        val sources = SourceKind.entries.flatMap { sourceRepository.getSources(it) }
+        val sources = sourceRepository.getSources()
         val report = accessCoordinator.checkAll(sources)
         _state.update {
             it.copy(
@@ -350,8 +347,8 @@ class GalleryPathsViewModel(
     }
 
     /** 打开扫描诊断（开发文档 4.1「点击失败状态查看原因、重试或授权」）。 */
-    fun openDiagnostics(kind: SourceKind, sourceId: String) {
-        val source = _state.value.table(kind).rows.firstOrNull { it.source?.sourceId == sourceId }?.source
+    fun openDiagnostics(sourceId: String) {
+        val source = _state.value.table.rows.firstOrNull { it.source?.sourceId == sourceId }?.source
             ?: return
         _state.update { it.copy(diagnosticsTarget = source) }
     }
@@ -410,11 +407,10 @@ class GalleryPathsViewModel(
     }
 }
 
-/** 页面状态。两张表都存在，界面按 kind 取用。 */
+/** 页面状态。只有一张路径表：图片与归档由同一次扫描一起识别。 */
 data class GalleryPathsUiState(
     val isOnboarding: Boolean,
-    val imageTable: SourceTableState,
-    val archiveTable: SourceTableState,
+    val table: SourceTableState,
     val overall: OverallScanState = OverallScanState(),
     val scanStates: Map<String, ScanState> = emptyMap(),
     val editor: SourceEditDialogState? = null,
@@ -429,20 +425,13 @@ data class GalleryPathsUiState(
     val revokedCount: Int = 0,
     val hint: String? = null,
 ) {
-    fun table(kind: SourceKind): SourceTableState =
-        if (kind == SourceKind.IMAGE_DIRECTORY) imageTable else archiveTable
-
     /** 至少一个已保存且可读的路径才能进入图库（开发文档 4.1「下一步」）。 */
-    val canProceed: Boolean
-        get() = (imageTable.rows + archiveTable.rows).any { it.source != null }
+    val canProceed: Boolean get() = table.rows.any { it.source != null }
 
     val hasAnySource: Boolean get() = canProceed
 
-    fun withSavedRows(kind: SourceKind, sources: List<LibrarySource>): GalleryPathsUiState {
+    fun withSavedRows(sources: List<LibrarySource>): GalleryPathsUiState {
         val rows = sources.map { SourceRow(source = it, key = it.sourceId) }
-        return replaceTable(kind, SourceTableState.forKind(kind, rows))
+        return copy(table = SourceTableState.withRows(rows))
     }
-
-    private fun replaceTable(kind: SourceKind, table: SourceTableState): GalleryPathsUiState =
-        if (kind == SourceKind.IMAGE_DIRECTORY) copy(imageTable = table) else copy(archiveTable = table)
 }

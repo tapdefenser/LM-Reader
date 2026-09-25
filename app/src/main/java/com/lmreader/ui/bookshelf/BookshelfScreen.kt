@@ -484,14 +484,12 @@ private fun MangaCard.coverRequest(treeUris: Map<String, String>): CoverRequest?
 
 @Composable
 private fun rememberSourceTreeUris(container: AppContainer): Map<String, String> {
-    val imageSources by container.sourceRepository
-        .observeSources(SourceKind.IMAGE_DIRECTORY)
+    // 只有一张来源表（图片与归档由同一次扫描一起识别），所以只订阅一次。
+    val sources by container.sourceRepository
+        .observeSources()
         .collectAsStateWithLifecycle(initialValue = emptyList())
-    val archiveSources by container.sourceRepository
-        .observeSources(SourceKind.ARCHIVE_IMPORT)
-        .collectAsStateWithLifecycle(initialValue = emptyList())
-    return remember(imageSources, archiveSources) {
-        (imageSources + archiveSources).associate { it.sourceId to it.treeUri }
+    return remember(sources) {
+        sources.associate { it.sourceId to it.treeUri }
     }
 }
 

@@ -452,17 +452,16 @@ private fun MangaCard.coverRequest(treeUris: Map<String, String>): CoverRequest?
  *
  * 封面 URI 必须是「授权树 URI + documentId」的组合（开发文档 4.1），因此卡片投影
  * 带上 sourceId，这里只做一次映射而不是为每张卡片查库。
+ *
+ * 只有一张来源表（图片与归档由同一次扫描一起识别），所以只订阅一次。
  */
 @Composable
 private fun rememberSourceTreeUris(container: AppContainer): Map<String, String> {
-    val imageSources by container.sourceRepository
-        .observeSources(SourceKind.IMAGE_DIRECTORY)
+    val sources by container.sourceRepository
+        .observeSources()
         .collectAsStateWithLifecycle(initialValue = emptyList())
-    val archiveSources by container.sourceRepository
-        .observeSources(SourceKind.ARCHIVE_IMPORT)
-        .collectAsStateWithLifecycle(initialValue = emptyList())
-    return remember(imageSources, archiveSources) {
-        (imageSources + archiveSources).associate { it.sourceId to it.treeUri }
+    return remember(sources) {
+        sources.associate { it.sourceId to it.treeUri }
     }
 }
 

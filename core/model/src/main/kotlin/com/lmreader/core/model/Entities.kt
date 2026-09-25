@@ -30,7 +30,7 @@ data class LibrarySource(
     val recursive: Boolean,
     /** 类型列，默认 MULTI_CHAPTER（开发文档 4.1）。 */
     val mode: LayoutMode,
-    /** 表内顺序，0 起；两张表各自独立编号。 */
+    /** 来源顺序，0 起；只有一张路径表，因此是一条序列（拖动排序即时持久化）。 */
     val orderIndex: Int,
     val permission: SourcePermissionState,
     val revision: Long,

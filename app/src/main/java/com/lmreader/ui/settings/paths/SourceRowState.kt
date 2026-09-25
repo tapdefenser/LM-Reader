@@ -32,9 +32,8 @@ data class SourceRow(
     val permission: SourcePermissionState get() = source?.permission ?: SourcePermissionState.CHECKING
 }
 
-/** 一张表的完整状态。 */
+/** 路径表的完整状态。只有一张表：一次遍历同时解释图片与归档（见 `StructureScanner`）。 */
 data class SourceTableState(
-    val kind: SourceKind,
     /** 表头四列；语义是路径/子目录/类型/删除，展示顺序按可读性排列。 */
     val headers: List<String> = HEADERS,
     val title: String,
@@ -46,21 +45,14 @@ data class SourceTableState(
     companion object {
         val HEADERS = listOf("路径", "子目录", "类型", "删除")
 
-        fun forKind(kind: SourceKind, rows: List<SourceRow>): SourceTableState = when (kind) {
-            SourceKind.IMAGE_DIRECTORY -> SourceTableState(
-                kind = kind,
-                title = "图库路径列表",
-                rows = rows,
-                emptyHint = "还没有图库路径。点击 + 选择存放漫画图片的文件夹，选完立即加入列表。",
-            )
+        fun forKind(): SourceTableState = SourceTableState(
+            title = "图库路径列表",
+            rows = emptyList(),
+            emptyHint = "还没有图库路径。点击 + 选择存放漫画的文件夹，选完立即加入列表；" +
+                "目录里的图片与 CBZ/ZIP/PDF 会在同一次扫描里一起识别。",
+        )
 
-            SourceKind.ARCHIVE_IMPORT -> SourceTableState(
-                kind = kind,
-                title = "CBZ / ZIP / PDF 导入列表",
-                rows = rows,
-                emptyHint = "还没有导入路径。点击 + 选择存放 CBZ、ZIP 或 PDF 的文件夹，选完立即加入列表。",
-            )
-        }
+        fun withRows(rows: List<SourceRow>): SourceTableState = forKind().copy(rows = rows)
     }
 }
 
@@ -80,7 +72,6 @@ internal fun documentIdOf(treeUri: String): String {
 
 /** 路径行编辑弹窗的初始值。 */
 data class SourceEditDialogState(
-    val kind: SourceKind,
     val sourceId: String,
     /** 系统提供的路径，只读展示（授权句柄，不允许伪造）。 */
     val systemPath: String,
@@ -101,9 +92,8 @@ data class SourceEditDialogState(
     companion object {
         const val MAX_NAME_LENGTH = 60
 
-        fun from(source: LibrarySource, kind: SourceKind): SourceEditDialogState =
+        fun from(source: LibrarySource): SourceEditDialogState =
             SourceEditDialogState(
-                kind = kind,
                 sourceId = source.sourceId,
                 systemPath = source.displayPath,
                 providerLabel = source.providerLabel,
@@ -113,10 +103,7 @@ data class SourceEditDialogState(
 }
 
 /** 待确认删除的行（危险操作保留确认，避免误触删除整条索引来源）。 */
-data class PendingDelete(
-    val kind: SourceKind,
-    val source: LibrarySource,
-)
+data class PendingDelete(val source: LibrarySource)
 
 /** 系统目录选择器的结果，交给 ViewModel 写入。 */
 data class PickedDirectory(

@@ -11,7 +11,6 @@ import com.lmreader.core.model.MangaCard
 import com.lmreader.core.model.LibrarySource
 import com.lmreader.core.model.MangaRepository
 import com.lmreader.core.model.ShelfRepository
-import com.lmreader.core.model.SourceKind
 import com.lmreader.core.model.SourceRepository
 import com.lmreader.core.storage.scan.LibraryScanCoordinator
 import com.lmreader.core.storage.scan.ScanReason
@@ -76,14 +75,10 @@ class LibraryViewModel(
             }
         }
         // 图源列表（右滑栏内容）+ 每个来源已发现的数量。
+        // 只有一张来源表：图片与归档由同一次扫描一起识别。
         viewModelScope.launch {
-            sourceRepository.observeSources(SourceKind.IMAGE_DIRECTORY).collect { sources ->
-                _state.update { it.copy(imageSources = sources) }
-            }
-        }
-        viewModelScope.launch {
-            sourceRepository.observeSources(SourceKind.ARCHIVE_IMPORT).collect { sources ->
-                _state.update { it.copy(archiveSources = sources) }
+            sourceRepository.observeSources().collect { sources ->
+                _state.update { it.copy(sources = sources) }
             }
         }
         viewModelScope.launch {
@@ -387,8 +382,8 @@ data class LibraryUiState(
     val indexingHint: Boolean = false,
     val error: String? = null,
     // ---- 图源筛选（右滑栏）----
-    val imageSources: List<LibrarySource> = emptyList(),
-    val archiveSources: List<LibrarySource> = emptyList(),
+    /** 全部来源；只有一张表，图片与归档由同一次扫描一起识别。 */
+    val sources: List<LibrarySource> = emptyList(),
     /** 右滑栏当前是否打开。 */
     val sourceFilterOpen: Boolean = false,
     /** 栏内草稿；只有点「确认」才写进 [appliedSourceFilter]。 */
@@ -402,8 +397,8 @@ data class LibraryUiState(
     val selection: Set<String> = emptySet(),
     val hint: String? = null,
 ) {
-    /** 两张表的来源合并成一个列表，顺序为"图片表在前、归档表在后"（开发文档 6.4）。 */
-    val allSources: List<LibrarySource> get() = imageSources + archiveSources
+    /** 图源筛选栏的来源列表（只有一张表）。 */
+    val allSources: List<LibrarySource> get() = sources
 
     val selectionMode: Boolean get() = selection.isNotEmpty()
 

@@ -28,6 +28,15 @@ data class CardQueryRow(
     val chapterCount: Int?,
     val chapterCountKnown: Boolean,
     val availability: MangaAvailability,
+    /**
+     * 这张卡片的章节里是否有归档章节（CBZ/ZIP/PDF）。
+     *
+     * 为什么由查询算：一次遍历同时识别图片与归档之后，「来源种类」不再说明卡片内容
+     * （一个来源里可以同时有图片章节的漫画与压缩包章节的漫画），卡片徽标必须看**章节**。
+     * 用 `EXISTS` 子查询而不是新增列：章节表本来就有 `(mangaId, sortKey)` 索引，
+     * 每行只在这个漫画自己的章节里找一次，不需要迁移与维护冗余列。
+     */
+    val hasArchiveChapters: Boolean,
     /** null = 不在书架；用于推导 `MangaCard.inShelf`。 */
     val shelfCategoryId: Long?,
 )
@@ -90,6 +99,10 @@ interface MangaDao {
                m.chapterCount AS chapterCount,
                m.chapterCountKnown AS chapterCountKnown,
                m.availability AS availability,
+               EXISTS(
+                   SELECT 1 FROM chapters AS c
+                   WHERE c.mangaId = m.mangaId AND c.kind = 'ARCHIVE'
+               ) AS hasArchiveChapters,
                s.categoryId AS shelfCategoryId
         FROM mangas AS m
         LEFT JOIN shelf_entries AS s ON s.mangaId = m.mangaId
@@ -121,6 +134,10 @@ interface MangaDao {
                m.chapterCount AS chapterCount,
                m.chapterCountKnown AS chapterCountKnown,
                m.availability AS availability,
+               EXISTS(
+                   SELECT 1 FROM chapters AS c
+                   WHERE c.mangaId = m.mangaId AND c.kind = 'ARCHIVE'
+               ) AS hasArchiveChapters,
                s.categoryId AS shelfCategoryId
         FROM mangas AS m
         LEFT JOIN shelf_entries AS s ON s.mangaId = m.mangaId
@@ -147,6 +164,10 @@ interface MangaDao {
                m.chapterCount AS chapterCount,
                m.chapterCountKnown AS chapterCountKnown,
                m.availability AS availability,
+               EXISTS(
+                   SELECT 1 FROM chapters AS c
+                   WHERE c.mangaId = m.mangaId AND c.kind = 'ARCHIVE'
+               ) AS hasArchiveChapters,
                s.categoryId AS shelfCategoryId
         FROM mangas AS m
         JOIN shelf_entries AS s ON s.mangaId = m.mangaId
@@ -172,6 +193,10 @@ interface MangaDao {
                m.chapterCount AS chapterCount,
                m.chapterCountKnown AS chapterCountKnown,
                m.availability AS availability,
+               EXISTS(
+                   SELECT 1 FROM chapters AS c
+                   WHERE c.mangaId = m.mangaId AND c.kind = 'ARCHIVE'
+               ) AS hasArchiveChapters,
                s.categoryId AS shelfCategoryId
         FROM mangas AS m
         JOIN shelf_entries AS s ON s.mangaId = m.mangaId
@@ -198,6 +223,10 @@ interface MangaDao {
                m.chapterCount AS chapterCount,
                m.chapterCountKnown AS chapterCountKnown,
                m.availability AS availability,
+               EXISTS(
+                   SELECT 1 FROM chapters AS c
+                   WHERE c.mangaId = m.mangaId AND c.kind = 'ARCHIVE'
+               ) AS hasArchiveChapters,
                s.categoryId AS shelfCategoryId
         FROM mangas AS m
         LEFT JOIN shelf_entries AS s ON s.mangaId = m.mangaId
@@ -229,6 +258,10 @@ interface MangaDao {
                m.chapterCount AS chapterCount,
                m.chapterCountKnown AS chapterCountKnown,
                m.availability AS availability,
+               EXISTS(
+                   SELECT 1 FROM chapters AS c
+                   WHERE c.mangaId = m.mangaId AND c.kind = 'ARCHIVE'
+               ) AS hasArchiveChapters,
                s.categoryId AS shelfCategoryId
         FROM mangas AS m
         LEFT JOIN shelf_entries AS s ON s.mangaId = m.mangaId

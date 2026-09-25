@@ -26,7 +26,7 @@ class SafTreeAccess(private val context: Context) {
     /** 扫描调度需要构造树工厂，因此把 resolver 暴露给同模块的存储层。 */
     fun contentResolver(): ContentResolver = context.contentResolver
 
-    /** 保存的授权引用计数：同一棵树被两张表引用时不能因为删掉一行就丢授权。 */
+    /** 保存的授权引用计数：同一棵树被多行引用时不能因为删掉一行就丢授权。 */
     private val references = mutableMapOf<String, Int>()
 
     /**

@@ -27,11 +27,11 @@ internal class SourceRepositoryImpl(
 
     private val mangaDao = database.mangaDao()
 
-    override fun observeSources(kind: SourceKind): Flow<List<LibrarySource>> =
-        dao.observeByKind(kind).map { list -> list.map { it.toDomain() } }
+    override fun observeSources(): Flow<List<LibrarySource>> =
+        dao.observeAll().map { list -> list.map { it.toDomain() } }
 
-    override suspend fun getSources(kind: SourceKind): List<LibrarySource> =
-        dao.getByKind(kind).map { it.toDomain() }
+    override suspend fun getSources(): List<LibrarySource> =
+        dao.getAllOrdered().map { it.toDomain() }
 
     override suspend fun getSource(sourceId: String): LibrarySource? = dao.getById(sourceId)?.toDomain()
 
@@ -42,7 +42,7 @@ internal class SourceRepositoryImpl(
                 orderIndex = if (source.orderIndex >= 0) {
                     source.orderIndex
                 } else {
-                    dao.maxOrderIndex(source.kind) + 1
+                    dao.maxOrderIndex() + 1
                 },
                 revision = 1,
             )
@@ -69,8 +69,8 @@ internal class SourceRepositoryImpl(
         }
     }
 
-    override suspend fun reorder(kind: SourceKind, orderedSourceIds: List<String>) {
-        dao.applyOrder(kind, orderedSourceIds)
+    override suspend fun reorder(orderedSourceIds: List<String>) {
+        dao.applyOrder(orderedSourceIds)
     }
 
     override suspend fun updateScanResult(

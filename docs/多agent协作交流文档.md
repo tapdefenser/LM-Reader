@@ -322,16 +322,38 @@ ARCHIVE_IMPORT），下一次扫描按归档解释，那 49 张图片卡片会�
   压缩包单章节`（替换上一轮按"请改用另一张表"写的那两条）。自然序里空格排在数字前，
   所以 `…OOHS 2 - …` 先于 `…OOHS1 - …`，锚点章节按这条规则确定。
 
-### 第二步（未做，等用户决定）
+### 第二步（已完成并真机验证）：两张表合并成一张
 
-两张表合并成一张：`SourceTableState.forKind`、`GalleryPathsViewModel.table(kind)`、`SourceDao`
-的 kind 作用域查询、`LibraryScreen` + `BookshelfScreen` 的双订阅、`SourceFilterDrawer` 与
-`MangaCardItem` 的 kind 文案全部收敛；`SourceKind` 只保留身份用途（新来源可加 `AUTO`）。
-届时建议把"图片/归档"徽标改成由**章节种类**推导——现在的徽标反映来源，对压缩包章节的漫画
-会显示"图片"，是合并后唯一明显的文案不准。
+用户确认继续后落地。改动面（都是"收敛"，没有新增能力）：
 
-### 合并后更明显的已知限制
+- `SourceDao`：`observeByKind` / `getByKind` / `maxOrderIndex(kind)` / `applyOrder(kind, …)`
+  全部去掉 kind 作用域，改成 `observeAll` / `getAllOrdered` / `maxOrderIndex()` / `applyOrder(ids)`；
+  已知代价写在 KDoc 里——合并前两张表各有自己的 0..n 序列，合并后可能出现重复 `orderIndex`，
+  由 `sourceId` 兜底保证顺序稳定，用户拖动一次即成唯一序列。
+- `SourceRepository`：`observeSources()` / `getSources()` / `reorder(ids)`。
+- UI：`SourceTableState.forKind` → 一张表（标题「图库路径列表」+ 新提示文案）；
+  `GalleryPathsUiState.imageTable/archiveTable` → `table`；`GalleryPathsViewModel` 去掉全部 kind
+  参数、只订阅一份来源；`GalleryPathsScreen` 去掉第二个 `+`/第二张表与"两表互不混合"说明；
+  `LibraryScreen`/`BookshelfScreen`/`LibraryViewModel` 的双订阅合成一次；
+  `SourceFilterDrawer` 不再显示来源种类（只剩「共 N 项 · 多章节/单章节」）。
+- **卡片徽标改由章节种类推导**：`MangaCard.hasArchiveChapters`（`EXISTS(SELECT 1 FROM chapters
+  WHERE mangaId = m.mangaId AND kind = 'ARCHIVE')`，6 条卡片查询各加这一列）——
+  原先按来源种类显示"图片/归档"，合并后会对着压缩包章节的漫画显示"图片"，是明着说谎。
+  现在只有"章节是压缩包"的卡片多一个「压缩包章节」徽标（归档阅读是 P2，用户需要知道
+  哪几张暂时打不开）。顺带把 `SourceKind` 的 KDoc 从"扫描开关"改成"只作身份"。
+- 契约同步：开发文档 4.1（一张表 + 控件表去掉"每表/同表内移动"）、6.4 有效源顺序、
+  15.3 身份说明、A02 验收行、功能地图；框架实现说明 §3 枚举注释、§4.3、§7.2 页面结构、S11；
+  README 首段。
+
+真机验证（小米 14 Pro，`/Tachiyomi/local`）：
+
+- 「图库与路径」只剩**一张表**（1 条路径、一个 `+`），提示文案说明两种章节由同一次扫描识别；
+- 图库 51 张卡片，`Jyminish  OOHS` 卡片带「压缩包章节」徽标，其余卡片只有「多章节」，
+  不再出现"图片"这种对内容无信息量的徽标。
+
+### 合并后仍然存在的已知限制
 
 - 归档章节**没有页清单与封面**：那 2 张压缩包漫画的卡片显示"已发现 1 章，更新中"、没有封面；
   阅读归档属于 P2（"深入"阶段），不影响本次合并。
-- 第二步之前，两张表是冗余的：不要用两张表加同一个目录（同 sourceId 会互相覆盖）。
+- 归档章节的徽标由 `EXISTS` 子查询算出：章节表规模很大时（万级库 × 数百章）值得实测一次
+  卡片分页耗时；必要时改成维护冗余列。

@@ -27,6 +27,14 @@ data class MangaCard(
     val chapterCountKnown: Boolean,
     val inShelf: Boolean,
     val availability: MangaAvailability,
+    /**
+     * 这张卡片的章节里是否有归档章节（CBZ/ZIP/PDF）。
+     *
+     * 一次遍历同时识别图片与归档之后，[sourceKind] 只说明"这条来源是从哪张表加的"，
+     * 不再说明卡片内容，因此界面徽标改看这个字段（阅读归档本身是 P2，有这个标记
+     * 用户才知道哪几张卡暂时读不了）。
+     */
+    val hasArchiveChapters: Boolean = false,
 )
 
 /**
