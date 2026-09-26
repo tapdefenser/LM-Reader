@@ -7,39 +7,43 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.lmreader.core.model.ChapterRecord
 import com.lmreader.core.model.MangaRepository
-import com.lmreader.core.model.ReaderSettings
-import com.lmreader.core.model.ReadingDirection
-import com.lmreader.core.model.ReadingMode
-import com.lmreader.core.model.TapAction
 import com.lmreader.core.model.NavigationRegions
+import com.lmreader.core.model.ReaderSettings
+import com.lmreader.core.model.ReadingMode
 import com.lmreader.core.model.ReadingProgress
 import com.lmreader.core.model.ReadingProgressRepository
-import com.lmreader.core.storage.reader.PageSource
+import com.lmreader.core.model.TapAction
 import com.lmreader.core.storage.reader.PageSourceFactory
 import com.lmreader.core.storage.reader.PageSourceOpenResult
 import com.lmreader.core.storage.reader.ReaderPage
 import com.lmreader.core.storage.settings.ReaderPreferences
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 /**
- * 阅读器状态机（开发文档 12；行为对齐 Mihon `ReaderViewModel` 的**页码语义**）。
+ * 阅读器状态机：章节编排 + 进度（开发文档 12）。
  *
- * 关于进度的粒度：Mihon 的分页与条漫阅读器都只持久化**页码**，恢复时把该页对齐到
- * 视口顶部，页内偏移设计上丢弃。本项目照搬这一行为，因此 `reading_progress.intraPageRatio`
- * 保留在表里但恒为 0（详见 docs/框架实现说明 6.5）。
+ * ## 章节编排照搬 Mihon 的地方
  *
- * 关于"当前页"的判定：分页与条漫的语义**不同**，不能共用一个实现——
- * - 分页：视口里那一页就是当前页；
- * - 条漫：页底越过视口底部才算当前页（"读完这一页"而不是"看到这一页"）。
- * 具体判定在各自的 Composable 里，本类只负责接收结果并落库。
+ * Mihon 的阅读器**同时持有当前章与相邻两章**（`ViewerChapters(curr, prev, next)`），
+ * 并把"章节过渡"作为与页面并列的项放进同一个列表（`PagerViewerAdapter.setChapters`）。
+ * 这样才能做到章末接着翻、条带尾部预置下一章。此前这里只加载当前章，于是到章末就停住
+ * ——那是"多章节读取基本上是坏的"的直接原因。
+ *
+ * 项列表的组装顺序见 [buildReaderItems]；本类负责加载相邻章、把落点换算成进度，
+ * 以及在预载完成导致下标整体后移时**按页面身份重新定位**，避免读者突然跳页。
+ *
+ * ## 进度粒度
+ *
+ * 照搬 Mihon：只持久化**页码**，页内偏移丢弃。因此 `intraPageRatio` 恒为 0
+ * （详见 docs/框架实现说明 6.5）。
  */
 class ReaderViewModel(
     private val mangaId: String,
@@ -56,22 +60,30 @@ class ReaderViewModel(
     private var savedProgress: ReadingProgress? = null
     private val progressSaveMutex = Mutex()
 
+    /**
+     * 相邻章的加载任务。
+     *
+     * 按章节 ID 保存是为了在快速换章时取消上一轮预载：不取消会让多个章节同时列页，
+     * 既浪费 IO，也可能用过期结果覆盖当前状态。
+     */
+    private val neighborJobs = HashMap<String, Job>()
+
     init {
-        // 设置是持续观察的：用户在下方设置栏改了阅读模式，阅读器应当立刻换布局并
-        // 尽量停在原页，而不是要求退出重进。
+        // 设置持续观察：用户在阅读器内改模式后应立刻换布局并停在原处。
         viewModelScope.launch {
             readerPreferences.settings.collect { settings ->
-                val previous = _state.value.settings
+                val wasContinuous = _state.value.isContinuous
                 _state.update { it.copy(settings = settings) }
-                if (previous.readingMode != settings.readingMode) {
-                    onReadingModeChanged()
+                if (wasContinuous != settings.readingMode.continuous) {
+                    // 分页 ↔ 条漫互换时需要重建项列表的**下标基准**：条漫允许停在
+                    // 过渡项上，分页也一样，所以只需重新定位到同一身份。
+                    reanchorCurrentPage()
                 }
             }
         }
         reload()
     }
 
-    /** 加载漫画、章节与被记住的位置。 */
     fun reload() {
         viewModelScope.launch {
             _state.update { it.copy(loading = true, error = null) }
@@ -80,27 +92,27 @@ class ReaderViewModel(
                     ?: error("漫画或来源已不存在")
                 if (target.chapters.isEmpty()) error("这部漫画还没有可读章节")
                 savedProgress = progressRepository.get(mangaId)
-                val desiredChapterId = requestedChapterId.takeUnless { it == RESUME_CHAPTER }
+                val desired = requestedChapterId.takeUnless { it == RESUME_CHAPTER }
                     ?: savedProgress?.chapterId
-                val chapterIndex = target.chapters.indexOfFirst { it.chapterId == desiredChapterId }
+                val index = target.chapters.indexOfFirst { it.chapterId == desired }
                     .takeIf { it >= 0 }
                     ?: 0
                 _state.update {
                     it.copy(
                         mangaTitle = target.manga.displayName,
                         sourceTreeUri = target.sourceTreeUri,
-                        chapters = target.chapters,
+                        chapterList = target.chapters,
                     )
                 }
                 // 只有"继续阅读"入口才恢复页码；从章节列表点进某一章时从头开始。
                 val restorePage = savedProgress
                     ?.takeIf {
                         requestedChapterId == RESUME_CHAPTER &&
-                            it.chapterId == target.chapters[chapterIndex].chapterId
+                            it.chapterId == target.chapters[index].chapterId
                     }
                     ?.pageOrdinal
                     ?: 0
-                openChapter(chapterIndex, restorePage)
+                openChapter(index, restorePage)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
@@ -109,128 +121,16 @@ class ReaderViewModel(
         }
     }
 
-    // ------------------------------------------------------------ 翻页
-
-    /**
-     * 分页模式的翻页。`delta` 是**阅读顺序**上的增量，不是屏幕方向。
-     *
-     * 右到左模式下"下一页"在屏幕左侧，这个映射由分页 Composable 的 `reverseLayout`
-     * 负责；这里只关心阅读顺序，因此同一套动作可用于三种分页方向。
-     */
-    fun turnPage(delta: Int) {
-        val current = _state.value
-        val target = current.currentPageIndex + delta
-        // 越界不在这里跨章：Mihon 用独立的章节过渡页承担跨界，翻到头就停住。
-        if (target !in current.pages.indices) return
-        if (target == current.currentPageIndex) return
-        _state.update { it.copy(currentPageIndex = target) }
-        saveProgress()
-    }
-
-    /** 页码滑杆：直接跳到本章第 [pageIndex] 页（0 基）。 */
-    fun jumpToPage(pageIndex: Int) {
-        val current = _state.value
-        if (pageIndex !in current.pages.indices) return
-        if (pageIndex == current.currentPageIndex) return
-        _state.update { it.copy(currentPageIndex = pageIndex) }
-        saveProgress()
-    }
-
-    /**
-     * 条漫的滚动位置变化。
-     *
-     * 与分页走同一个落库路径；区别只是调用方用"页底越过视口底"算出这一页，
-     * 而不是"视口里是哪一页"。
-     */
-    fun onScrolledToPage(pageIndex: Int) {
-        val current = _state.value
-        if (pageIndex !in current.pages.indices) return
-        if (pageIndex == current.currentPageIndex) return
-        _state.update { it.copy(currentPageIndex = pageIndex) }
-        saveProgress()
-    }
-
     // ------------------------------------------------------------ 章节
 
     fun openPreviousChapter() = moveChapter(-1)
 
     fun openNextChapter() = moveChapter(1)
 
-    /**
-     * 点击区域命中。
-     *
-     * 区域表与反转都由模型层解析，这里只把动作映射成阅读器行为。竖向模式下的
-     * 上/下平移语义与横向相反，因此要按方向分派——这正是 Mihon 里
-     * `PagerViewer` 与 `WebtoonViewer` 各自实现 `moveToNext` 的原因。
-     */
-    fun onTap(x: Float, y: Float) {
-        val current = _state.value
-        val action = NavigationRegions.hitTest(
-            zones = current.settings.tapZones,
-            invert = current.settings.tapInvert,
-            mode = current.settings.readingMode,
-            x = x,
-            y = y,
-        )
-        when (action) {            TapAction.MENU -> toggleChrome()
-            // 上一页/下一页是阅读顺序；PAN_LEFT/PAN_RIGHT 是屏幕方向。
-            // 五种模式的"屏幕左/右"到"阅读前/后"的映射不同：
-            // - 横向分页：视情况互换（右到左时屏幕左侧是下一页）；
-            // - 竖向：屏幕方向无关，两个都按阅读顺序处理。
-            TapAction.PREVIOUS -> turnPage(-1)
-            TapAction.NEXT -> turnPage(1)
-            TapAction.PAN_LEFT -> handleScreenSide(left = true)
-            TapAction.PAN_RIGHT -> handleScreenSide(left = false)
-        }
-    }
-
-    /**
-     * 屏幕左/右半边的动作。
-     *
-     * 这里刻意**不**按阅读模式翻转：Mihon 也不翻转。右到左模式的翻页方向是由分页
-     * 组件的列表反转实现的，于是"屏幕左侧 = 阅读下一页"自然成立。若在这里再翻转
-     * 一次，右到左模式就会反向翻页——这是个很容易"顺手修好"却把行为改错的点。
-     *
-     * 竖向模式同样落到这里：Mihon 的竖向分页也用左右两栏点击区，且它的"左"同样映射
-     * 到阅读上一页，因此不需要按方向分支。
-     */
-    private fun handleScreenSide(left: Boolean) {
-        turnPage(if (left) -1 else 1)
-    }
-
-    fun toggleChrome() {
-        _state.update { it.copy(chromeVisible = !it.chromeVisible) }
-    }
-
-    /** 点按区域遮罩层的显示与消退（Mihon `ReaderNavigationOverlayView`）。 */
-    fun showTapZoneOverlay() {
-        _state.update { it.copy(tapZoneOverlayVisible = true) }
-    }
-
-    fun hideTapZoneOverlay() {
-        if (!_state.value.tapZoneOverlayVisible) return
-        _state.update { it.copy(tapZoneOverlayVisible = false) }
-    }
-
-    /** 用户在阅读器内改了阅读模式（设置栏），写回偏好。 */
-    fun setReadingMode(mode: ReadingMode) {
-        viewModelScope.launch { readerPreferences.update { it.copy(readingMode = mode) } }
-    }
-
-    /**
-     * 阅读模式变了：保持章节与页码，不重新枚举章节。
-     *
-     * 不重开章节的理由：换布局不该丢掉"我在第几页"，而重新枚举会重排页码并可能
-     * 触发一次网络/磁盘读取。页码越界由各 Composable 的 `coerceIn` 兜住。
-     */
-    private fun onReadingModeChanged() {
-        _state.update { it.copy(chromeVisible = true, pageSource = it.pageSource) }
-    }
-
     private fun moveChapter(delta: Int) {
         val current = _state.value
         val target = current.currentChapterIndex + delta
-        if (target !in current.chapters.indices || current.loading) return
+        if (target !in current.chapterList.indices || current.loading) return
         viewModelScope.launch {
             try {
                 openChapter(target, 0)
@@ -242,16 +142,372 @@ class ReaderViewModel(
         }
     }
 
+    /**
+     * 打开第 [chapterIndex] 章，把它放在正中，然后预载相邻两章。
+     *
+     * @param requestedPage 章内页序号（0 基）
+     */
+    private suspend fun openChapter(chapterIndex: Int, requestedPage: Int) {
+        val snapshot = _state.value
+        val chapter = snapshot.chapterList.getOrNull(chapterIndex)
+            ?: error("章节已不存在")
+        val treeUri = snapshot.sourceTreeUri ?: error("来源路径不可用")
+        _state.update { it.copy(loading = true, error = null) }
+
+        when (val loaded = loadChapter(chapter, treeUri)) {
+            is ChapterLoadResult.Failed -> {
+                _state.update { it.copy(loading = false, error = loaded.reason) }
+                return
+            }
+
+            is ChapterLoadResult.Ok -> {
+                val current = loaded.chapter
+                val pageIndex = requestedPage.coerceIn(current.pages.indices)
+                val chapters = ViewerChapters(current = current)
+                val readerItems = buildReaderItems(chapters, snapshot.settings.alwaysShowChapterTransition)
+                // 当前章页在项列表中的起点就是"章内第 0 页"的绝对下标。
+                val offset = readerItems.currentChapterOffset
+
+                _state.update {
+                    it.copy(
+                        loading = false,
+                        currentChapterIndex = chapterIndex,
+                        chapters = chapters,
+                        items = readerItems.items,
+                        currentPageIndex = (offset + pageIndex).coerceIn(readerItems.items.indices),
+                        // 换章后重置条漫的页高缓存，避免沿用上一章的尺寸。
+                        pageHeights = emptyMap(),
+                        tapZoneOverlayVisible = it.settings.showTapZoneOverlayOnStart,
+                        error = null,
+                    )
+                }
+                mangaRepository.updateChapterPageInfo(
+                    chapterId = current.chapter.chapterId,
+                    pageCount = current.pages.size,
+                    coverDocumentId = current.pages.firstOrNull()?.documentId,
+                )
+                saveProgress()
+                preloadNeighbors(chapterIndex)
+            }
+        }
+    }
+
+    /**
+     * 预载相邻章节。
+     *
+     * 这是"多章节能连续读"的关键：分页要在末页之后放下一章的过渡页，条漫要在条带尾部
+     * 预置下一章的页。不做这一步，读者到章末会撞到一堵墙。
+     *
+     * 只预载**两侧各一章**，与 Mihon 的 `ViewerChapters` 一致：再远就不必，读到那里时
+     * 会再次触发预载。
+     */
+    private fun preloadNeighbors(chapterIndex: Int) {
+        val snapshot = _state.value
+        val treeUri = snapshot.sourceTreeUri ?: return
+        val list = snapshot.chapterList
+        val current = snapshot.chapters?.current ?: return
+
+        neighborJobs.values.forEach { it.cancel() }
+        neighborJobs.clear()
+
+        val previousIndex = chapterIndex - 1
+        val nextIndex = chapterIndex + 1
+        if (previousIndex >= 0) {
+            loadNeighbor(list[previousIndex], treeUri, current.chapterId, forward = false)
+        }
+        if (nextIndex in list.indices) {
+            loadNeighbor(list[nextIndex], treeUri, current.chapterId, forward = true)
+        }
+    }
+
+    private fun loadNeighbor(
+        chapter: ChapterRecord,
+        treeUri: String,
+        currentChapterId: String,
+        forward: Boolean,
+    ) {
+        if (neighborJobs.containsKey(chapter.chapterId)) return
+        // 先放一个"加载中"的占位：项列表因此立刻包含目标章的过渡页，
+        // 读者翻到章末时看到的是"正在载入下一章"而不是空白。
+        val placeholder = ViewerChapter(
+            chapter = chapter,
+            pages = emptyList(),
+            source = _state.value.chapters?.current?.source ?: return,
+            state = ViewerChapter.LoadState.LOADING,
+        )
+        applyNeighbor(currentChapterId, placeholder, forward)
+
+        neighborJobs[chapter.chapterId] = viewModelScope.launch {
+            val resolved = when (val result = loadChapter(chapter, treeUri)) {
+                is ChapterLoadResult.Ok -> result.chapter
+                is ChapterLoadResult.Failed -> placeholder.copy(state = ViewerChapter.LoadState.FAILED)
+            }
+            // 结果回来时当前章可能已经换了：只在仍然相邻时应用，否则丢弃。
+            val now = _state.value.chapters ?: return@launch
+            applyNeighbor(now.current.chapterId, resolved, forward)
+        }
+    }
+
+    /** 把相邻章写进状态并重建项列表。 */
+    private fun applyNeighbor(currentChapterId: String, neighbor: ViewerChapter, forward: Boolean) {
+        _state.update { snapshot ->
+            val existing = snapshot.chapters ?: return@update snapshot
+            if (existing.current.chapterId != currentChapterId) return@update snapshot
+            val updated = if (forward) existing.copy(next = neighbor) else existing.copy(previous = neighbor)
+            rebuild(snapshot, updated)
+        }
+    }
+
+    /**
+     * 重建项列表，同时**保持读者当前所在的项**。
+     *
+     * 这一步不能省：预载完成会把上一章的页插到列表前面，于是所有绝对下标整体后移。
+     * 若不按身份重新定位，读者会突然跳到另一页。
+     */
+    private fun rebuild(snapshot: ReaderUiState, chapters: ViewerChapters): ReaderUiState {
+        val readerItems = buildReaderItems(chapters, snapshot.settings.alwaysShowChapterTransition)
+        val newIndex = reanchorIndex(snapshot.items, snapshot.currentPageIndex, readerItems.items)
+        return snapshot.copy(chapters = chapters, items = readerItems.items, currentPageIndex = newIndex)
+    }
+
+    /** 设置变化时（分页 ↔ 条漫）重新按身份定位，避免下标语义变化导致跳页。 */
+    private fun reanchorCurrentPage() {
+        _state.update { snapshot ->
+            val chapters = snapshot.chapters ?: return@update snapshot
+            val readerItems = buildReaderItems(chapters, snapshot.settings.alwaysShowChapterTransition)
+            val newIndex = reanchorIndex(snapshot.items, snapshot.currentPageIndex, readerItems.items)
+            snapshot.copy(items = readerItems.items, currentPageIndex = newIndex)
+        }
+    }
+
+    /** 按项身份在新列表里找回位置；身份丢失时退回到夹取后的原下标。 */
+    private fun reanchorIndex(
+        oldItems: List<ReaderItem>,
+        oldIndex: Int,
+        newItems: List<ReaderItem>,
+    ): Int {
+        if (newItems.isEmpty()) return 0
+        val anchorKey = oldItems.getOrNull(oldIndex)?.key
+        if (anchorKey != null) {
+            val found = newItems.indexOfFirst { it.key == anchorKey }
+            if (found >= 0) return found
+        }
+        return oldIndex.coerceIn(newItems.indices)
+    }
+
+    /** 列出一章的页；失败返回结构化原因而不是抛异常（章级问题要能显示重试）。 */
+    private suspend fun loadChapter(chapter: ChapterRecord, treeUri: String): ChapterLoadResult = try {
+        when (val opened = pageSourceFactory.open(treeUri, chapter)) {
+            is PageSourceOpenResult.Unsupported -> ChapterLoadResult.Failed(opened.reason)
+
+            is PageSourceOpenResult.Ready -> {
+                val pages = opened.source.pages()
+                if (pages.isEmpty()) {
+                    ChapterLoadResult.Failed("「${chapter.title}」目录内没有受支持的图片")
+                } else {
+                    ChapterLoadResult.Ok(
+                        ViewerChapter(chapter = chapter, pages = pages, source = opened.source),
+                    )
+                }
+            }
+        }
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (error: Exception) {
+        ChapterLoadResult.Failed(error.message ?: "无法打开「${chapter.title}」")
+    }
+
+    private sealed interface ChapterLoadResult {
+        data class Ok(val chapter: ViewerChapter) : ChapterLoadResult
+        data class Failed(val reason: String) : ChapterLoadResult
+    }
+
+    // ------------------------------------------------------------ 翻页
+
+    /**
+     * 翻页（阅读顺序上的增量）。
+     *
+     * 可以落在章节过渡项上——那正是"进入下一章"的表达方式，与 Mihon 一致
+     * （它的分页器同样不跨章翻页，跨界由过渡项承担）。
+     */
+    fun turnPage(delta: Int) {
+        val current = _state.value
+        if (current.items.isEmpty()) return
+        val target = (current.currentPageIndex + delta).coerceIn(current.items.indices)
+        if (target == current.currentPageIndex) return
+        settleOn(target)
+    }
+
+    /** 页码滑杆：跳到当前章的第 [localPageIndex] 页（0 基）。 */
+    fun jumpToPage(localPageIndex: Int) {
+        val current = _state.value
+        val chapter = current.chapters?.current ?: return
+        if (localPageIndex !in chapter.pages.indices) return
+        val offset = current.indexOfFirstPageOf(chapter.chapterId)
+        if (offset < 0) return
+        settleOn(offset + localPageIndex)
+    }
+
+    /**
+     * 分页器或条带落到了第 [absoluteIndex] 项。
+     *
+     * 这是**唯一**的落点入口：分页滑动、条带滚动、点按翻页、滑杆跳转最后都汇聚到这里，
+     * 因此跨章判定与进度落库只有一处，不会出现"某个手势路径忘了存进度"。
+     */
+    fun onItemSettled(absoluteIndex: Int) {
+        settleOn(absoluteIndex)
+    }
+
+    private fun settleOn(absoluteIndex: Int) {
+        val snapshot = _state.value
+        if (absoluteIndex !in snapshot.items.indices) return
+        if (absoluteIndex == snapshot.currentPageIndex) return
+
+        when (val item = snapshot.items[absoluteIndex]) {
+            is ReaderItem.Transition -> {
+                _state.update { it.copy(currentPageIndex = absoluteIndex) }
+                // 停在过渡项上时确保目标章已加载（Mihon `onTransitionSelected` 的行为）。
+                retryNeighborIfFailed(item)
+            }
+
+            is ReaderItem.PageItem -> {
+                val activeId = snapshot.chapters?.current?.chapterId
+                if (item.chapterId != activeId) {
+                    // 读者已经翻进了相邻章：把它提升为当前章，并围绕它重新预载两侧。
+                    promoteChapter(item.chapterId)
+                } else {
+                    _state.update { it.copy(currentPageIndex = absoluteIndex) }
+                    saveProgress()
+                }
+            }
+        }
+    }
+
+    /**
+     * 把已加载的相邻章提升为当前章。
+     *
+     * 不重新列页：那一章的页清单在预载时已经拿到了，重建只会白白多读一次目录。
+     * 提升后必须**重新预载两侧**，因为原来的"上一章"位置现在应该放更早的一章。
+     */
+    private fun promoteChapter(chapterId: String) {
+        val snapshot = _state.value
+        val existing = snapshot.chapters ?: return
+        val promoted = when (chapterId) {
+            existing.previous?.chapterId -> existing.previous
+            existing.next?.chapterId -> existing.next
+            else -> null
+        } ?: return
+        if (promoted.state != ViewerChapter.LoadState.Loaded) return
+        val index = snapshot.chapterList.indexOfFirst { it.chapterId == chapterId }
+        if (index < 0) return
+
+        val chapters = ViewerChapters(current = promoted)
+        val readerItems = buildReaderItems(chapters, snapshot.settings.alwaysShowChapterTransition)
+        val offset = readerItems.currentChapterOffset
+
+        _state.update {
+            it.copy(
+                currentChapterIndex = index,
+                chapters = chapters,
+                items = readerItems.items,
+                // 落到该章第一页：读者是从章首翻进来的，接着读自然从第 0 页开始。
+                currentPageIndex = offset.coerceIn(readerItems.items.indices),
+                pageHeights = emptyMap(),
+            )
+        }
+        saveProgress()
+        preloadNeighbors(index)
+    }
+
+    /** 过渡项的目标章若是失败态则重试一次（Mihon 的过渡页也带重试按钮）。 */
+    fun retryNeighbor(item: ReaderItem.Transition) {
+        retryNeighborIfFailed(item)
+    }
+
+    /** 过渡项的目标章若是失败态则重试一次（Mihon 的过渡页也带重试按钮）。 */
+    private fun retryNeighborIfFailed(item: ReaderItem.Transition) {
+        val snapshot = _state.value
+        val treeUri = snapshot.sourceTreeUri ?: return
+        val target = item.to ?: return
+        if (target.state != ViewerChapter.LoadState.FAILED) return
+        val current = snapshot.chapters?.current ?: return
+        val forward = snapshot.chapters?.next?.chapterId == target.chapterId
+        loadNeighbor(target.chapter, treeUri, current.chapterId, forward)
+    }
+
+    // ------------------------------------------------------------ 条漫
+
+    /**
+     * 条带的滚动位置变化。
+     *
+     * 与分页走同一个落点入口；区别只是调用方用"页底越过视口底"算出这一项，
+     * 而不是"视口里是哪一项"（Mihon 的条漫判定与分页不同）。
+     */
+    fun onScrolledToItem(absoluteIndex: Int) {
+        settleOn(absoluteIndex)
+    }
+
+    /** 记录一页在条带里的布局高度，供滚动定位使用。 */
+    fun onPageHeightMeasured(pageId: String, heightPx: Int) {
+        if (heightPx <= 0) return
+        _state.update { current ->
+            if (current.pageHeights[pageId] == heightPx) {
+                current
+            } else {
+                current.copy(pageHeights = current.pageHeights + (pageId to heightPx))
+            }
+        }
+    }
+
+    // ------------------------------------------------------------ 点按与控制栏
+
+    fun onTap(x: Float, y: Float) {
+        val current = _state.value
+        val action = NavigationRegions.hitTest(
+            zones = current.settings.tapZones,
+            invert = current.settings.tapInvert,
+            mode = current.settings.readingMode,
+            x = x,
+            y = y,
+        )
+        when (action) {
+            TapAction.MENU -> toggleChrome()
+            TapAction.PREVIOUS -> turnPage(-1)
+            TapAction.NEXT -> turnPage(1)
+            // 屏幕左右两栏**刻意不按阅读模式翻转**：右到左靠分页列表反转实现，
+            // 所以"屏幕左侧 = 阅读下一页"自然成立。多翻一次就会反向翻页（Mihon 也不翻）。
+            TapAction.PAN_LEFT -> turnPage(-1)
+            TapAction.PAN_RIGHT -> turnPage(1)
+        }
+    }
+
+    fun toggleChrome() {
+        _state.update { it.copy(chromeVisible = !it.chromeVisible) }
+    }
+
+    fun showTapZoneOverlay() {
+        _state.update { it.copy(tapZoneOverlayVisible = true) }
+    }
+
+    fun hideTapZoneOverlay() {
+        if (!_state.value.tapZoneOverlayVisible) return
+        _state.update { it.copy(tapZoneOverlayVisible = false) }
+    }
+
+    fun setReadingMode(mode: ReadingMode) {
+        viewModelScope.launch { readerPreferences.update { it.copy(readingMode = mode) } }
+    }
+
     // ------------------------------------------------------------ 进度
 
+    /** 把当前落点写成阅读进度。落在过渡项上时不写（那不是某一页）。 */
     fun saveProgress() {
         val current = _state.value
-        val chapter = current.currentChapter ?: return
-        if (current.pages.isEmpty()) return
+        val item = current.items.getOrNull(current.currentPageIndex) as? ReaderItem.PageItem ?: return
         val progress = ReadingProgress(
             mangaId = mangaId,
-            chapterId = chapter.chapterId,
-            pageOrdinal = current.currentPageIndex.coerceIn(current.pages.indices),
+            chapterId = item.chapter.chapterId,
+            pageOrdinal = item.page.ordinal,
             // 页内比例照搬 Mihon：只存页码，恢复时对齐页顶。
             intraPageRatio = 0f,
             read = savedProgress?.read == true,
@@ -261,68 +517,6 @@ class ReaderViewModel(
         savedProgress = progress
         viewModelScope.launch {
             progressSaveMutex.withLock { progressRepository.save(progress) }
-        }
-    }
-
-    // ------------------------------------------------------------ 打开章节
-
-    private suspend fun openChapter(chapterIndex: Int, requestedPage: Int) {
-        val current = _state.value
-        val chapter = current.chapters.getOrNull(chapterIndex)
-            ?: error("章节已不存在")
-        val treeUri = current.sourceTreeUri ?: error("来源路径不可用")
-        _state.update { it.copy(loading = true, error = null) }
-        when (val opened = pageSourceFactory.open(treeUri, chapter)) {
-            is PageSourceOpenResult.Unsupported -> {
-                _state.update { it.copy(loading = false, error = opened.reason) }
-            }
-
-            is PageSourceOpenResult.Ready -> {
-                val pages = opened.source.pages()
-                // 页数为 0 时下面所有 coerceIn 都会抛空区间异常（早前真机崩溃过），
-                // 因此在进入状态机之前就要挡住，而不是依赖调用方保证非空。
-                if (pages.isEmpty()) {
-                    _state.update { it.copy(loading = false, error = "章节目录内没有受支持的图片") }
-                    return
-                }
-                mangaRepository.updateChapterPageInfo(
-                    chapterId = chapter.chapterId,
-                    pageCount = pages.size,
-                    coverDocumentId = pages.firstOrNull()?.documentId,
-                )
-                _state.update {
-                    it.copy(
-                        loading = false,
-                        currentChapterIndex = chapterIndex,
-                        pages = pages,
-                        currentPageIndex = requestedPage.coerceIn(pages.indices),
-                        pageSource = opened.source,
-                        // 换章后重置每页布局高度缓存，避免沿用上一章的尺寸。
-                        pageHeights = emptyMap(),
-                        tapZoneOverlayVisible = it.settings.showTapZoneOverlayOnStart,
-                        error = null,
-                    )
-                }
-                saveProgress()
-            }
-        }
-    }
-
-    /**
-     * 记录一页在条带里的布局高度。
-     *
-     * 条漫需要先知道每页按原图比例换算出的高度才能定位滚动，而尺寸要探测才知道。
-     * 探测结果由 Composable 写回这里，于是"已探测"这件事在换章后自动失效
-     * （[openChapter] 清空）。
-     */
-    fun onPageHeightMeasured(pageId: String, heightPx: Int) {
-        if (heightPx <= 0) return
-        _state.update { current ->
-            if (current.pageHeights[pageId] == heightPx) {
-                current
-            } else {
-                current.copy(pageHeights = current.pageHeights + (pageId to heightPx))
-            }
         }
     }
 
@@ -352,29 +546,40 @@ data class ReaderUiState(
     val loading: Boolean = true,
     val mangaTitle: String = "",
     val sourceTreeUri: String? = null,
-    val chapters: List<ChapterRecord> = emptyList(),
+    /** 全部章节，仅用于换章与预载时定位相邻项。 */
+    val chapterList: List<ChapterRecord> = emptyList(),
     val currentChapterIndex: Int = 0,
-    val pages: List<ReaderPage> = emptyList(),
+    val chapters: ViewerChapters? = null,
+    /** 分页器/条带实际显示的项：上一章页 + 过渡 + 当前章页 + 过渡 + 下一章页。 */
+    val items: List<ReaderItem> = emptyList(),
+    /** 在 [items] 中的绝对下标。 */
     val currentPageIndex: Int = 0,
-    val pageSource: PageSource? = null,
     val chromeVisible: Boolean = true,
-    /** 点按区域遮罩层；首次进入或偏好要求时短暂显示，任何点击都会让它消退。 */
     val tapZoneOverlayVisible: Boolean = false,
-    /**
-     * 已探测到的页面布局高度（条漫用）。
-     *
-     * 键是页 ID，值是按当前视口宽度换算出的像素高度。空表示尚未探测，
-     * Composable 用视口高度占位。
-     */
+    /** 已探测到的条带页高（dp），键为页 ID。 */
     val pageHeights: Map<String, Int> = emptyMap(),
     val settings: ReaderSettings = ReaderSettings(),
     val error: String? = null,
 ) {
-    val currentChapter: ChapterRecord? get() = chapters.getOrNull(currentChapterIndex)
-    val hasPreviousChapter: Boolean get() = currentChapterIndex > 0
-    val hasNextChapter: Boolean get() = currentChapterIndex < chapters.lastIndex
-    val readingMode: ReadingMode get() = settings.readingMode
+    val currentChapter: ChapterRecord? get() = chapterList.getOrNull(currentChapterIndex)
 
-    /** 是否走连续滚动实现（条漫两极）。 */
+    /** 当前章的页清单。 */
+    val currentPages: List<ReaderPage> get() = chapters?.current?.pages.orEmpty()
+
+    /** 当前章内已读到的页序号（0 基）；落在过渡项上时回退到 0。 */
+    val localPageIndex: Int
+        get() = (items.getOrNull(currentPageIndex) as? ReaderItem.PageItem)?.page?.ordinal ?: 0
+
+    val hasPreviousChapter: Boolean get() = currentChapterIndex > 0
+    val hasNextChapter: Boolean get() = currentChapterIndex < chapterList.lastIndex
+    val readingMode: ReadingMode get() = settings.readingMode
     val isContinuous: Boolean get() = readingMode.continuous
+
+    /** 当前落点是否是章节过渡项。 */
+    val currentItemIsTransition: Boolean
+        get() = items.getOrNull(currentPageIndex) is ReaderItem.Transition
+
+    /** 指定章第一项在 [items] 里的绝对下标；找不到返回 -1。 */
+    fun indexOfFirstPageOf(chapterId: String): Int =
+        items.indexOfFirst { it is ReaderItem.PageItem && it.chapterId == chapterId }
 }

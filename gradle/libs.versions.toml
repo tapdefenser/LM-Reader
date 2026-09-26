@@ -26,6 +26,11 @@ paging = "3.5.1"
 # 图片加载（封面）：Coil 3 为 Compose 优先分支，支持通过自定义 Fetcher 接入 SAF。
 coil = "3.4.0"
 
+# 阅读器图片引擎：Mihon 使用的 SubsamplingScaleImageView fork。
+# 缩放/平移/分块解码/裁白边/双击焦点都在这个库里，Mihon 源码只设属性（见 settings.gradle.kts）。
+# 版本号是 commit hash，JitPack 按其缓存构建；仓库已收窄到 com.github.mihonapp 一个 group。
+subsamplingScaleImageView = "94915e6f73"
+
 # 测试
 junit4 = "4.13.2"
 kotlinxCoroutinesTest = "1.10.2"
@@ -71,6 +76,10 @@ androidx-room-testing = { module = "androidx.room:room-testing", version.ref = "
 
 # 图片加载
 coil-compose = { module = "io.coil-kt.coil3:coil-compose", version.ref = "coil" }
+
+# 阅读器图片引擎（JitPack；见 settings.gradle.kts 的说明与仓库收窄）
+# 含 native libssiv_crop.so（裁白边），APK 会带四种 ABI 的该库。
+subsampling-scale-image-view = { module = "com.github.mihonapp:subsampling-scale-image-view", version.ref = "subsamplingScaleImageView" }
 
 # 测试
 junit4 = { module = "junit:junit", version.ref = "junit4" }

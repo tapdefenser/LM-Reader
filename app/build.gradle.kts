@@ -39,4 +39,9 @@ dependencies {
     implementation(libs.androidx.compose.material.icons.extended)
     implementation(libs.androidx.compose.foundation)
     implementation(libs.androidx.compose.ui.tooling.preview)
+
+    // 阅读器图片引擎：缩放/平移/分块解码/裁白边由它实现。
+    // Mihon 的非 WebGPU 阅读路径用的就是同一个 fork（com.github.mihonapp）。
+    // 它含 native 代码（libssiv_crop.so），APK 会带四种 ABI 的该库。
+    implementation(libs.subsampling.scale.image.view)
 }

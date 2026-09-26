@@ -22,6 +22,24 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        // JitPack：只为阅读器的图片引擎 subsampling-scale-image-view 而加。
+        //
+        // 为什么必须是这个坐标而不是自己写：Mihon 的 ReaderPageImageView 里**没有任何
+        // 变换数学**——它只设属性（setMinimumScaleType / setCropBorders /
+        // setDoubleTapZoomStyle）、读 getPanRemaining、调 animateScaleAndCenter。
+        // 缩放、平移、分块解码、裁白边、双击焦点、宽图自动放大全在这个库里。
+        // 自己写达不到一致的手感，而大图内存也要自己兜（本库做分块解码）。
+        //
+        // 该坐标只在 JitPack 上（com.github.mihonapp 是 Mihon 团队维护的 SSIV fork，
+        // 相比上游多了 setCropBorders）。
+        maven {
+            url = uri("https://jitpack.io")
+            content {
+                // 收窄这个仓库的适用范围：只有这个 group 会走 JitPack，
+                // 其余依赖继续只从 google()/mavenCentral() 取，避免供应链面被放大。
+                includeGroup("com.github.mihonapp")
+            }
+        }
     }
 }
 
