@@ -65,7 +65,6 @@ import com.lmreader.core.model.ReaderTheme
 import com.lmreader.core.model.ReadingMode
 import com.lmreader.core.model.TapAction
 import com.lmreader.di.AppContainer
-import kotlin.math.roundToInt
 
 /**
  * 阅读器宿主（开发文档 12）。
@@ -164,7 +163,20 @@ fun ReaderScreen(
     }
 }
 
-/** 阅读器主体：内容 + 浮层控制栏 + 点按遮罩。与控制栏的显隐逻辑分离，便于阅读。 */
+/**
+ * 阅读器主体：内容 + 浮层控制栏 + 点按遮罩。
+ *
+ * 用**不透明的 [Surface]** 而不是 `Modifier.background` 铺底。这是加固而非已验证的修复：
+ * 宿主 Activity 用了 `enableEdgeToEdge()`，窗口背景是透明的，而 `Modifier.background`
+ * 只负责画这个节点的矩形；Surface 会真正承担背景绘制与裁剪，比一个 background 修饰符
+ * 可靠——Mihon 也是用带主题背景的宿主 View 而不是裸布局。
+ *
+ * ⚠️ **未解决的缺陷**：MuMu 模拟器上出现过"阅读器打开后页面不画、下层页面内容整体透出"。
+ * 已有的硬证据是：**语义树里只有阅读器节点（完整正确），截图却绝大部分是下层页面**。
+ * 两者矛盾，因此怀疑是模拟器的合成/截图问题而不是应用逻辑，但**根因未确认**。
+ * 上述 Surface 改动与诊断色实验（根布局染洋红、引擎视图染青）都没有改变截图结果，
+ * 洋红与青的采样数都是 0。**需要一台可用真机来判定**。详见阶段交接文档。
+ */
 @Composable
 private fun ReaderChrome(
     state: ReaderUiState,
@@ -174,90 +186,104 @@ private fun ReaderChrome(
     measureHeightDp: suspend (ReaderItem.PageItem, Float) -> Int?,
     onOpenSettings: () -> Unit,
 ) {
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(backgroundFor(state.settings.theme))
-            .then(volumeKeyModifier),
+    Surface(
+        color = backgroundFor(state.settings.theme),
+        modifier = Modifier.fillMaxSize().then(volumeKeyModifier),
     ) {
-        // 阅读内容占满整屏，控制栏作为浮层**后绘制**（Compose 中后绘制者在上层）。
+        // 内层 Box 同时承担两件事：让阅读内容占满整屏，并为浮层提供对齐作用域。
         //
-        // 两个必须满足的性质：页图按整屏尺寸适配；点按区域与屏幕等大。
-        // 若内容被控制栏挤小，归一化坐标的基准就不是屏幕，Mihon 那套 0.33/0.66
-        // 分区会整体偏移。
+        // 内容占满整屏是必须的：若它被控制栏挤小，点按区域的归一化基准就不是屏幕，
+        // Mihon 那套 0.33/0.66 分区会整体偏移。
         Box(modifier = Modifier.fillMaxSize()) {
-            when {
-                state.loading -> CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
-
-                state.error != null -> ReaderError(state.error.orEmpty(), viewModel::reload, onLeave)
-
-                state.items.isNotEmpty() -> {
-                    // 换章必须重建阅读组件：分页器实例、滚动位置与条带页高缓存都与章节绑定。
-                    key(state.currentChapter?.chapterId, state.readingMode) {
-                        if (state.isContinuous) {
-                            StripReader(
-                                items = state.items,
-                                mode = state.readingMode,
-                                settings = state.settings,
-                                currentIndex = state.currentPageIndex,
-                                onItemSettled = viewModel::onItemSettled,
-                                onPageHeightMeasured = viewModel::onPageHeightMeasured,
-                                measureHeightDp = measureHeightDp,
-                                onTap = viewModel::onTap,
-                                onTransitionAction = viewModel::retryNeighbor,
-                                onScrollDelta = { delta ->
-                                    // 只在控制栏可见时判断，避免已在隐藏状态下反复调用。
-                                    if (state.chromeVisible &&
-                                        kotlin.math.abs(delta) >
-                                        state.settings.hideThreshold.thresholdPx
-                                    ) {
-                                        viewModel.toggleChrome()
-                                    }
-                                },
-                                modifier = Modifier.fillMaxSize(),
-                            )
-                        } else {
-                            PagerReader(
-                                items = state.items,
-                                settings = state.settings,
-                                currentIndex = state.currentPageIndex,
-                                onItemSettled = viewModel::onItemSettled,
-                                onTap = viewModel::onTap,
-                                onTransitionAction = viewModel::retryNeighbor,
-                                modifier = Modifier.fillMaxSize(),
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-        if (state.tapZoneOverlayVisible) {
-            TapZoneOverlay(state = state, onDismiss = viewModel::hideTapZoneOverlay)
-        }
-
-        // 页码指示器（Mihon `ReaderPageIndicator`）：只在控制栏**隐藏**时显示。
-        // 控制栏可见时它自己的滑杆已经给出页码，两个同时显示会互相干扰。
-        if (!state.chromeVisible &&
-            state.settings.showPageNumber &&
-            state.error == null &&
-            state.currentPages.isNotEmpty()
-        ) {
-            PageIndicator(
-                current = displayPageNumber(state.localPageIndex, state.currentPages.size),
-                total = state.currentPages.size,
-                modifier = Modifier.align(Alignment.BottomCenter),
-            )
-        }
-
-        if (state.chromeVisible && state.error == null && state.items.isNotEmpty()) {
-            ReaderTopBar(state, onLeave, modifier = Modifier.align(Alignment.TopCenter))
-            ReaderBottomBar(
+            ReaderContent(
                 state = state,
                 viewModel = viewModel,
-                onOpenSettings = onOpenSettings,
-                modifier = Modifier.align(Alignment.BottomCenter),
+                onLeave = onLeave,
+                measureHeightDp = measureHeightDp,
             )
+
+            if (state.tapZoneOverlayVisible) {
+                TapZoneOverlay(state = state, onDismiss = viewModel::hideTapZoneOverlay)
+            }
+
+            // 页码指示器（Mihon `ReaderPageIndicator`）：只在控制栏**隐藏**时显示。
+            // 控制栏可见时它自己的滑杆已经给出页码，两者同时显示会互相干扰。
+            if (!state.chromeVisible &&
+                state.settings.showPageNumber &&
+                state.error == null &&
+                state.currentPages.isNotEmpty()
+            ) {
+                PageIndicator(
+                    current = displayPageNumber(state.localPageIndex, state.currentPages.size),
+                    total = state.currentPages.size,
+                    modifier = Modifier.align(Alignment.BottomCenter),
+                )
+            }
+
+            if (state.chromeVisible && state.error == null && state.items.isNotEmpty()) {
+                ReaderTopBar(state, onLeave, modifier = Modifier.align(Alignment.TopCenter))
+                ReaderBottomBar(
+                    state = state,
+                    viewModel = viewModel,
+                    onOpenSettings = onOpenSettings,
+                    modifier = Modifier.align(Alignment.BottomCenter),
+                )
+            }
+        }
+    }
+}
+
+/** 阅读内容本身：加载中 / 错误 / 分页或条漫。 */
+@Composable
+private fun ReaderContent(
+    state: ReaderUiState,
+    viewModel: ReaderViewModel,
+    onLeave: () -> Unit,
+    measureHeightDp: suspend (ReaderItem.PageItem, Float) -> Int?,
+) {
+    when {
+        state.loading -> Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            CircularProgressIndicator()
+        }
+
+        state.error != null -> ReaderError(state.error.orEmpty(), viewModel::reload, onLeave)
+
+        state.items.isNotEmpty() -> {
+            // 换章必须重建阅读组件：分页器实例、滚动位置与条带页高缓存都与章节绑定。
+            key(state.currentChapter?.chapterId, state.readingMode) {
+                if (state.isContinuous) {
+                    StripReader(
+                        items = state.items,
+                        mode = state.readingMode,
+                        settings = state.settings,
+                        currentIndex = state.currentPageIndex,
+                        onItemSettled = viewModel::onItemSettled,
+                        onPageHeightMeasured = viewModel::onPageHeightMeasured,
+                        measureHeightDp = measureHeightDp,
+                        onTap = viewModel::onTap,
+                        onTransitionAction = viewModel::retryNeighbor,
+                        onScrollDelta = { delta ->
+                            // 只在控制栏可见时判断，避免已在隐藏状态下反复调用。
+                            if (state.chromeVisible &&
+                                kotlin.math.abs(delta) > state.settings.hideThreshold.thresholdPx
+                            ) {
+                                viewModel.toggleChrome()
+                            }
+                        },
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                } else {
+                    PagerReader(
+                        items = state.items,
+                        settings = state.settings,
+                        currentIndex = state.currentPageIndex,
+                        onItemSettled = viewModel::onItemSettled,
+                        onTap = viewModel::onTap,
+                        onTransitionAction = viewModel::retryNeighbor,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
+            }
         }
     }
 }
@@ -266,11 +292,11 @@ private fun ReaderChrome(
  * 页码指示器（Mihon `ReaderPageIndicator`）。
  *
  * 文案格式照搬 Mihon：`当前页 / 总页数`，不含百分比——百分比在章节滑杆上。
- * 页码是**章内**页码，与滑杆同一套换算（`displayPageNumber`），否则两处会显示不同的数。
+ * 页码是**章内**页码，与滑杆同一套换算（[displayPageNumber]），否则两处会显示不同的数。
  *
- * 与 Mihon 的实现差异：它用"描边文字 + 实心文字"叠两次来保证任何背景上都可读；
- * 这里用半透明深色圆角底片。效果等价（都保证可读），而我们少一次文本测量与绘制。
- * 做成底片而不是纯文字还额外避免了在纯白页面上白字看不见的问题。
+ * 与 Mihon 的实现差异：它用"描边文字叠实心文字"保证任何背景上都可读；这里用半透明
+ * 深色圆角底片。效果等价（都保证可读）而少一次文本测量与绘制，并且顺带避免了在纯白
+ * 页面上白字看不见。
  */
 @Composable
 private fun PageIndicator(current: Int, total: Int, modifier: Modifier) {
@@ -396,7 +422,8 @@ private fun ReaderBottomBar(
  * 用可横向滚动的 `Row` 而不是 `LazyRow`：只有五项，全部组合代价可忽略，而 `LazyRow`
  * 会把屏幕外的项留到滚动时才组合——横向空间不足的机型上最后一个模式就点不到。
  *
- * 完整的阅读设置界面（点击区域、缩放类型、滤镜等）属后续阶段；这里只放模式本身。
+ * 完整的阅读设置界面（点按区域、缩放类型、滤镜等）在 [ReaderSettingsDialog]；
+ * 这里只放模式本身，因为它是阅读时最常改的一项。
  */
 @Composable
 private fun ReadingModeSelector(current: ReadingMode, onSelect: (ReadingMode) -> Unit) {
