@@ -84,9 +84,11 @@ internal fun EnginePageView(
         decodeFailed = false
         val stream = runCatching { source.open(page) }.getOrNull()
         if (stream == null) {
+            android.util.Log.w(TAG, "打不开页面流: ${page.displayName} (${page.documentId})")
             decodeFailed = true
             return@LaunchedEffect
         }
+        android.util.Log.i(TAG, "setImage: ${page.displayName} view=${target.width}x${target.height}")
         target.setImage(ImageSource.inputStream(stream))
     }
 
@@ -134,15 +136,23 @@ private fun configure(
                 view.maxScale = base * MAX_ZOOM_SCALE
                 view.setDoubleTapZoomScale(base * DOUBLE_TAP_ZOOM_FACTOR)
                 applyZoomStart(view, settings)
+                android.util.Log.i(
+                    TAG,
+                    "onReady 源尺寸=${view.sWidth}x${view.sHeight} 初始缩放=$base",
+                )
                 onReady()
             }
 
             override fun onImageLoadError(e: Exception) {
+                android.util.Log.e(TAG, "引擎解码失败", e)
                 onError()
             }
         },
     )
 }
+
+/** 引擎相关日志的 tag。 */
+private const val TAG = "LMReaderEngine"
 
 /**
  * 起始可见位置（Mihon `pref_zoom_start_key`）。
