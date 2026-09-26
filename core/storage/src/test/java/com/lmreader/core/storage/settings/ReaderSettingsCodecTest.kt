@@ -84,6 +84,9 @@ class ReaderSettingsCodecTest {
             ReaderSettings(showReadingMode = false),
             ReaderSettings(grayscale = true),
             ReaderSettings(invertedColors = true),
+            ReaderSettings(customBrightness = true),
+            ReaderSettings(customBrightness = true, customBrightnessValue = 80),
+            ReaderSettings(customBrightness = true, customBrightnessValue = -75),
         )
 
         for (variant in variants) {
@@ -163,6 +166,18 @@ class ReaderSettingsCodecTest {
     }
 
     @Test
+    fun `默认关闭的布尔字段只在显式开启时写出`() {
+        // customBrightness 默认 false：不设它就不该出现键，设成 true 必须写出。
+        assertFalse(
+            ReaderSettingsCodec.encode(ReaderSettings()).contains("customBrightness"),
+            "默认关闭不该写出该键",
+        )
+        val on = ReaderSettingsCodec.encode(ReaderSettings(customBrightness = true))
+        assertTrue(on.contains("customBrightness=true"), "显式开启必须写出：$on")
+        assertTrue(ReaderSettingsCodec.decode(on).customBrightness)
+    }
+
+    @Test
     fun `显式开启默认关闭的字段不会被默认值覆盖`() {
         val settings = ReaderSettings(volumeKeys = true, grayscale = true, keepScreenOn = true)
 
@@ -232,6 +247,19 @@ class ReaderSettingsCodecTest {
         assertEquals(
             500,
             ReaderSettingsCodec.decode("doubleTapAnim=abc").doubleTapAnimMillis,
+        )
+        // 亮度范围是 -75..100（Mihon custom_brightness_value），两端都要夹住。
+        assertEquals(
+            100,
+            ReaderSettingsCodec.decode("brightnessValue=999").customBrightnessValue,
+        )
+        assertEquals(
+            -75,
+            ReaderSettingsCodec.decode("brightnessValue=-999").customBrightnessValue,
+        )
+        assertEquals(
+            0,
+            ReaderSettingsCodec.decode("brightnessValue=abc").customBrightnessValue,
         )
     }
 

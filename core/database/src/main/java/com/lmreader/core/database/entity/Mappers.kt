@@ -8,6 +8,8 @@ import com.lmreader.core.model.LibrarySource
 import com.lmreader.core.model.MangaCard
 import com.lmreader.core.model.MangaRecord
 import com.lmreader.core.model.MetadataRecord
+import com.lmreader.core.model.ReaderOrientation
+import com.lmreader.core.model.ReadingMode
 import com.lmreader.core.model.ReadingProgress
 import com.lmreader.core.model.ShelfEntry
 
@@ -70,6 +72,14 @@ internal fun MangaEntity.toDomain(): MangaRecord = MangaRecord(
     discoveryGeneration = discoveryGeneration,
     discoveredAt = discoveredAt,
     updatedAt = updatedAt,
+    // 覆盖值存名称。失配（旧版本写下的名字在当前枚举里已不存在）时回退 null
+    // 即"用全局默认"，而不是抛异常——"打开漫画时用默认模式"远好于"打不开"。
+    readerModeOverride = readerModeOverride?.let { stored ->
+        ReadingMode.entries.firstOrNull { it.name == stored }
+    },
+    readerOrientationOverride = readerOrientationOverride?.let { stored ->
+        ReaderOrientation.entries.firstOrNull { it.name == stored }
+    },
 )
 
 internal fun MangaRecord.toEntity(sourceOrderIndex: Int): MangaEntity = MangaEntity(
@@ -92,6 +102,8 @@ internal fun MangaRecord.toEntity(sourceOrderIndex: Int): MangaEntity = MangaEnt
     discoveryGeneration = discoveryGeneration,
     discoveredAt = discoveredAt,
     updatedAt = updatedAt,
+    readerModeOverride = readerModeOverride?.name,
+    readerOrientationOverride = readerOrientationOverride?.name,
 )
 
 internal fun ChapterEntity.toDomain(): ChapterRecord = ChapterRecord(

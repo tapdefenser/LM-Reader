@@ -98,6 +98,18 @@ data class MangaEntity(
     val discoveryGeneration: Long,
     val discoveredAt: Long,
     val updatedAt: Long,
+    /**
+     * 漫画级阅读模式覆盖（开发文档 15.3「漫画级阅读偏好归数据库」）。
+     *
+     * 存枚举**名称**而不是序数：序数会在枚举增删或重排后悄悄指向另一个模式，
+     * 而这类错误没有任何报错，只是"打开这部漫画时模式变了"。名称失配时回退全局默认。
+     *
+     * null 表示"从未覆盖"，使用全局默认。这里刻意**不用**哨兵值成员，因此不存在
+     * "未解析的哨兵渗进阅读器"这类问题（与阅读设置模型的设计一致）。
+     */
+    val readerModeOverride: String? = null,
+    /** 漫画级屏幕方向覆盖；null 表示跟随全局默认。同样存名称。 */
+    val readerOrientationOverride: String? = null,
 )
 
 /** 章节行；物理定位键是 `(documentId, kind)`（开发文档 15.3）。 */

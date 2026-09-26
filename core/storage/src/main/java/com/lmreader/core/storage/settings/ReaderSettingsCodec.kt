@@ -50,6 +50,11 @@ internal object ReaderSettingsCodec {
         put(KEY_HIDE_THRESHOLD, settings.hideThreshold.name, defaults.hideThreshold.name)
         put(KEY_DOUBLE_TAP_ANIM, settings.doubleTapAnimMillis.toString(), defaults.doubleTapAnimMillis.toString())
         put(KEY_WEBTOON_PADDING, settings.webtoonSidePadding.toString(), defaults.webtoonSidePadding.toString())
+        put(
+            KEY_BRIGHTNESS_VALUE,
+            settings.customBrightnessValue.toString(),
+            defaults.customBrightnessValue.toString(),
+        )
 
         putFlag(KEY_TRANSITIONS, settings.pageTransitions, defaults.pageTransitions)
         putFlag(KEY_VOLUME_KEYS, settings.volumeKeys, defaults.volumeKeys)
@@ -74,6 +79,7 @@ internal object ReaderSettingsCodec {
         putFlag(KEY_SHOW_READING_MODE, settings.showReadingMode, defaults.showReadingMode)
         putFlag(KEY_GRAYSCALE, settings.grayscale, defaults.grayscale)
         putFlag(KEY_INVERTED, settings.invertedColors, defaults.invertedColors)
+        putFlag(KEY_CUSTOM_BRIGHTNESS, settings.customBrightness, defaults.customBrightness)
 
         return lines.joinToString("\n")
     }
@@ -112,6 +118,9 @@ internal object ReaderSettingsCodec {
             webtoonSidePadding = fields[KEY_WEBTOON_PADDING]?.toIntOrNull()
                 ?.coerceIn(WEBTOON_PADDING_MIN, WEBTOON_PADDING_MAX)
                 ?: defaults.webtoonSidePadding,
+            customBrightnessValue = fields[KEY_BRIGHTNESS_VALUE]?.toIntOrNull()
+                ?.coerceIn(CUSTOM_BRIGHTNESS_MIN, CUSTOM_BRIGHTNESS_MAX)
+                ?: defaults.customBrightnessValue,
             pageTransitions = readFlag(fields, KEY_TRANSITIONS, defaults.pageTransitions),
             volumeKeys = readFlag(fields, KEY_VOLUME_KEYS, defaults.volumeKeys),
             volumeKeysInverted = readFlag(fields, KEY_VOLUME_INVERTED, defaults.volumeKeysInverted),
@@ -135,6 +144,7 @@ internal object ReaderSettingsCodec {
             showReadingMode = readFlag(fields, KEY_SHOW_READING_MODE, defaults.showReadingMode),
             grayscale = readFlag(fields, KEY_GRAYSCALE, defaults.grayscale),
             invertedColors = readFlag(fields, KEY_INVERTED, defaults.invertedColors),
+            customBrightness = readFlag(fields, KEY_CUSTOM_BRIGHTNESS, defaults.customBrightness),
         )
     }
 
@@ -182,6 +192,8 @@ internal object ReaderSettingsCodec {
     private const val KEY_SHOW_READING_MODE = "showReadingMode"
     private const val KEY_GRAYSCALE = "grayscale"
     private const val KEY_INVERTED = "inverted"
+    private const val KEY_CUSTOM_BRIGHTNESS = "customBrightness"
+    private const val KEY_BRIGHTNESS_VALUE = "brightnessValue"
 
     /** Mihon 的 `pref_double_tap_anim_speed` 取值是 1 / 250 / 500，这里放宽成区间防护。 */
     private const val DOUBLE_TAP_ANIM_MIN = 0
@@ -190,4 +202,8 @@ internal object ReaderSettingsCodec {
     /** Mihon `WEBTOON_PADDING_MIN` / `WEBTOON_PADDING_MAX`。 */
     private const val WEBTOON_PADDING_MIN = 0
     private const val WEBTOON_PADDING_MAX = 25
+
+    /** Mihon `custom_brightness_value` 的范围 -75..100。 */
+    private const val CUSTOM_BRIGHTNESS_MIN = -75
+    private const val CUSTOM_BRIGHTNESS_MAX = 100
 }

@@ -125,6 +125,22 @@ interface MangaRepository {
     suspend fun updateChapterPageInfo(chapterId: String, pageCount: Int, coverDocumentId: String?)
 
     /**
+     * 写入漫画级阅读覆盖（开发文档 15.3「漫画级阅读偏好归数据库」）。
+     *
+     * 用独立方法而不是走 [upsertScanResult]：覆盖是**用户的设置**，与扫描派生字段的
+     * 生命周期完全不同。混在一起会让"重扫时保留用户设置"变成一个需要每个调用点都
+     * 记得处理的约定；独立方法把它变成类型上难以出错的事。
+     *
+     * @param mode 阅读模式覆盖；null 表示清除覆盖、回到全局默认
+     * @param orientation 屏幕方向覆盖；null 表示清除覆盖
+     */
+    suspend fun updateReaderOverrides(
+        mangaId: String,
+        mode: ReadingMode?,
+        orientation: ReaderOrientation?,
+    )
+
+    /**
      * 落库一次扫描结果。必须在单个事务内完成，并且只有 `completed = true` 的扫描
      * 才允许删除章节（框架 5.2）。
      */

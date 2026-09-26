@@ -389,6 +389,15 @@ interface MangaDao {
     suspend fun updateAvailabilityBySource(sourceId: String, availability: MangaAvailability)
 
     /**
+     * 写入漫画级阅读覆盖（阅读模式与屏幕方向），传 null 即清除覆盖。
+     *
+     * 单独的 UPDATE 而不是整行 upsert：覆盖是用户设置，只该被"用户改了它"这一件事改写，
+     * 用整行 upsert 会让任何一次重扫都有机会把它抹掉。
+     */
+    @Query("UPDATE mangas SET readerModeOverride = :mode, readerOrientationOverride = :orientation WHERE mangaId = :mangaId")
+    suspend fun updateReaderOverrides(mangaId: String, mode: String?, orientation: String?)
+
+    /**
      * 把该来源里"不是本轮发现的"卡片标成陈旧（[MangaAvailability.STALE]）。
      *
      * 只在来源扫描**完整跑完**之后调用（调用点见

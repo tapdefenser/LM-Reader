@@ -26,5 +26,19 @@ object Migrations {
         }
     }
 
-    val ALL: Array<Migration> = arrayOf(MIGRATION_1_2)
+    /**
+     * v2 → v3：`mangas` 增加漫画级阅读覆盖（阅读模式与屏幕方向）。
+     *
+     * 加**可空**列是唯一安全的做法：已有行没有覆盖，读取时回退全局默认，因此不需要
+     * 回填、也不需要重算任何派生字段。存枚举名称而不是序数——序数会在枚举增删或重排后
+     * 悄悄指向另一个值，而这类错误没有任何报错。
+     */
+    val MIGRATION_2_3 = object : Migration(2, 3) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("ALTER TABLE mangas ADD COLUMN readerModeOverride TEXT")
+            db.execSQL("ALTER TABLE mangas ADD COLUMN readerOrientationOverride TEXT")
+        }
+    }
+
+    val ALL: Array<Migration> = arrayOf(MIGRATION_1_2, MIGRATION_2_3)
 }

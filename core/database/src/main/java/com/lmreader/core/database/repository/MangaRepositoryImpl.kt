@@ -15,6 +15,8 @@ import com.lmreader.core.model.MangaPage
 import com.lmreader.core.model.MangaRepository
 import com.lmreader.core.model.MetadataOwnerType
 import com.lmreader.core.model.MetadataRecord
+import com.lmreader.core.model.ReaderOrientation
+import com.lmreader.core.model.ReadingMode
 import com.lmreader.core.model.ScanPersistReport
 import com.lmreader.core.model.ScanResult
 import androidx.room.withTransaction
@@ -100,6 +102,15 @@ internal class MangaRepositoryImpl(
 
     override suspend fun setAvailabilityBySource(sourceId: String, availability: MangaAvailability) {
         mangaDao.updateAvailabilityBySource(sourceId, availability)
+    }
+
+    override suspend fun updateReaderOverrides(
+        mangaId: String,
+        mode: ReadingMode?,
+        orientation: ReaderOrientation?,
+    ) {
+        // 存枚举名称而不是序数：序数会在枚举增删或重排后悄悄指向另一个值。
+        mangaDao.updateReaderOverrides(mangaId, mode?.name, orientation?.name)
     }
 
     override suspend fun markUndiscoveredAsStale(sourceId: String, generation: Long): Int =
@@ -243,6 +254,11 @@ internal class MangaRepositoryImpl(
                     hasMetadata = manga.hasMetadata || existing.hasMetadata,
                     discoveredAt = existing.discoveredAt,
                     availability = MangaAvailability.AVAILABLE,
+                    // 阅读覆盖是**用户的设置**，不是扫描派生字段：发现阶段完全不知道它，
+                    // 每次重扫都会带 null 重发。不在这里保留就会被静默清空——用户会看到
+                    // "我明明把这部漫画设成条漫了，怎么又变回去"。
+                    readerModeOverride = existing.readerModeOverride,
+                    readerOrientationOverride = existing.readerOrientationOverride,
                 )
             }
             mangaDao.upsert(entity)

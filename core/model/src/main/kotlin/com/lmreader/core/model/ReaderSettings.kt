@@ -287,6 +287,14 @@ data class ReaderSettings(
     /** Mihon `pref_grayscale` / `pref_inverted_colors`，默认 false。 */
     val grayscale: Boolean = false,
     val invertedColors: Boolean = false,
+    /** Mihon `pref_custom_brightness_key`，默认 false；关闭时窗口亮度不被干预。 */
+    val customBrightness: Boolean = false,
+    /**
+     * Mihon `custom_brightness_value`，默认 0，范围 -75..100。
+     *
+     * 三段语义见 `ReaderDisplayEffects`：0 不干预、正值设窗口亮度、负值叠暗化层。
+     */
+    val customBrightnessValue: Int = 0,
 ) {
     /**
      * 当前模式下实际生效的点按区域布局。

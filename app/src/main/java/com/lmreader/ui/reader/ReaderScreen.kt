@@ -22,6 +22,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -39,6 +40,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -48,6 +50,11 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -97,10 +104,81 @@ fun ReaderScreen(
     }
     BackHandler(onBack = leave)
 
+    // 音量键翻页（Mihon `reader_volume_keys`，默认关）。
+    //
+    // 两个必须照搬的约束：
+    // 1. **只在控制栏隐藏时生效**——控制栏可见时用户多半在看菜单，此时吃掉音量键会
+    //    让"调音量"这个原始功能失灵；
+    // 2. 只在 `KeyUp` 响应，否则按住不放会连续翻很多页。
+    // 另外这里响应的是**阅读顺序**而不是物理键：`volumeKeysInverted` 交换两者。
+    val volumeKeyModifier = if (state.settings.volumeKeys) {
+        Modifier.onPreviewKeyEvent { event ->
+            if (state.chromeVisible || event.type != KeyEventType.KeyUp) {
+                return@onPreviewKeyEvent false
+            }
+            val forward = when (event.key) {
+                Key.VolumeDown -> !state.settings.volumeKeysInverted
+                Key.VolumeUp -> state.settings.volumeKeysInverted
+                else -> return@onPreviewKeyEvent false
+            }
+            viewModel.turnPage(if (forward) 1 else -1)
+            true
+        }
+    } else {
+        Modifier
+    }
+
+    // 显示效果（亮度/灰度/反色/全屏/常亮）包在最外层：它们都是**整屏**作用，
+    // 必须覆盖页面、控制栏与遮罩全部内容，而不是只作用于页面。
+    ReaderDisplayEffects(settings = state.settings, modifier = Modifier.fillMaxSize()) {
+        var settingsOpen by remember { mutableStateOf(false) }
+        ReaderChrome(
+            state = state,
+            viewModel = viewModel,
+            onLeave = leave,
+            volumeKeyModifier = volumeKeyModifier,
+            measureHeightDp = measureHeightDp,
+            onOpenSettings = { settingsOpen = true },
+        )
+
+        if (settingsOpen) {
+            ReaderSettingsDialog(
+                state = state,
+                onDismiss = { settingsOpen = false },
+                onReadingMode = viewModel::setReadingMode,
+                onClearReadingMode = viewModel::clearReadingModeOverride,
+                onOrientation = viewModel::setOrientationOverride,
+                onUpdateGlobal = viewModel::updateGlobalSettings,
+            )
+        }
+    }
+
+    // 首次进入时短暂显示点按区域，让用户知道分区在哪 —— 对应 Mihon
+    // `ReaderNavigationOverlayView` 的一次性闩锁与 `..._on_start` 偏好。
+    LaunchedEffect(state.items.isNotEmpty()) {
+        if (state.items.isNotEmpty() && state.settings.showTapZoneOverlayOnce) {
+            viewModel.showTapZoneOverlay()
+            kotlinx.coroutines.delay(TAP_ZONE_OVERLAY_MILLIS)
+            viewModel.hideTapZoneOverlay()
+        }
+    }
+}
+
+/** 阅读器主体：内容 + 浮层控制栏 + 点按遮罩。与控制栏的显隐逻辑分离，便于阅读。 */
+@Composable
+private fun ReaderChrome(
+    state: ReaderUiState,
+    viewModel: ReaderViewModel,
+    onLeave: () -> Unit,
+    volumeKeyModifier: Modifier,
+    measureHeightDp: suspend (ReaderItem.PageItem, Float) -> Int?,
+    onOpenSettings: () -> Unit,
+) {
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(backgroundFor(state.settings.theme)),
+            .background(backgroundFor(state.settings.theme))
+            .then(volumeKeyModifier),
     ) {
         // 阅读内容占满整屏，控制栏作为浮层**后绘制**（Compose 中后绘制者在上层）。
         //
@@ -111,7 +189,7 @@ fun ReaderScreen(
             when {
                 state.loading -> CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
 
-                state.error != null -> ReaderError(state.error.orEmpty(), viewModel::reload, leave)
+                state.error != null -> ReaderError(state.error.orEmpty(), viewModel::reload, onLeave)
 
                 state.items.isNotEmpty() -> {
                     // 换章必须重建阅读组件：分页器实例、滚动位置与条带页高缓存都与章节绑定。
@@ -150,22 +228,13 @@ fun ReaderScreen(
         }
 
         if (state.chromeVisible && state.error == null && state.items.isNotEmpty()) {
-            ReaderTopBar(state, leave, modifier = Modifier.align(Alignment.TopCenter))
+            ReaderTopBar(state, onLeave, modifier = Modifier.align(Alignment.TopCenter))
             ReaderBottomBar(
                 state = state,
                 viewModel = viewModel,
+                onOpenSettings = onOpenSettings,
                 modifier = Modifier.align(Alignment.BottomCenter),
             )
-        }
-    }
-
-    // 首次进入时短暂显示点按区域，让用户知道分区在哪 —— 对应 Mihon
-    // `ReaderNavigationOverlayView` 的一次性闩锁与 `..._on_start` 偏好。
-    LaunchedEffect(state.items.isNotEmpty()) {
-        if (state.items.isNotEmpty() && state.settings.showTapZoneOverlayOnce) {
-            viewModel.showTapZoneOverlay()
-            kotlinx.coroutines.delay(TAP_ZONE_OVERLAY_MILLIS)
-            viewModel.hideTapZoneOverlay()
         }
     }
 }
@@ -205,6 +274,7 @@ private fun ReaderTopBar(state: ReaderUiState, onBack: () -> Unit, modifier: Mod
 private fun ReaderBottomBar(
     state: ReaderUiState,
     viewModel: ReaderViewModel,
+    onOpenSettings: () -> Unit,
     modifier: Modifier,
 ) {
     val pageCount = state.currentPages.size
@@ -256,6 +326,11 @@ private fun ReaderBottomBar(
                         contentDescription = "下一章",
                         tint = if (state.hasNextChapter) Color.White else Color.Gray,
                     )
+                }
+                // Mihon 底部栏的四个按钮里就有设置入口；没有它的话，所有阅读设置都只能
+                // 在阅读器之外改，而"这部漫画"的覆盖又必须在阅读器里设。
+                IconButton(onClick = onOpenSettings) {
+                    Icon(Icons.Filled.Settings, contentDescription = "阅读设置", tint = Color.White)
                 }
             }
             ReadingModeSelector(current = state.readingMode, onSelect = viewModel::setReadingMode)
