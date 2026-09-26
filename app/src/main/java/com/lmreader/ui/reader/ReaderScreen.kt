@@ -205,6 +205,15 @@ private fun ReaderChrome(
                                 measureHeightDp = measureHeightDp,
                                 onTap = viewModel::onTap,
                                 onTransitionAction = viewModel::retryNeighbor,
+                                onScrollDelta = { delta ->
+                                    // 只在控制栏可见时判断，避免已在隐藏状态下反复调用。
+                                    if (state.chromeVisible &&
+                                        kotlin.math.abs(delta) >
+                                        state.settings.hideThreshold.thresholdPx
+                                    ) {
+                                        viewModel.toggleChrome()
+                                    }
+                                },
                                 modifier = Modifier.fillMaxSize(),
                             )
                         } else {
@@ -227,6 +236,20 @@ private fun ReaderChrome(
             TapZoneOverlay(state = state, onDismiss = viewModel::hideTapZoneOverlay)
         }
 
+        // 页码指示器（Mihon `ReaderPageIndicator`）：只在控制栏**隐藏**时显示。
+        // 控制栏可见时它自己的滑杆已经给出页码，两个同时显示会互相干扰。
+        if (!state.chromeVisible &&
+            state.settings.showPageNumber &&
+            state.error == null &&
+            state.currentPages.isNotEmpty()
+        ) {
+            PageIndicator(
+                current = displayPageNumber(state.localPageIndex, state.currentPages.size),
+                total = state.currentPages.size,
+                modifier = Modifier.align(Alignment.BottomCenter),
+            )
+        }
+
         if (state.chromeVisible && state.error == null && state.items.isNotEmpty()) {
             ReaderTopBar(state, onLeave, modifier = Modifier.align(Alignment.TopCenter))
             ReaderBottomBar(
@@ -236,6 +259,35 @@ private fun ReaderChrome(
                 modifier = Modifier.align(Alignment.BottomCenter),
             )
         }
+    }
+}
+
+/**
+ * 页码指示器（Mihon `ReaderPageIndicator`）。
+ *
+ * 文案格式照搬 Mihon：`当前页 / 总页数`，不含百分比——百分比在章节滑杆上。
+ * 页码是**章内**页码，与滑杆同一套换算（`displayPageNumber`），否则两处会显示不同的数。
+ *
+ * 与 Mihon 的实现差异：它用"描边文字 + 实心文字"叠两次来保证任何背景上都可读；
+ * 这里用半透明深色圆角底片。效果等价（都保证可读），而我们少一次文本测量与绘制。
+ * 做成底片而不是纯文字还额外避免了在纯白页面上白字看不见的问题。
+ */
+@Composable
+private fun PageIndicator(current: Int, total: Int, modifier: Modifier) {
+    if (current <= 0 || total <= 0) return
+    Surface(
+        color = Color.Black.copy(alpha = 0.55f),
+        shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
+        modifier = modifier
+            .windowInsetsPadding(WindowInsets.navigationBars)
+            .padding(bottom = 16.dp),
+    ) {
+        Text(
+            text = "$current / $total",
+            color = Color(0xEB, 0xEB, 0xEB),
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+        )
     }
 }
 

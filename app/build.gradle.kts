@@ -44,4 +44,9 @@ dependencies {
     // Mihon 的非 WebGPU 阅读路径用的就是同一个 fork（com.github.mihonapp）。
     // 它含 native 代码（libssiv_crop.so），APK 会带四种 ABI 的该库。
     implementation(libs.subsampling.scale.image.view)
+
+    // 阅读器的章节编排是纯逻辑（项列表组装、跨章提升、下标重定位），
+    // 出错时不会崩溃、只会让读者在章末撞墙或跳页，因此必须用单测把结构钉住。
+    testImplementation(libs.junit4)
+    testImplementation(libs.kotlin.test)
 }

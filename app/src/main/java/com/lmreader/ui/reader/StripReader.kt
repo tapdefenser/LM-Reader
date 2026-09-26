@@ -64,6 +64,7 @@ internal fun StripReader(
     measureHeightDp: suspend (ReaderItem.PageItem, Float) -> Int?,
     onTap: (x: Float, y: Float) -> Unit,
     onTransitionAction: (ReaderItem.Transition) -> Unit,
+    onScrollDelta: (Int) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     if (items.isEmpty()) return
@@ -108,6 +109,29 @@ internal fun StripReader(
         val target = currentIndex.coerceIn(items.indices)
         val visible = listState.layoutInfo.visibleItemsInfo.any { it.index == target }
         if (!visible) listState.scrollToItem(target)
+    }
+
+    /**
+     * 滚动增量上报，用于"滚动即隐藏控制栏"。
+     *
+     * 这里**监视**列表状态而不是套一层 `scrollable` 修饰符：`LazyColumn` 自己已经处理
+     * 滚动，外层再加一个可滚动修饰符会与它争抢手势，表现为滚动时卡顿或干脆不动。
+     * 监视首项的偏移变化既能拿到真实的滚动增量，又不干预滚动本身。
+     */
+    LaunchedEffect(listState, items.size) {
+        var previousIndex = listState.firstVisibleItemIndex
+        var previousOffset = listState.firstVisibleItemScrollOffset
+        snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
+            .collect { (index, offset) ->
+                // 首项换了时，偏移量会从小值重新开始；跨项那一刻不能把差值当成滚动量，
+                // 否则换项会被误判成一次大滚动而立刻隐藏控制栏。
+                if (index == previousIndex) {
+                    val delta = offset - previousOffset
+                    if (delta != 0) onScrollDelta(delta)
+                }
+                previousIndex = index
+                previousOffset = offset
+            }
     }
 
     LazyColumn(
