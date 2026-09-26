@@ -65,7 +65,7 @@ $SERIAL = "127.0.0.1:7555"
 1. **ABI**：MuMu 是 x86_64。若 APK 只带 `arm64-v8a` 的 native 库，需要确认 MuMu 的 ARM 转译是否可用；纯 Kotlin/Java 的应用不受影响。
 2. **截图坐标换算**：`screencap` 出图是设备真实分辨率（`wm size`）。看图的预览会被缩放，换算比例 = 真实宽 / 预览宽，再据此换算点击坐标。这台机器常见为 1080×2400，预览 536×1191，比例约 2.015。
 3. **底部区域**：模拟器的导航栏/手势区同样会吃掉贴近屏幕底边的点击。应用侧要用 `windowInsetsPadding(WindowInsets.navigationBars)`；调试侧若点击落点无效，先怀疑落进了系统手势区。
-4. **取应用数据库**：`sqlite3` 不在设备上，`run-as` 也无法往 `/sdcard` 或 `/data/local/tmp` 写（SELinux 拒绝 untrusted_app）。用流到宿主机的方式，**主库 + WAL + SHM 三个都要取**，只取主库会读到旧快照：
+4. **取应用数据库**：`sqlite3` 不在设备上，`run-as` 也无法往 `/sdcard` 或 `/data/local/tmp` 写（SELinux 拒绝 untrusted_app）。用流到宿主机的方式，**主库 + WAL + SHM 三个都要取**：
 
 ```powershell
 foreach ($f in @("lmreader.db", "lmreader.db-wal", "lmreader.db-shm")) {
@@ -75,9 +75,25 @@ foreach ($f in @("lmreader.db", "lmreader.db-wal", "lmreader.db-shm")) {
 }
 ```
 
-   取到后用 `python .scratch/<脚本>.py` 查（宿主机有 Python 与 `sqlite3` 模块）。`.scratch/` 已在 `.gitignore`。
+   **只取主库会读到旧快照，这一步已经坑过两次**：Room 默认开 WAL，刚写入的行留在 `-wal` 里，
+   只读主库会看到"写入没生效"，从而误判成代码 bug。判断"写入是否成功"前先确认三个文件都在。
+
+   取到后用 `python .scratch/probe/<脚本>.py` 查（宿主机有 Python 与 `sqlite3` 模块）。
+   `.scratch/` 已在 `.gitignore`。
+
+   **脚本不要放 `.scratch/` 根目录、也不要起 `inspect.py` 这类名字**：cwd 与脚本目录都在
+   `sys.path` 上，会遮蔽标准库同名模块（`inspect.py` 曾让 `PIL` 导入失败）。
 
 5. **改用例数据**：模拟器上的漫画目录需自己放。`adb push` 到 `/sdcard/` 之后再在图库路径表里授权；真机上的 3864 个真实漫画不会出现在这里。
+
+   **注意重装 APK 会把 `MANAGE_EXTERNAL_STORAGE` 重置**（`appops get` 会显示 `default` 与一个很近的时间戳），
+   应用随即退回窄范围 SAF 授权，于是它对 `push` 进去的新目录"看不见"，表现为重扫找不到新漫画。
+   用 `appops set com.lmreader.debug MANAGE_EXTERNAL_STORAGE allow` 补回。
+   但 `run-as ... ls /sdcard/...` 在这种状态下可能仍报 `Permission denied`，
+   与 `appops` 的读数矛盾——**不要以它作为判定依据**，改用应用内的扫描结果或数据库。
+
+   一条更省事的验证路径：把新章节目录放进**已被授权且已索引**的那部漫画下面，
+   然后在详情页点「更新章节」——那条路径是深度枚举，不依赖重扫与目录变化检测。
 6. **logcat 只按 tag 过滤更可靠**：MIUI 真机上 `logcat` 会混进大量系统噪声；模拟器上干净得多，`-s <TAG>:*` 通常就够。
 
 ## 与本项目真机的关系
