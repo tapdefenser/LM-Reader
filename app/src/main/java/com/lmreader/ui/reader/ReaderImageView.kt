@@ -273,6 +273,7 @@ private fun configure(
                 view.maxScale = base * MAX_ZOOM_SCALE
                 view.setDoubleTapZoomScale(base * DOUBLE_TAP_ZOOM_FACTOR)
                 applyZoomStart(view, settings)
+
                 onReady()
             }
 

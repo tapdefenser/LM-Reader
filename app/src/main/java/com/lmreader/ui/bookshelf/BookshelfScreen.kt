@@ -60,6 +60,7 @@ import com.lmreader.core.model.MangaCard
 import com.lmreader.core.model.SourceKind
 import com.lmreader.core.model.StyleMode
 import com.lmreader.di.AppContainer
+import com.lmreader.ui.common.ListScrollbar
 import com.lmreader.ui.common.CoverRequest
 import com.lmreader.ui.common.EndSideDrawer
 import com.lmreader.ui.common.LoadingState
@@ -206,34 +207,41 @@ fun BookshelfScreen(
                         )
                     }
                 } else {
-                    LazyColumn(
-                        state = listState,
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        items(state.items, key = { it.mangaId }) { card ->
-                            MangaCardItem(
-                                card = card,
-                                coverRequest = card.coverRequest(treeUris),
-                                onClick = { onOpenManga(card.mangaId) },
-                                onLongClick = { movingManga = card },
-                            )
-                        }
-                        if (state.exhausted) {
-                            item {
-                                Box(
-                                    modifier = Modifier.fillMaxWidth().padding(12.dp),
-                                    contentAlignment = Alignment.Center,
-                                ) {
-                                    Text(
-                                        text = "共 ${state.items.size} 部收藏",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
+                    // 滚动条浮在列表右侧，因此列表与它同处一个 Box。
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        LazyColumn(
+                            state = listState,
+                            modifier = Modifier.fillMaxSize(),
+                            contentPadding = PaddingValues(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            items(state.items, key = { it.mangaId }) { card ->
+                                MangaCardItem(
+                                    card = card,
+                                    coverRequest = card.coverRequest(treeUris),
+                                    onClick = { onOpenManga(card.mangaId) },
+                                    onLongClick = { movingManga = card },
+                                )
+                            }
+                            if (state.exhausted) {
+                                item {
+                                    Box(
+                                        modifier = Modifier.fillMaxWidth().padding(12.dp),
+                                        contentAlignment = Alignment.Center,
+                                    ) {
+                                        Text(
+                                            text = "共 ${state.items.size} 部收藏",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
                                 }
                             }
                         }
+                        ListScrollbar(
+                            state = listState,
+                            modifier = Modifier.align(Alignment.CenterEnd),
+                        )
                     }
                 }
             }

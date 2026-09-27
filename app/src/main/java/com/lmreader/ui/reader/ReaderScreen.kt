@@ -266,8 +266,16 @@ private fun ReaderContent(
         state.error != null -> ReaderError(state.error.orEmpty(), viewModel::reload, onLeave)
 
         state.items.isNotEmpty() -> {
-            // 换章必须重建阅读组件：分页器实例、滚动位置与条带页高缓存都与章节绑定。
-            key(state.chapters?.currentChapterId, state.readingMode) {
+            // 只在**阅读方式**变化时重建阅读组件：分页器与条带是两套不同的实现。
+            //
+            // ⚠️ 这里**不要**再把 `currentChapterId` 放进 key。它是这个"跨章闪黑一帧"的根因：
+            // 章与章的边界正好是 `currentChapterId` 变化的那一刻，于是整棵阅读组件树被销毁
+            // 重建，所有已显示页面的引擎视图一起重建、解码从头再来，其中就包括读者正在看的
+            // 那一页——那一帧什么都画不出来，露出底色。章内该 key 不变，所以章内不闪。
+            //
+            // 旧模型（分页器只覆盖当前章）确实需要换章重建；现在分页器覆盖**整条直线**、
+            // 项按 `pageId` 做 key，因此它自己能正确处理跨章，不需要重建。
+            key(state.readingMode) {
                 if (state.isContinuous) {
                     StripReader(
                         items = state.items,

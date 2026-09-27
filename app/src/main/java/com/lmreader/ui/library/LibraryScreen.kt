@@ -56,6 +56,8 @@ import com.lmreader.core.model.LibraryDisplayMode
 import com.lmreader.core.model.MangaCard
 import com.lmreader.core.model.SourceKind
 import com.lmreader.di.AppContainer
+import com.lmreader.ui.common.GridScrollbar
+import com.lmreader.ui.common.ListScrollbar
 import com.lmreader.ui.common.CoverRequest
 import com.lmreader.ui.common.EndSideDrawer
 import com.lmreader.ui.common.LoadingState
@@ -270,6 +272,9 @@ fun LibraryScreen(
                 )
 
                 is ScreenState.Content -> {
+                    // 滚动条浮在列表右侧，因此列表与它同处一个 Box。
+                    // 用 overlay 而不是把列表变窄：变窄会让网格列数变化、封面尺寸跳动。
+                    Box(modifier = Modifier.fillMaxSize()) {
                     if (state.displayMode == LibraryDisplayMode.LIST) {
                         LazyColumn(
                             state = listState,
@@ -297,6 +302,10 @@ fun LibraryScreen(
                             }
                             item { ListFooter(state) }
                         }
+                        ListScrollbar(
+                            state = listState,
+                            modifier = Modifier.align(Alignment.CenterEnd),
+                        )
                     } else {
                         LazyVerticalGrid(
                             state = gridState,
@@ -324,6 +333,11 @@ fun LibraryScreen(
                             }
                             item { ListFooter(state) }
                         }
+                        GridScrollbar(
+                            state = gridState,
+                            modifier = Modifier.align(Alignment.CenterEnd),
+                        )
+                    }
                     }
                 }
             }
