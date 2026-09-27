@@ -3,6 +3,10 @@ package com.lmreader.ui.common
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyListState
@@ -10,26 +14,45 @@ import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.unit.dp
 import kotlin.math.ceil
+import kotlinx.coroutines.launch
 
 /**
- * 长列表右侧的滚动条。
+ * 长列表右侧的滚动条，**可以拖动**。
  *
  * ## 为什么自己画
  *
- * Compose **没有内置的滚动条**：`LazyColumn` / `LazyVerticalGrid` 都不提供。
+ * Compose **没有内置滚动条**：`LazyColumn` / `LazyVerticalGrid` 都不提供。
  * 因此只有两条路——自己画一条，或者把列表换成原生 `RecyclerView`（那要重写适配器、
- * 丢掉 Compose 的列表能力）。这里取前者，实现只读 `layoutInfo`、不碰滚动行为。
+ * 丢掉 Compose 的列表能力）。这里取前者。
  *
  * ## 常驻显示，颜色取自主题
  *
  * 这两点都是踩过坑之后改的，详见 [ScrollbarBody] 的说明：曾经"滚动时才显示"导致
  * 读者**完全看不到**，曾经写死白色导致**浅色模式下隐形**。
+ *
+ * ## 拖动换算：拖一个滑块长 = 滚一屏
+ *
+ * 滑块长度占轨道的比例就是"视口占内容的比例"（`sizeFraction = viewport / content`）。
+ * 于是把滑块往下拖 `dy` 像素，内容应当滚 `dy / sizeFraction` 像素；而滑块高
+ * `thumbHeight = track * sizeFraction`，代进去正好得到：
+ *
+ * ```
+ * 滚动量 = dy × 视口高 / 滑块高
+ * ```
+ *
+ * 也就是"拖动量等于滑块自身高度时，正好走过一屏"。不需要额外维护内容总长的估算值，
+ * 因此**拖动与位置估算的误差无关**——估算只影响滑块看起来多长，不影响拖动的比例。
  *
  * ## 位置按估算，两端用精确锚点
  *
@@ -42,12 +65,15 @@ fun ListScrollbar(
     state: LazyListState,
     modifier: Modifier = Modifier,
 ) {
-    ScrollbarBody(
+    val scope = rememberCoroutineScope()
+    ScrollbarLayout(
         thumb = thumbFrom(
             totalItems = state.layoutInfo.totalItemsCount,
             viewportSize = state.layoutInfo.viewportEndOffset - state.layoutInfo.viewportStartOffset,
             visible = state.visibleItems(),
         ),
+        viewportSize = state.layoutInfo.viewportEndOffset - state.layoutInfo.viewportStartOffset,
+        onScrollBy = { delta -> scope.launch { state.scrollBy(delta) } },
         modifier = modifier,
     )
 }
@@ -58,12 +84,15 @@ fun GridScrollbar(
     state: LazyGridState,
     modifier: Modifier = Modifier,
 ) {
-    ScrollbarBody(
+    val scope = rememberCoroutineScope()
+    ScrollbarLayout(
         thumb = thumbFrom(
             totalItems = state.layoutInfo.totalItemsCount,
             viewportSize = state.layoutInfo.viewportEndOffset - state.layoutInfo.viewportStartOffset,
             visible = state.visibleItems(),
         ),
+        viewportSize = state.layoutInfo.viewportEndOffset - state.layoutInfo.viewportStartOffset,
+        onScrollBy = { delta -> scope.launch { state.scrollBy(delta) } },
         modifier = modifier,
     )
 }
@@ -77,23 +106,17 @@ private data class ScrollbarThumb(
 )
 
 /**
- * 画那条滑块。
+ * 轨道：一个较宽的**触摸区** + 一条细的**视觉条**。
  *
- * ## 为什么**常驻**显示，而不是滚动时才出现
- *
- * 最初做的是"滚动时显示、停手 900ms 后淡出"。读者反馈**完全看不到**——停下手指再去
- * 找它，它已经淡掉了。滚动条的价值是"随时能看出我在列表的哪个位置"，那就不能是
- * 一闪而过的。因此改成常驻。
- *
- * ## 颜色必须取自主题，不能写死白色
- *
- * 第一版用 `Color.White.copy(alpha = 0.38f)`，在深色背景下没问题，但本应用的配色
- * **跟随系统**（见 `LmReaderTheme`）：浅色模式下白叠白等于隐形——这正是"看不到"的
- * 另一半原因。改用 `onSurface`，浅色下近黑、深色下近白。
+ * 触摸区比视觉条宽得多（[TOUCH_WIDTH] 对 [TRACK_WIDTH]）：4dp 的细条按不准，
+ * 而宽触摸区只做一件事——判断"手指是不是按在滑块上"，按不到滑块就完全不接管这一串
+ * 手势。因此它**不会**吃掉列表右侧的点击：在卡片上点一下，事件照样落到卡片上。
  */
 @Composable
-private fun ScrollbarBody(
+private fun ScrollbarLayout(
     thumb: ScrollbarThumb?,
+    viewportSize: Int,
+    onScrollBy: (Float) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     if (thumb == null) return
@@ -105,23 +128,58 @@ private fun ScrollbarBody(
         animationSpec = tween(durationMillis = 120),
         label = "scrollbarLength",
     )
+    // 手势回调里要用到的最新值。用 rememberUpdatedState 而不是给 pointerInput 加
+    // key：加 key 会在动画每帧重启手势检测器，拖动过程会被打断。
+    val currentLength by rememberUpdatedState(length)
+    val currentOffset by rememberUpdatedState(thumb.offsetFraction)
+    val currentViewport by rememberUpdatedState(viewportSize.toFloat())
+    val currentOnScrollBy by rememberUpdatedState(onScrollBy)
 
-    Canvas(
-        modifier = modifier
-            .fillMaxHeight()
-            .width(TRACK_WIDTH),
-    ) {
-        val trackHeight = size.height
-        // 极长的列表算出来的滑块只有一两像素，既看不见也判断不出位置；给一个下限。
-        val thumbHeight = (trackHeight * length).coerceAtLeast(MIN_THUMB_HEIGHT.toPx())
-        val travel = (trackHeight - thumbHeight).coerceAtLeast(0f)
-        val top = travel * thumb.offsetFraction.coerceIn(0f, 1f)
-        drawRoundRect(
-            color = color,
-            topLeft = Offset(0f, top),
-            size = Size(size.width, thumbHeight),
-            cornerRadius = CornerRadius(size.width / 2f, size.width / 2f),
-        )
+    Box(modifier = modifier.fillMaxHeight().width(TOUCH_WIDTH)) {
+        Canvas(
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .fillMaxHeight()
+                .width(TRACK_WIDTH)
+                // 拖动。只在**按到滑块上**时接管，否则原样放过（列表自己的滚动与
+                // 卡片点击都不受影响）。
+                .pointerInput(Unit) {
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        val thumbHeight = size.height * currentLength
+                        if (thumbHeight <= 0f) return@awaitEachGesture
+                        val top = (size.height - thumbHeight) * currentOffset
+                        val onThumb = down.position.y >= top - GRAB_SLOP.toPx() &&
+                            down.position.y <= top + thumbHeight + GRAB_SLOP.toPx()
+                        if (!onThumb) return@awaitEachGesture
+
+                        val pointerId = down.id
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull { it.id == pointerId } ?: break
+                            if (!change.pressed) break
+                            val dy = change.positionChange().y
+                            if (dy != 0f) {
+                                change.consume()
+                                // 往下拖 = 看更前面的内容 = 滚动量取负。
+                                currentOnScrollBy(-dy * currentViewport / thumbHeight)
+                            }
+                        }
+                    }
+                },
+        ) {
+            val trackHeight = size.height
+            // 极长的列表算出来的滑块只有一两像素，既看不见也抓不住；给一个下限。
+            val thumbHeight = (trackHeight * length).coerceAtLeast(MIN_THUMB_HEIGHT.toPx())
+            val travel = (trackHeight - thumbHeight).coerceAtLeast(0f)
+            val top = travel * thumb.offsetFraction.coerceIn(0f, 1f)
+            drawRoundRect(
+                color = color,
+                topLeft = Offset(0f, top),
+                size = Size(size.width, thumbHeight),
+                cornerRadius = CornerRadius(size.width / 2f, size.width / 2f),
+            )
+        }
     }
 }
 
@@ -149,11 +207,6 @@ private fun LazyGridState.visibleItems(): List<VisibleItem> =
  * "网格有几列"：这样列表与网格共用一套逻辑，列表自然得到"一行一项"。
  *
  * 行距优先取**相邻两行的位置差**（已含行间距），只有一行可见时才退回项高。
- *
- * ## 位置按估算，不追求像素级精确
- *
- * 滚动条只需表达"我在列表的什么位置、前面还有多少"。项高往往不一致（封面尺寸、
- * 标题行数），逐项测量等于把整个列表布局一遍。
  */
 private fun thumbFrom(
     totalItems: Int,
@@ -202,9 +255,19 @@ private fun thumbFrom(
     )
 }
 
-/** 轨道宽度。细到不挡封面，又粗到看得见。 */
+/** 视觉条的宽度。细到不挡封面，又粗到看得见。 */
 private val TRACK_WIDTH = 4.dp
 
-/** 滑块最小长度：极长的列表也要能看见、能判断位置。 */
-private val MIN_THUMB_HEIGHT = 24.dp
+/**
+ * 触摸区宽度。
+ *
+ * 比视觉条宽得多，因为 4dp 按不准。它只判断"手指是否按在滑块上"，按不到就完全不介入，
+ * 因此不会妨碍列表右侧的点击与滚动（见 [ScrollbarLayout]）。
+ */
+private val TOUCH_WIDTH = 28.dp
 
+/** 按在滑块上下边缘附近也算按在滑块上，让手指稍微偏一点也能抓住。 */
+private val GRAB_SLOP = 12.dp
+
+/** 滑块最小长度：极长的列表也要能看见、能抓住、能判断位置。 */
+private val MIN_THUMB_HEIGHT = 24.dp
