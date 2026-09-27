@@ -88,10 +88,14 @@ fun ReaderScreen(
     container: AppContainer,
     mangaId: String,
     chapterId: String,
+    /** 从哪一页开始；[ReaderViewModel.NO_START_PAGE] 表示没指定。 */
+    startPage: Int = ReaderViewModel.NO_START_PAGE,
     onBack: () -> Unit,
     viewModel: ReaderViewModel = viewModel(
-        key = "$mangaId:$chapterId",
-        factory = ReaderViewModel.factory(container, mangaId, chapterId),
+        // key 里带上起始页：不同起始页是不同的阅读会话，复用同一个 ViewModel 会让
+        // 后一次打开沿用前一次的页码。
+        key = "$mangaId:$chapterId:$startPage",
+        factory = ReaderViewModel.factory(container, mangaId, chapterId, startPage),
     ),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()

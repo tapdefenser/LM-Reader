@@ -14,7 +14,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.navigation.NavType
 import androidx.navigation.NavHostController
+import androidx.navigation.navArgument
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
@@ -24,6 +26,7 @@ import com.lmreader.ui.bookshelf.BookshelfScreen
 import com.lmreader.ui.detail.MangaDetailScreen
 import com.lmreader.ui.library.LibraryScreen
 import com.lmreader.ui.reader.ReaderScreen
+import com.lmreader.ui.reader.ReaderViewModel
 import com.lmreader.ui.settings.SettingsHomeScreen
 import com.lmreader.ui.settings.paths.GalleryPathsScreen
 import com.lmreader.ui.settings.paths.GalleryPathsSettingsScreen
@@ -38,12 +41,24 @@ object Routes {
     const val SETTINGS = "settings"
     const val SETTINGS_PATHS = "settings/paths"
     const val MANGA_DETAIL = "manga/{mangaId}"
-    const val READER = "reader/{mangaId}/{chapterId}"
+    const val READER = "reader/{mangaId}/{chapterId}?page={page}"
     const val TRANSLATION_QUEUE = "queue/translation"
     const val EXPORT_QUEUE = "queue/export"
 
     fun mangaDetail(mangaId: String) = "manga/$mangaId"
-    fun reader(mangaId: String, chapterId: String?) = "reader/$mangaId/${chapterId ?: "resume"}"
+
+    /**
+     * 阅读器路由。
+     *
+     * @param chapterId 具体章节 ID；null 表示"继续阅读"（跟随进度里的章节）
+     * @param page 从**哪一页**开始（0 基）。只在从章节列表点进"已读过的那一章"时才给，
+     *   于是用户点那一行会回到上次停下的页，而不是从第 1 页重来。
+     *   用查询参数而不是路径段：它是可选的，而路径段难以区分"不带页码"与"页码为 0"。
+     */
+    fun reader(mangaId: String, chapterId: String?, page: Int? = null): String {
+        val base = "reader/$mangaId/${chapterId ?: "resume"}"
+        return if (page == null) base else "$base?page=$page"
+    }
 }
 
 /**
@@ -111,6 +126,29 @@ fun LmReaderNavHost(
     ) {
         Surface(modifier = Modifier.fillMaxSize()) {
             NavHost(navController = navController, startDestination = destination) {
+                composable(
+                    route = Routes.READER,
+                    arguments = listOf(
+                        // 必须显式声明为 Int：查询参数默认按 String 解析，
+                        // `getInt("page")` 会拿到 null，起始页就静默失效。
+                        //
+                        // `readOnly` + 在路由里给默认值，是为了不重复声明默认值——
+                        // 路由模板一处、构建 URL 一处，两处不一致时最难查。
+                        navArgument("page") {
+                            type = NavType.IntType
+                            defaultValue = ReaderViewModel.NO_START_PAGE
+                        },
+                    ),
+                ) { entry ->
+                    ReaderScreen(
+                        container = container,
+                        mangaId = entry.arguments?.getString("mangaId").orEmpty(),
+                        chapterId = entry.arguments?.getString("chapterId").orEmpty(),
+                        startPage = entry.arguments?.getInt("page") ?: ReaderViewModel.NO_START_PAGE,
+                        onBack = { navController.popBackStack() },
+                    )
+                }
+
                 composable(Routes.ONBOARDING) {
                     GalleryPathsScreen(
                         container = container,
@@ -162,20 +200,12 @@ fun LmReaderNavHost(
                         container = container,
                         mangaId = mangaId,
                         onBack = { navController.popBackStack() },
-                        onReadChapter = { chapterId ->
-                            navController.navigate(Routes.reader(mangaId, chapterId))
+                        onReadChapter = { chapterId, startPage ->
+                            navController.navigate(Routes.reader(mangaId, chapterId, startPage))
                         },
                     )
                 }
 
-                composable(Routes.READER) { entry ->
-                    ReaderScreen(
-                        container = container,
-                        mangaId = entry.arguments?.getString("mangaId").orEmpty(),
-                        chapterId = entry.arguments?.getString("chapterId").orEmpty(),
-                        onBack = { navController.popBackStack() },
-                    )
-                }
 
                 composable(Routes.TRANSLATION_QUEUE) {
                     NotImplementedScreen(

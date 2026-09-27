@@ -11,6 +11,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.view.doOnLayout
 import com.davemorrissey.labs.subscaleview.ImageSource
 import com.davemorrissey.labs.subscaleview.SubsamplingScaleImageView
 import com.lmreader.core.model.ImageScaleType
@@ -76,9 +77,25 @@ internal fun EnginePageView(
             }
         },
         modifier = modifier.fillMaxSize(),
+        // 等布局完成再载图。
+        //
+        // 尺寸为 0 时 `setImage` 的行为不可预期：真机日志里出现过
+        // `setImage: 001.jpg view=0x0`，而库的瓦片初始化依赖视图尺寸。
+        // 在那之前载图既可能白跑一次（随后尺寸变化还要重来），也是"同一页被解码
+        // 多次"的一个来源，而每次解码都要一整张图的 ByteBuffer（见下）。
+        update = { created -> view = created },
     )
 
     // 载入这一页的图像流。
+    //
+    // 两件事必须同时做到：
+    // 1. **等视图有尺寸再 setImage**：尺寸为 0 时库的瓦片初始化行为不可预期，
+    //    真机日志里出现过 `setImage: 001.jpg view=0x0`；
+    // 2. **同一页只 setImage 一次**：每次载图都会把整张图解码进一个 ByteBuffer
+    //    （ARGB_8888 下 3024×1700 约 20MB），而进程堆上限 256MB。重组或尺寸变化
+    //    触发第二次整图解码是 OOM 最可能的来源，因此用视图上的标记挡住。
+    //
+    // 流在协程里先打开（`PageSource.open` 是 suspend），布局回调只负责 `setImage`。
     LaunchedEffect(page.pageId, source) {
         val target = view ?: return@LaunchedEffect
         decodeFailed = false
@@ -87,19 +104,32 @@ internal fun EnginePageView(
             decodeFailed = true
             return@LaunchedEffect
         }
-        target.setImage(ImageSource.inputStream(stream))
+        target.doOnLayout {
+            if (target.getTag(IMAGE_LOADED_TAG) == page.pageId) return@doOnLayout
+            target.setTag(IMAGE_LOADED_TAG, page.pageId)
+            target.setImage(ImageSource.inputStream(stream))
+        }
     }
 
     DisposableEffect(page.pageId) {
         val target = view
         onDispose {
-            // 必须清理：库持有 native 瓦片解码器与位图，不释放会在翻页时持续增长。
+            // 清理顺序有讲究：先摘监听器，再 recycle。
+            //
+            // `recycle()` 只释放解码器持有的瓦片与位图；正在跑的 `TilesInitTask` 是
+            // 库内部的 AsyncTask，它完成时仍会回调监听器。先摘掉监听器可以避免
+            // 已经离开屏幕的页面再触发一次状态更新（那会让 Compose 重新组合一个
+            // 已经销毁的节点）。
             target?.setOnImageEventListener(null)
+            target?.setTag(IMAGE_LOADED_TAG, null)
             target?.recycle()
             view = null
         }
     }
 }
+
+/** 标记"这一页已经载图"，防止重组时重复整图解码。见上面的载图分支。 */
+private const val IMAGE_LOADED_TAG = -0x4C4D52 // 负数，避开库与框架可能使用的正数 tag key
 
 /**
  * 应用与 Mihon 同源的引擎配置。
@@ -120,6 +150,10 @@ private fun configure(
     view.setPanLimit(SubsamplingScaleImageView.PAN_LIMIT_INSIDE)
     view.setMinimumTileDpi(MIN_TILE_DPI)
     view.setMinimumDpi(MIN_DPI)
+    // 限制单块瓦片的像素。默认值在 1440 宽的屏上会取到约 3000×1500 的块
+    // （565 下约 9MB），而真机上已经出现过解码期 OOM。2048 把峰值压到约 4MB，
+    // 代价只是每页多几次区域解码。
+    view.setMaxTileSize(MAX_TILE_PX)
     view.setMinimumScaleType(settings.imageScaleType.toLibraryScaleType())
     // 裁白边是 fork 相对上游 SSIV 的新增能力，也是我们唯一无法自己等价实现的一项
     // （纯 Compose 只能裁掉溢出部分，做不到按内容裁白）。
@@ -203,3 +237,6 @@ private const val DOUBLE_TAP_ZOOM_FACTOR = 2f
 /** Mihon `setMinimumTileDpi(180)` / `setMinimumDpi(1)`。 */
 private const val MIN_TILE_DPI = 180
 private const val MIN_DPI = 1
+
+/** 单块瓦片的最大边长（像素）。见 `configure` 里的内存说明。 */
+private const val MAX_TILE_PX = 2048

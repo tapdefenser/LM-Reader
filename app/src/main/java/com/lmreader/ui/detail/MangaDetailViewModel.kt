@@ -9,6 +9,8 @@ import com.lmreader.core.model.Category
 import com.lmreader.core.model.ChapterRecord
 import com.lmreader.core.model.MangaRecord
 import com.lmreader.core.model.MangaRepository
+import com.lmreader.core.model.ReadingProgress
+import com.lmreader.core.model.ReadingProgressRepository
 import com.lmreader.core.model.ShelfRepository
 import com.lmreader.core.model.SourceRepository
 import com.lmreader.core.storage.scan.ChapterSyncOutcome
@@ -26,6 +28,7 @@ class MangaDetailViewModel(
     private val sourceRepository: SourceRepository,
     private val shelfRepository: ShelfRepository,
     private val chapterSyncer: MangaChapterSyncer,
+    private val progressRepository: ReadingProgressRepository,
 ) : ViewModel() {
     private val _state = MutableStateFlow(MangaDetailUiState())
     val state: StateFlow<MangaDetailUiState> = _state.asStateFlow()
@@ -104,6 +107,9 @@ class MangaDetailViewModel(
             val source = sourceRepository.getSource(target.manga.sourceId)
                 ?: error("来源已被删除")
             val card = mangaRepository.getCards(listOf(mangaId)).firstOrNull()
+            // 阅读进度要一起读出来：章节行要显示"读到第几页"，而且"继续阅读"要能从
+            // 那一页打开。放在同一次加载里而不是让 UI 各自去查，避免两处显示不一致。
+            val progress = progressRepository.get(mangaId)
             _state.update {
                 it.copy(
                     loading = false,
@@ -112,6 +118,7 @@ class MangaDetailViewModel(
                     sourceTreeUri = source.treeUri,
                     sourceDisplayPath = source.displayPath,
                     inShelf = card?.inShelf == true,
+                    progress = progress,
                     error = null,
                 )
             }
@@ -134,6 +141,7 @@ class MangaDetailViewModel(
                     sourceRepository = container.sourceRepository,
                     shelfRepository = container.shelfRepository,
                     chapterSyncer = container.mangaChapterSyncer,
+                    progressRepository = container.readingProgressRepository,
                 )
             }
         }
@@ -149,6 +157,8 @@ data class MangaDetailUiState(
     val inShelf: Boolean = false,
     val categories: List<Category> = emptyList(),
     val syncing: Boolean = false,
+    /** 这部漫画的阅读进度；null 表示还没读过。 */
+    val progress: ReadingProgress? = null,
     val error: String? = null,
     val message: String? = null,
 )

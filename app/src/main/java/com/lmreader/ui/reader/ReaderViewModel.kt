@@ -50,6 +50,13 @@ import kotlinx.coroutines.sync.withLock
 class ReaderViewModel(
     private val mangaId: String,
     private val requestedChapterId: String,
+    /**
+     * 从哪一页开始（0 基）；[NO_START_PAGE] 表示"没指定"，此时按章节/进度决定。
+     *
+     * 与"继续阅读"入口的区别：那个是 chapterId 为 [RESUME_CHAPTER]、页码来自进度表；
+     * 这个是用户点了**具体某一章**那一行，页码由详情页从他读到的地方带过来。
+     */
+    private val requestedStartPage: Int = NO_START_PAGE,
     private val mangaRepository: MangaRepository,
     private val progressRepository: ReadingProgressRepository,
     private val pageSourceFactory: PageSourceFactory,
@@ -133,14 +140,18 @@ class ReaderViewModel(
                         chapterList = target.chapters,
                     )
                 }
-                // 只有"继续阅读"入口才恢复页码；从章节列表点进某一章时从头开始。
-                val restorePage = savedProgress
+                // 恢复页码的三种来源，按优先级：
+                // 1. 详情页带过来的起始页（用户点了某一章那一行，且他读到过那里）；
+                // 2. "继续阅读"入口 + 进度表里记的正是这一章 → 用进度里的页码；
+                // 3. 都没有 → 第一页。
+                val fromRoute = requestedStartPage.takeIf { it >= 0 }
+                val fromProgress = savedProgress
                     ?.takeIf {
                         requestedChapterId == RESUME_CHAPTER &&
                             it.chapterId == target.chapters[index].chapterId
                     }
                     ?.pageOrdinal
-                    ?: 0
+                val restorePage = fromRoute ?: fromProgress ?: 0
                 openChapter(index, restorePage)
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -394,18 +405,30 @@ class ReaderViewModel(
 
         when (val item = snapshot.items[absoluteIndex]) {
             is ReaderItem.Transition -> {
-                _state.update { it.copy(currentPageIndex = absoluteIndex) }
-                // 停在过渡项上时确保目标章已加载（Mihon `onTransitionSelected` 的行为）。
-                retryNeighborIfFailed(item)
+                // 目标章**已经加载好**时直接推进到它的第一页，不再把过渡项当作停留点。
+                //
+                // 落点必须显式算出来，不能指望 `promoteChapter` 用"项身份"找回来：
+                // 那个身份**就是过渡项自身**，提升后会落回过期位置（曾经因此把读者
+                // 送回上一章，并且看不到过渡页）。而"过渡项在新列表里的下一个位置"
+                // 必然是目标章的第一页——这正是"翻过这一页就到了下一章"的字面含义。
+                val target = item.to
+                if (item.forward && target != null && target.state == ViewerChapter.LoadState.Loaded) {
+                    promoteChapter(target.chapterId, afterTransitionFrom = item)
+                } else {
+                    _state.update { it.copy(currentPageIndex = absoluteIndex) }
+                    retryNeighborIfFailed(item)
+                }
             }
 
             is ReaderItem.PageItem -> {
                 val activeId = snapshot.chapters?.current?.chapterId
+                // 先记录落点再考虑换章：顺序反了的话，换章过程里的任何位置调整都会把
+                // 读者刚翻到的页覆盖掉，进度也就被写错。
+                _state.update { it.copy(currentPageIndex = absoluteIndex) }
                 if (item.chapterId != activeId) {
-                    // 读者已经翻进了相邻章：把它提升为当前章，并围绕它重新预载两侧。
-                    promoteChapter(item.chapterId)
+                    // 读者翻进了相邻章（例如从上一章末尾继续往前）：把它提升为当前章。
+                    promoteChapter(item.chapterId, afterTransitionFrom = null)
                 } else {
-                    _state.update { it.copy(currentPageIndex = absoluteIndex) }
                     saveProgress()
                 }
             }
@@ -415,10 +438,14 @@ class ReaderViewModel(
     /**
      * 把已加载的相邻章提升为当前章。
      *
-     * 不重新列页：那一章的页清单在预载时已经拿到了，重建只会白白多读一次目录。
-     * 提升后必须**重新预载两侧**，因为原来的"上一章"位置现在应该放更早的一章。
+     * @param afterTransitionFrom 非空表示这次提升是"翻过了这个过渡项"触发的，
+     *   落点取该项在新列表中的下一个位置，也就是目标章的第一页。
+     *   为空表示读者已经落在目标章的某一页上，此时按项身份找回位置——
+     *   新列表前面多了"上一章"的页与过渡项，绝对下标会平移，必须重新定位。
+     *
+     * 提升后必须**重新预载两侧**：原来的"上一章"位置现在应该放更早的一章。
      */
-    private fun promoteChapter(chapterId: String) {
+    private fun promoteChapter(chapterId: String, afterTransitionFrom: ReaderItem.Transition?) {
         val snapshot = _state.value
         val existing = snapshot.chapters ?: return
         val promoted = when (chapterId) {
@@ -432,15 +459,25 @@ class ReaderViewModel(
 
         val chapters = ViewerChapters(current = promoted)
         val readerItems = buildReaderItems(chapters, snapshot.settings.alwaysShowChapterTransition)
-        val offset = readerItems.currentChapterOffset
+        val newIndex = if (afterTransitionFrom != null) {
+            // 过渡项在新列表里的位置 + 1 = 目标章第一页。
+            val transitionIndex = readerItems.items.indexOfFirst { it.key == afterTransitionFrom.key }
+            (transitionIndex + 1).takeIf { it in readerItems.items.indices }
+                ?: readerItems.currentChapterOffset
+        } else {
+            val anchorKey = snapshot.items.getOrNull(snapshot.currentPageIndex)?.key
+            anchorKey
+                ?.let { key -> readerItems.items.indexOfFirst { it.key == key }.takeIf { it >= 0 } }
+                ?: readerItems.currentChapterOffset
+        }
+        val safeIndex = newIndex.coerceIn(readerItems.items.indices)
 
         _state.update {
             it.copy(
                 currentChapterIndex = index,
                 chapters = chapters,
                 items = readerItems.items,
-                // 落到该章第一页：读者是从章首翻进来的，接着读自然从第 0 页开始。
-                currentPageIndex = offset.coerceIn(readerItems.items.indices),
+                currentPageIndex = safeIndex,
                 pageHeights = emptyMap(),
             )
         }
@@ -611,15 +648,20 @@ class ReaderViewModel(
     companion object {
         const val RESUME_CHAPTER = "resume"
 
+        /** 没有指定起始页的哨兵值；见 [requestedStartPage]。 */
+        const val NO_START_PAGE = -1
+
         fun factory(
             container: com.lmreader.di.AppContainer,
             mangaId: String,
             chapterId: String,
+            startPage: Int = NO_START_PAGE,
         ): ViewModelProvider.Factory = viewModelFactory {
             initializer {
                 ReaderViewModel(
                     mangaId = mangaId,
                     requestedChapterId = chapterId,
+                    requestedStartPage = startPage,
                     mangaRepository = container.mangaRepository,
                     progressRepository = container.readingProgressRepository,
                     pageSourceFactory = container.pageSourceFactory,

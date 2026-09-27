@@ -91,14 +91,17 @@ internal fun PagerReader(
                 modifier = modifier,
                 // 右到左：索引更大的项排在左侧，与 Mihon 反转适配器列表等价。
                 reverseLayout = settings.readingMode.isRightToLeft,
-                beyondViewportPageCount = 1,
+                // 0 而不是 Mihon 的 1：每一页都要解码成位图，相邻页同时存活会让
+                // 解码峰值翻倍，真机上已因此 OOM。代价是相邻页不预载，滑动时
+                // 多一次短暂占位。
+                beyondViewportPageCount = 0,
                 key = { items[it].key },
             ) { index -> renderItem(index) }
         } else {
             VerticalPager(
                 state = pagerState,
                 modifier = modifier,
-                beyondViewportPageCount = 1,
+                beyondViewportPageCount = 0,
                 key = { items[it].key },
             ) { index -> renderItem(index) }
         }

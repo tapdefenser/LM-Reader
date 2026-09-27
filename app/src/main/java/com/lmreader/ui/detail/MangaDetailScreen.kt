@@ -58,13 +58,25 @@ import com.lmreader.di.AppContainer
 import com.lmreader.ui.common.CoverImage
 import com.lmreader.ui.common.CoverRequest
 
+/**
+ * 点章节行时从哪一页打开。
+ *
+ * - 这一章**就是进度里正在读的那一章**且读到过非首页 → 从那一页继续；
+ * - 否则返回 null，表示"从头开始"。
+ *
+ * 为什么用 null 而不是 0 表示"从头"：导航参数是 Int，而 0 是合法的第一页。
+ * 用可空把"用户明确要第一页"与"没有指定"分开，避免以后加"跳到某页"时混淆。
+ */
+private fun resumePageFor(isCurrentChapter: Boolean, readPage: Int): Int? =
+    if (isCurrentChapter && readPage > 0) readPage else null
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MangaDetailScreen(
     container: AppContainer,
     mangaId: String,
     onBack: () -> Unit,
-    onReadChapter: (String?) -> Unit,
+    onReadChapter: (chapterId: String?, startPage: Int?) -> Unit,
     viewModel: MangaDetailViewModel = viewModel(
         key = mangaId,
         factory = MangaDetailViewModel.factory(container, mangaId),
@@ -165,7 +177,7 @@ private fun DetailContent(
     contentPadding: PaddingValues,
     onSync: () -> Unit,
     onShelfClick: () -> Unit,
-    onReadChapter: (String?) -> Unit,
+    onReadChapter: (chapterId: String?, startPage: Int?) -> Unit,
 ) {
     val manga = requireNotNull(state.manga)
     LazyColumn(
@@ -228,7 +240,7 @@ private fun DetailContent(
         }
         item {
             Button(
-                onClick = { onReadChapter(null) },
+                onClick = { onReadChapter(null, null) },
                 enabled = state.chapters.isNotEmpty(),
                 modifier = Modifier.fillMaxWidth(),
             ) {
@@ -249,18 +261,41 @@ private fun DetailContent(
             item { Text("尚无章节索引") }
         } else {
             items(state.chapters, key = { it.chapterId }) { chapter ->
+                // 阅读进度只属于"当前正在读的那一章"，其它章节行不该跟着显示页码。
+                val isCurrentChapter = state.progress?.chapterId == chapter.chapterId
+                val readPage = state.progress?.pageOrdinal ?: 0
                 ListItem(
-                    modifier = Modifier.clickable { onReadChapter(chapter.chapterId) },
+                    modifier = Modifier.clickable { onReadChapter(chapter.chapterId, resumePageFor(isCurrentChapter, readPage)) },
                     headlineContent = { Text(chapter.title) },
                     supportingContent = {
+                        // 以前这里显示"图片目录"，但那是**物理形式**，用户看章节列表时
+                        // 想知道的是"这一章有多长、我读到哪了"。物理形式对阅读没有帮助。
                         Text(
-                            when (chapter.kind) {
-                                ChapterKind.IMAGE_DIRECTORY -> "图片目录"
-                                ChapterKind.ARCHIVE -> "归档 / PDF"
+                            buildString {
+                                append(
+                                    when (chapter.kind) {
+                                        ChapterKind.IMAGE_DIRECTORY -> "图片目录"
+                                        ChapterKind.ARCHIVE -> "归档 / PDF"
+                                    },
+                                )
+                                chapter.pageCount?.let { append(" · 共 $it 页") }
+                                if (isCurrentChapter && readPage > 0) {
+                                    append(" · 读到第 ${readPage + 1} 页")
+                                }
                             },
                         )
                     },
-                    trailingContent = { chapter.pageCount?.let { Text("$it 页") } },
+                    trailingContent = {
+                        when {
+                            // 已读过的章节显示进度，而不是总页数——总页数在标题下面。
+                            isCurrentChapter && readPage > 0 -> Text(
+                                "${readPage + 1}/${chapter.pageCount ?: "?"}",
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+
+                            else -> chapter.pageCount?.let { Text("$it 页") }
+                        }
+                    },
                 )
                 HorizontalDivider()
             }

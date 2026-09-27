@@ -48,6 +48,18 @@ class AppContainer(private val application: Application) {
     private val maintenanceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     init {
+        // 阅读器页面的位图格式必须是 565，而不是库默认的 8888。
+        //
+        // 真机上出现过 OutOfMemoryError：库在 `Decoder.init` 里为每一页分配
+        // `宽 × 高 × 4` 字节，一张 3024×1700 的图就约 20MB；分页器同时持有相邻页，
+        // 而进程堆上限 256MB，于是**第一次打开那一章就崩**。改成 565 后每像素 2 字节，
+        // 内存直接减半。
+        //
+        // 必须是**静态**设置且在任何视图创建之前：库把它存在静态字段上。
+        // 放在容器初始化里，保证早于任何阅读器实例。
+        com.davemorrissey.labs.subscaleview.SubsamplingScaleImageView
+            .setPreferredBitmapConfig(android.graphics.Bitmap.Config.RGB_565)
+
         maintenanceScope.launch {
             runCatching { mangaRepository.markOrphanedAsStale() }
                 .onSuccess { hidden ->
