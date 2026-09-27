@@ -304,7 +304,7 @@ fun LibraryScreen(
                         }
                         ListScrollbar(
                             state = listState,
-                            modifier = Modifier.align(Alignment.CenterEnd),
+                            modifier = Modifier,
                         )
                     } else {
                         LazyVerticalGrid(
@@ -335,7 +335,7 @@ fun LibraryScreen(
                         }
                         GridScrollbar(
                             state = gridState,
-                            modifier = Modifier.align(Alignment.CenterEnd),
+                            modifier = Modifier,
                         )
                     }
                     }

@@ -8,6 +8,7 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.grid.LazyGridState
@@ -23,6 +24,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import kotlin.math.ceil
 import kotlinx.coroutines.launch
@@ -106,11 +108,23 @@ private data class ScrollbarThumb(
 )
 
 /**
- * 轨道：一个较宽的**触摸区** + 一条细的**视觉条**。
+ * 滚动条的触摸层与视觉条。
  *
- * 触摸区比视觉条宽得多（[TOUCH_WIDTH] 对 [TRACK_WIDTH]）：4dp 的细条按不准，
- * 而宽触摸区只做一件事——判断"手指是不是按在滑块上"，按不到滑块就完全不接管这一串
- * 手势。因此它**不会**吃掉列表右侧的点击：在卡片上点一下，事件照样落到卡片上。
+ * ## 触摸层必须**只覆盖右侧一条窄带**
+ *
+ * 试过一个"更稳"的做法：让触摸层铺满整个列表区（同样是同级最上层，命中必然可靠），
+ * 在手势里判断手指是否落在右侧滑块上，不在就放行。
+ *
+ * **不行**：实测铺满之后**整个列表的点击都失效了**（连屏幕正中间的卡片都点不开）。
+ * 也就是说 Compose 里重叠的兄弟节点并不是"不消费就穿透"——上面那层只要在命中路径里，
+ * 下面那层就收不到点击。这与直觉相反，因此记在这里。
+ *
+ * 结论：触摸层只能覆盖右侧那一条，把影响范围限制在 [TOUCH_WIDTH] 之内。
+ *
+ * ## 视觉条画在带子的**右边缘**
+ *
+ * 带子比视觉条宽，因此 Canvas 铺满带子、把圆角矩形画在最右侧，视觉上仍然贴着屏幕右边缘，
+ * 与"带子有多宽"无关。
  */
 @Composable
 private fun ScrollbarLayout(
@@ -129,55 +143,59 @@ private fun ScrollbarLayout(
         label = "scrollbarLength",
     )
     // 手势回调里要用到的最新值。用 rememberUpdatedState 而不是给 pointerInput 加
-    // key：加 key 会在动画每帧重启手势检测器，拖动过程会被打断。
+    // key：加 key 会在长度动画的每一帧重启手势检测器，拖动过程会被打断。
     val currentLength by rememberUpdatedState(length)
     val currentOffset by rememberUpdatedState(thumb.offsetFraction)
     val currentViewport by rememberUpdatedState(viewportSize.toFloat())
     val currentOnScrollBy by rememberUpdatedState(onScrollBy)
+    val grabSlopPx = with(LocalDensity.current) { GRAB_SLOP.toPx() }
 
-    Box(modifier = modifier.fillMaxHeight().width(TOUCH_WIDTH)) {
-        Canvas(
-            modifier = Modifier
-                .align(Alignment.CenterEnd)
-                .fillMaxHeight()
-                .width(TRACK_WIDTH)
-                // 拖动。只在**按到滑块上**时接管，否则原样放过（列表自己的滚动与
-                // 卡片点击都不受影响）。
-                .pointerInput(Unit) {
-                    awaitEachGesture {
-                        val down = awaitFirstDown(requireUnconsumed = false)
-                        val thumbHeight = size.height * currentLength
-                        if (thumbHeight <= 0f) return@awaitEachGesture
-                        val top = (size.height - thumbHeight) * currentOffset
-                        val onThumb = down.position.y >= top - GRAB_SLOP.toPx() &&
-                            down.position.y <= top + thumbHeight + GRAB_SLOP.toPx()
-                        if (!onThumb) return@awaitEachGesture
+    Box(
+        modifier = modifier
+            .fillMaxHeight()
+            .width(TOUCH_WIDTH)
+            // 手势挂在**这条带子**上（不是里面那条 4dp 的视觉条上——挂在细条上会让
+            // 有效触摸区等于 4dp，"写多少都没用"）。
+            //
+            // 按不到滑块就原样返回、什么都不 consume，于是带子内的滚动与点击照旧。
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    val thumbHeight = size.height * currentLength
+                    if (thumbHeight <= 0f) return@awaitEachGesture
+                    val top = (size.height - thumbHeight) * currentOffset
+                    val onThumb = down.position.y >= top - grabSlopPx &&
+                        down.position.y <= top + thumbHeight + grabSlopPx
+                    if (!onThumb) return@awaitEachGesture
 
-                        val pointerId = down.id
-                        while (true) {
-                            val event = awaitPointerEvent()
-                            val change = event.changes.firstOrNull { it.id == pointerId } ?: break
-                            if (!change.pressed) break
-                            val dy = change.positionChange().y
-                            if (dy != 0f) {
-                                change.consume()
-                                // 往下拖 = 看更前面的内容 = 滚动量取负。
-                                currentOnScrollBy(-dy * currentViewport / thumbHeight)
-                            }
+                    val pointerId = down.id
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val change = event.changes.firstOrNull { it.id == pointerId } ?: break
+                        if (!change.pressed) break
+                        val dy = change.positionChange().y
+                        if (dy != 0f) {
+                            change.consume()
+                            // 往下拖 = 看更前面的内容 = 滚动量取负。
+                            currentOnScrollBy(-dy * currentViewport / thumbHeight)
                         }
                     }
-                },
-        ) {
+                }
+            },
+    ) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
             val trackHeight = size.height
+            val barWidth = TRACK_WIDTH.toPx()
             // 极长的列表算出来的滑块只有一两像素，既看不见也抓不住；给一个下限。
             val thumbHeight = (trackHeight * length).coerceAtLeast(MIN_THUMB_HEIGHT.toPx())
             val travel = (trackHeight - thumbHeight).coerceAtLeast(0f)
             val top = travel * thumb.offsetFraction.coerceIn(0f, 1f)
             drawRoundRect(
                 color = color,
-                topLeft = Offset(0f, top),
-                size = Size(size.width, thumbHeight),
-                cornerRadius = CornerRadius(size.width / 2f, size.width / 2f),
+                // 视觉条贴带子的右边缘 = 屏幕右边缘。
+                topLeft = Offset(size.width - barWidth, top),
+                size = Size(barWidth, thumbHeight),
+                cornerRadius = CornerRadius(barWidth / 2f, barWidth / 2f),
             )
         }
     }
@@ -259,10 +277,14 @@ private fun thumbFrom(
 private val TRACK_WIDTH = 4.dp
 
 /**
- * 触摸区宽度。
+ * 触摸区宽度（从屏幕右边缘往里算）。
  *
- * 比视觉条宽得多，因为 4dp 按不准。它只判断"手指是否按在滑块上"，按不到就完全不介入，
- * 因此不会妨碍列表右侧的点击与滚动（见 [ScrollbarLayout]）。
+ * 取 28dp 这个"手指能稳稳按住"的量级。**宽一点没有代价**：触摸层铺满整个列表区，
+ * 只有在"手指落在这条带子里**且**按在滑块上"时才接管手势，其余情况一概不消费，
+ * 事件原样走到列表与卡片（见 [ScrollbarLayout]）。因此它不会挤占列表右侧的点击。
+ *
+ * 曾经的教训：这个值一度写成 28dp 却完全摸不到——因为手势被挂在了里面那条 4dp 的
+ * 视觉条上，"写多少都没用"。宽度只有在命中测试正确之后才有意义。
  */
 private val TOUCH_WIDTH = 28.dp
 

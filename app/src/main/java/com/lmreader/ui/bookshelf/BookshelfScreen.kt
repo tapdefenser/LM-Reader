@@ -240,7 +240,7 @@ fun BookshelfScreen(
                         }
                         ListScrollbar(
                             state = listState,
-                            modifier = Modifier.align(Alignment.CenterEnd),
+                            modifier = Modifier,
                         )
                     }
                 }
