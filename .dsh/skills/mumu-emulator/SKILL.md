@@ -78,11 +78,31 @@ foreach ($f in @("lmreader.db", "lmreader.db-wal", "lmreader.db-shm")) {
    **只取主库会读到旧快照，这一步已经坑过两次**：Room 默认开 WAL，刚写入的行留在 `-wal` 里，
    只读主库会看到"写入没生效"，从而误判成代码 bug。判断"写入是否成功"前先确认三个文件都在。
 
+   **这条路径本身不可靠，用之前务必校验。** 已知会失败成两种样子：
+
+   - **被截断**：文件只有应有大小的一部分（完整库 8.5MB，拿到过 2.2MB 的残片），
+     SQLite 报 `database disk image is malformed`。同一个方法第一次成功、后来连续两次失败；
+     设备在传输中途离线也会造成这个。
+   - **`-wal` / `-shm` 长度为 0**：应用被 force-stop 后 WAL 已 checkpoint，此时主库自洽；
+     但若 `-wal` 非 0 而你没取它，就会读到旧快照。
+
+   用之前先做一致性校验，**不过就重取，不要拿残片下结论**：
+
+```powershell
+python -c "import sqlite3;print(sqlite3.connect(r'file:D:\VSC\LM-Reader\.scratch\v.db?mode=ro',uri=True).execute('PRAGMA integrity_check').fetchone())"
+```
+
+   我因此误判过一次"设备上的库损坏了"，实际只是坏拷贝。
+   更可靠的替代方案：在应用内加一个"导出数据库到自身 files/"的调试入口，
+   再用 `adb exec-out run-as cat` 取那份副本；或接受逐表 `SELECT` 流式读取而不整文件拷贝。
+
    取到后用 `python .scratch/probe/<脚本>.py` 查（宿主机有 Python 与 `sqlite3` 模块）。
    `.scratch/` 已在 `.gitignore`。
 
    **脚本不要放 `.scratch/` 根目录、也不要起 `inspect.py` 这类名字**：cwd 与脚本目录都在
    `sys.path` 上，会遮蔽标准库同名模块（`inspect.py` 曾让 `PIL` 导入失败）。
+   Windows 控制台是 GBK，脚本里打印含中文/emoji 的数据要以 UTF-8 包装 stdout：
+   `sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')`。
 
 5. **改用例数据**：模拟器上的漫画目录需自己放。`adb push` 到 `/sdcard/` 之后再在图库路径表里授权；真机上的 3864 个真实漫画不会出现在这里。
 
