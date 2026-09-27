@@ -74,10 +74,27 @@ class AppPreferences(private val context: Context) {
         }
     }
 
+    /**
+     * 章节列表是否按"从新到旧"排列。
+     *
+     * 默认 **false（从旧到新）**，与扫描器的自然顺序一致：绝大多数作品按顺序读，
+     * 默认倒序会让每次打开详情页都要先改一次。
+     *
+     * 存全局而不是漫画级：这是"我习惯怎么看列表"的偏好，多数读者的习惯在一部作品
+     * 里定下来之后不会换（Mihon 的章节排序同样是全局偏好）。
+     */
+    val chapterSortDescending: Flow<Boolean> = context.preferenceStore.data
+        .map { it[KEY_CHAPTER_SORT_DESC] ?: false }
+
+    suspend fun setChapterSortDescending(descending: Boolean) {
+        context.preferenceStore.edit { it[KEY_CHAPTER_SORT_DESC] = descending }
+    }
+
     private companion object {
         val KEY_ONBOARDING_COMPLETED = booleanPreferencesKey("onboarding_completed")
         val KEY_LIBRARY_DISPLAY_MODE = stringPreferencesKey("library_display_mode")
         val KEY_LIBRARY_SOURCE_FILTER = stringPreferencesKey("library_source_filter")
+        val KEY_CHAPTER_SORT_DESC = booleanPreferencesKey("chapter_sort_desc")
 
         /** 来源 ID 是 `s_` + 十六进制，不含逗号，因此逗号分隔是安全的。 */
         const val SEPARATOR = ","

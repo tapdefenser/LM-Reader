@@ -16,6 +16,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Sort
 import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.BookmarkAdd
@@ -166,6 +167,9 @@ fun MangaDetailScreen(
                     if (state.inShelf) viewModel.removeFromShelf() else showCategoryDialog = true
                 },
                 onReadChapter = onReadChapter,
+                onToggleChapterSort = {
+                    viewModel.setChapterSortDescending(!state.chapterSortDescending)
+                },
             )
         }
     }
@@ -178,6 +182,7 @@ private fun DetailContent(
     onSync: () -> Unit,
     onShelfClick: () -> Unit,
     onReadChapter: (chapterId: String?, startPage: Int?) -> Unit,
+    onToggleChapterSort: () -> Unit,
 ) {
     val manga = requireNotNull(state.manga)
     LazyColumn(
@@ -253,14 +258,37 @@ private fun DetailContent(
             val countText = if (manga.chapterCountKnown) {
                 "共 ${state.chapters.size} 章"
             } else {
-                "已发现 ${state.chapters.size} 章，点击更新章节"
+                "已发现 ${state.chapters.size} 章，更新中"
             }
-            Text(countText, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            // 表头：左边是章节数，右边是排序按钮。
+            //
+            // 排序按钮只在有章节时出现——空列表上给一个"从旧到新/从新到旧"的开关
+            // 是没有意义的操作。
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(countText, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                if (state.chapters.size > 1) {
+                    TextButton(onClick = onToggleChapterSort) {
+                        Icon(
+                            imageVector = Icons.Filled.Sort,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        // 显示**当前**顺序（而不是"点一下会变成什么"）：按钮上的字
+                        // 描述状态比描述动作更不容易误读。
+                        Text(state.chapterSortLabel, style = MaterialTheme.typography.labelLarge)
+                    }
+                }
+            }
         }
         if (state.chapters.isEmpty()) {
             item { Text("尚无章节索引") }
         } else {
-            items(state.chapters, key = { it.chapterId }) { chapter ->
+            items(state.sortedChapters, key = { it.chapterId }) { chapter ->
                 // 阅读进度只属于"当前正在读的那一章"，其它章节行不该跟着显示页码。
                 val isCurrentChapter = state.progress?.chapterId == chapter.chapterId
                 val readPage = state.progress?.pageOrdinal ?: 0

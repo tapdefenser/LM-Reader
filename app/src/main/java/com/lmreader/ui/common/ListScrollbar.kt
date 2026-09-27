@@ -3,47 +3,39 @@ package com.lmreader.ui.common
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.gestures.ScrollableState
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.grid.LazyGridState
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import kotlin.math.ceil
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.collectLatest
 
 /**
  * 长列表右侧的滚动条。
  *
  * ## 为什么自己画
  *
- * `LazyColumn` / `LazyVerticalGrid` 本身不提供滚动条（Compose 没有内置的），而引入
- * 第三方库只为画一条细杠不值得。这里的实现只读 `layoutInfo`、不改滚动行为。
+ * Compose **没有内置的滚动条**：`LazyColumn` / `LazyVerticalGrid` 都不提供。
+ * 因此只有两条路——自己画一条，或者把列表换成原生 `RecyclerView`（那要重写适配器、
+ * 丢掉 Compose 的列表能力）。这里取前者，实现只读 `layoutInfo`、不碰滚动行为。
  *
- * ## 位置按"平均项高"估算，不追求像素级精确
+ * ## 常驻显示，颜色取自主题
  *
- * 滚动条要表达的是"我在列表的什么位置、前面还有多少"，而不是复刻每一页的高度。
- * 因此项高取**可见项的平均值**再乘总项数得到内容总长。列表项高度不一（封面尺寸、
- * 两行/三行标题）时会有几像素的出入，视觉上察觉不到，而实现简单得多——
- * 精确做法要给每一项测量高度，那等于把整个列表布局一遍。
+ * 这两点都是踩过坑之后改的，详见 [ScrollbarBody] 的说明：曾经"滚动时才显示"导致
+ * 读者**完全看不到**，曾经写死白色导致**浅色模式下隐形**。
  *
- * ## 自动淡出
+ * ## 位置按估算，两端用精确锚点
  *
- * 只在滚动时显示，停止后 [HIDE_DELAY_MS] 毫秒淡出。理由是它覆盖在内容右侧，
- * 常驻会一直挡着封面边缘；而"要不要滚动"这件事本身就是即时可见的，不需要常驻提示。
+ * 滚动条只需表达"我在列表的什么位置"，不需要复刻每一项的高度（那等于把列表再布局
+ * 一遍）。因此中间位置按行距估算，而到达顶部/底部时直接夹到端点——端点状态是确定的，
+ * 估算法在那里反而不准（列表末尾常有个矮页脚）。
  */
 @Composable
 fun ListScrollbar(
@@ -51,7 +43,6 @@ fun ListScrollbar(
     modifier: Modifier = Modifier,
 ) {
     ScrollbarBody(
-        scrollState = state,
         thumb = thumbFrom(
             totalItems = state.layoutInfo.totalItemsCount,
             viewportSize = state.layoutInfo.viewportEndOffset - state.layoutInfo.viewportStartOffset,
@@ -68,7 +59,6 @@ fun GridScrollbar(
     modifier: Modifier = Modifier,
 ) {
     ScrollbarBody(
-        scrollState = state,
         thumb = thumbFrom(
             totalItems = state.layoutInfo.totalItemsCount,
             viewportSize = state.layoutInfo.viewportEndOffset - state.layoutInfo.viewportStartOffset,
@@ -86,35 +76,30 @@ private data class ScrollbarThumb(
     val sizeFraction: Float,
 )
 
+/**
+ * 画那条滑块。
+ *
+ * ## 为什么**常驻**显示，而不是滚动时才出现
+ *
+ * 最初做的是"滚动时显示、停手 900ms 后淡出"。读者反馈**完全看不到**——停下手指再去
+ * 找它，它已经淡掉了。滚动条的价值是"随时能看出我在列表的哪个位置"，那就不能是
+ * 一闪而过的。因此改成常驻。
+ *
+ * ## 颜色必须取自主题，不能写死白色
+ *
+ * 第一版用 `Color.White.copy(alpha = 0.38f)`，在深色背景下没问题，但本应用的配色
+ * **跟随系统**（见 `LmReaderTheme`）：浅色模式下白叠白等于隐形——这正是"看不到"的
+ * 另一半原因。改用 `onSurface`，浅色下近黑、深色下近白。
+ */
 @Composable
 private fun ScrollbarBody(
-    scrollState: ScrollableState,
     thumb: ScrollbarThumb?,
     modifier: Modifier = Modifier,
 ) {
-    var active by remember { mutableStateOf(false) }
-    LaunchedEffect(scrollState) {
-        snapshotFlow { scrollState.isScrollInProgress }
-            .collectLatest { scrolling ->
-                if (scrolling) {
-                    active = true
-                } else {
-                    // collectLatest：这段时间里又开始滚动的话这次淡出会被取消，
-                    // 因此快速来回滑动不会让滚动条闪来闪去。
-                    delay(HIDE_DELAY_MS)
-                    active = false
-                }
-            }
-    }
-    val alpha by animateFloatAsState(
-        targetValue = if (active && thumb != null) 1f else 0f,
-        label = "scrollbarAlpha",
-    )
-    if (alpha <= 0.01f || thumb == null) return
-
-    // 滑块长度按"可见项平均高"估算，而可见项集合会变（页脚比卡片矮得多），
-    // 于是滚动中长度会跳一下。平滑一下让它看起来是渐变的，而不是闪动。
-    // **位置不平滑**：位置必须紧跟手指，滞后会让人觉得滚动条脱手。
+    if (thumb == null) return
+    val color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f)
+    // 滑块长度按"可见项"估算，而可见集合会变（列表末尾常有个矮页脚），
+    // 于是长度会跳一下。平滑掉它。**位置不平滑**：位置要准。
     val length by animateFloatAsState(
         targetValue = thumb.sizeFraction,
         animationSpec = tween(durationMillis = 120),
@@ -127,12 +112,12 @@ private fun ScrollbarBody(
             .width(TRACK_WIDTH),
     ) {
         val trackHeight = size.height
-        // 极长的列表算出来的滑块只有一两像素，既看不见也点不到；给一个下限。
+        // 极长的列表算出来的滑块只有一两像素，既看不见也判断不出位置；给一个下限。
         val thumbHeight = (trackHeight * length).coerceAtLeast(MIN_THUMB_HEIGHT.toPx())
         val travel = (trackHeight - thumbHeight).coerceAtLeast(0f)
         val top = travel * thumb.offsetFraction.coerceIn(0f, 1f)
         drawRoundRect(
-            color = Color.White.copy(alpha = 0.38f * alpha),
+            color = color,
             topLeft = Offset(0f, top),
             size = Size(size.width, thumbHeight),
             cornerRadius = CornerRadius(size.width / 2f, size.width / 2f),
@@ -218,10 +203,8 @@ private fun thumbFrom(
 }
 
 /** 轨道宽度。细到不挡封面，又粗到看得见。 */
-private val TRACK_WIDTH = 3.dp
+private val TRACK_WIDTH = 4.dp
 
 /** 滑块最小长度：极长的列表也要能看见、能判断位置。 */
 private val MIN_THUMB_HEIGHT = 24.dp
 
-/** 停止滚动后多久淡出。 */
-private const val HIDE_DELAY_MS = 900L

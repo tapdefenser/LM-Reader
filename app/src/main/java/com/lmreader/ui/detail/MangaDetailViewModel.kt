@@ -17,6 +17,7 @@ import com.lmreader.core.storage.reader.PageSourceFactory
 import com.lmreader.core.storage.reader.PageSourceOpenResult
 import com.lmreader.core.storage.scan.ChapterSyncOutcome
 import com.lmreader.core.storage.scan.MangaChapterSyncer
+import com.lmreader.core.storage.settings.AppPreferences
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -32,6 +33,7 @@ class MangaDetailViewModel(
     private val chapterSyncer: MangaChapterSyncer,
     private val progressRepository: ReadingProgressRepository,
     private val pageSourceFactory: PageSourceFactory,
+    private val preferences: AppPreferences,
 ) : ViewModel() {
     private val _state = MutableStateFlow(MangaDetailUiState())
     val state: StateFlow<MangaDetailUiState> = _state.asStateFlow()
@@ -51,7 +53,27 @@ class MangaDetailViewModel(
                 _state.update { it.copy(categories = categories) }
             }
         }
-        reload()
+        // 章节排序偏好：全局记住用户的选择（用户要求）。持续观察而不是读一次，
+        // 这样在别处改了也能立刻反映。
+        viewModelScope.launch {
+            preferences.chapterSortDescending.collect { descending ->
+                _state.update { it.copy(chapterSortDescending = descending) }
+            }
+        }
+        // 首次进入详情页：加载详情 → 回填页数 → **自动更新一次章节**（不弹提示）。
+        //
+        // 为什么自动更新（用户要求）：不自动更新时，新加进目录的章节不会出现，
+        // 而"更新章节"这个按钮的含义对用户来说是"让列表变准"——那是打开详情页时
+        // 就该成立的前提，不该让他每次多点一下。
+        //
+        // 为什么不放进 reload()：reload() 也会被"重试"按钮与**从阅读器返回**触发，
+        // 每次返回都重新枚举章节目录是浪费（一部 100 章的漫画就是 100 次目录枚举）。
+        // 这里的 init 只在这个详情页的 ViewModel 首次创建时跑一次。
+        viewModelScope.launch {
+            loadDetail(showLoading = true)
+            backfillPageCounts()
+            runChapterSync(announce = false)
+        }
     }
 
     fun reload() {
@@ -120,7 +142,17 @@ class MangaDetailViewModel(
         }
     }
 
-    fun syncChapters() {
+    /** 「更新章节」按钮：更新并**告诉用户结果**。 */
+    fun syncChapters() = runChapterSync(announce = true)
+
+    /**
+     * 更新章节列表。
+     *
+     * @param announce 是否在成功后弹提示。**自动更新时不弹**：进详情页自动更新是
+     *   后台行为，每次进来都弹一条"章节已更新"是噪音，用户并没有要求这件事。
+     *   但**失败一定要报到**——列表可能是旧的，用户得知道为什么。
+     */
+    private fun runChapterSync(announce: Boolean) {
         if (_state.value.syncing) return
         viewModelScope.launch {
             _state.update { it.copy(syncing = true, message = null) }
@@ -132,7 +164,14 @@ class MangaDetailViewModel(
                     is ChapterSyncOutcome.Success -> {
                         loadDetail(showLoading = false)
                         _state.update {
-                            it.copy(syncing = false, message = "章节已更新，共 ${outcome.chapters.size} 章")
+                            it.copy(
+                                syncing = false,
+                                message = if (announce) {
+                                    "章节已更新，共 ${outcome.chapters.size} 章"
+                                } else {
+                                    it.message
+                                },
+                            )
                         }
                     }
                 }
@@ -170,6 +209,17 @@ class MangaDetailViewModel(
 
     fun consumeMessage() {
         _state.update { it.copy(message = null) }
+    }
+
+    /**
+     * 切换章节列表的顺序（从旧到新 ↔ 从新到旧），并**记住**这个选择。
+     *
+     * 排序不在仓储层做：顺序是纯展示决策，倒序需要另一条 SQL（`ORDER BY sortKey DESC`），
+     * 而列表最多几百项，在内存里反转一次比维护两条查询简单，也不会让"排序方向"渗进
+     * 数据层——那会让每个调用方都要想一下自己拿到的是什么顺序。
+     */
+    fun setChapterSortDescending(descending: Boolean) {
+        viewModelScope.launch { preferences.setChapterSortDescending(descending) }
     }
 
     private suspend fun loadDetail(showLoading: Boolean) {
@@ -216,6 +266,7 @@ class MangaDetailViewModel(
                     chapterSyncer = container.mangaChapterSyncer,
                     progressRepository = container.readingProgressRepository,
                     pageSourceFactory = container.pageSourceFactory,
+                    preferences = container.preferences,
                 )
             }
         }
@@ -233,8 +284,23 @@ data class MangaDetailUiState(
     val inShelf: Boolean = false,
     val categories: List<Category> = emptyList(),
     val syncing: Boolean = false,
+    /** 章节列表是否从新到旧排列；全局偏好，见 AppPreferences.chapterSortDescending。 */
+    val chapterSortDescending: Boolean = false,
     /** 这部漫画的阅读进度；null 表示还没读过。 */
     val progress: ReadingProgress? = null,
     val error: String? = null,
     val message: String? = null,
-)
+) {
+    /**
+     * 按当前排序偏好排好的章节列表。
+     *
+     * 单独派生而不是在 [chapters] 里就地排序：`chapters` 是"仓储给的原始顺序"，
+     * 而顺序是展示决策。这样切换排序不会丢掉原始顺序，改回来也不会错位。
+     */
+    val sortedChapters: List<ChapterRecord>
+        get() = if (chapterSortDescending) chapters.asReversed() else chapters
+
+    /** 排序方向的文案，直接给按钮用。 */
+    val chapterSortLabel: String
+        get() = if (chapterSortDescending) "从新到旧" else "从旧到新"
+}
