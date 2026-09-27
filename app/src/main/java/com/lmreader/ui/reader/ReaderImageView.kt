@@ -1,5 +1,6 @@
 package com.lmreader.ui.reader
 
+import android.graphics.BitmapFactory
 import android.graphics.PointF
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
@@ -91,23 +92,21 @@ internal fun EnginePageView(
     // 两件事必须同时做到：
     // 1. **等视图有尺寸再 setImage**：尺寸为 0 时库的瓦片初始化行为不可预期，
     //    真机日志里出现过 `setImage: 001.jpg view=0x0`；
-    // 2. **同一页只 setImage 一次**：每次载图都会把整张图解码进一个 ByteBuffer
-    //    （ARGB_8888 下 3024×1700 约 20MB），而进程堆上限 256MB。重组或尺寸变化
-    //    触发第二次整图解码是 OOM 最可能的来源，因此用视图上的标记挡住。
+    // 2. **同一页只 setImage 一次**：见下面关于"整图解码"的说明。
     //
-    // 流在协程里先打开（`PageSource.open` 是 suspend），布局回调只负责 `setImage`。
+    // 流在协程里先准备好，布局回调只负责 `setImage`。
     LaunchedEffect(page.pageId, source) {
         val target = view ?: return@LaunchedEffect
         decodeFailed = false
-        val stream = runCatching { source.open(page) }.getOrNull()
-        if (stream == null) {
+        val imageSource = runCatching { buildImageSource(source, page) }.getOrNull()
+        if (imageSource == null) {
             decodeFailed = true
             return@LaunchedEffect
         }
         target.doOnLayout {
             if (target.getTag(IMAGE_LOADED_TAG) == page.pageId) return@doOnLayout
             target.setTag(IMAGE_LOADED_TAG, page.pageId)
-            target.setImage(ImageSource.inputStream(stream))
+            target.setImage(imageSource)
         }
     }
 
@@ -130,6 +129,88 @@ internal fun EnginePageView(
 
 /** 标记"这一页已经载图"，防止重组时重复整图解码。见上面的载图分支。 */
 private const val IMAGE_LOADED_TAG = -0x4C4D52 // 负数，避开库与框架可能使用的正数 tag key
+
+/**
+ * 构造交给引擎的图源，必要时先降采样。
+ *
+ * ## 为什么需要这一步（这是 OOM 的关键）
+ *
+ * 反编译 `com.davemorrissey.labs.subscaleview.decoder.Decoder` 后确认：这个 fork 的解码器
+ * **不管输入是文件流还是 Bitmap，都会先把整张图完整解码出来**
+ * （`Decoder.init` 无条件调用 `InputProvider.openStream()`，把结果读成一个 `ByteBuffer`
+ * 再转 byte[]），而且位图格式**硬编码 `ARGB_8888`**。因此：
+ *
+ * - `setPreferredBitmapConfig(RGB_565)` 与 `setMaxTileSize` 对它**完全无效**；
+ * - 每载一页都要付一次"整图 × 4 字节"的代价：3024×1700 约 20MB，
+ *   而真机的堆增长上限是 256MB。真机上那笔失败的 `8294416` 字节分配就是它。
+ *
+ * 既然无法从外部换掉解码器（`TilesInitTask` 里是硬编码 `new Decoder(...)`，
+ * `decoder` 字段 private 且无 setter），就改为**控制送进去的像素量**：
+ * 超过 [MAX_ENGINE_LONG_EDGE] 的图先按 2 的幂降采样再编码成 PNG（无损，避免二次 JPEG 损失），
+ * 于是那次必然发生的整图分配被压到预算内。
+ *
+ * ## 代价与边界
+ *
+ * 降采样会降低放大后的清晰度。阈值取 3000 是因为：真机屏宽 1440，
+ * 库的 `minimumTileDpi(180)` 在 1440 宽下要的瓦片也在这个量级；而绝大多数漫画页
+ * 长边不超过 3000，因此**这条路径通常根本不触发**。只有超大跨页才会被采样，
+ * 那种图原本就是 OOM 的来源。
+ *
+ * ## 编码为什么用 PNG
+ *
+ * 页图多为 JPEG，再编一次 JPEG 会叠加有损损失；PNG 无损且这里只做"搬运"。
+ * 代价是编码后的字节比 JPEG 大，但那只是一次性的内存内缓冲区，
+ * 相比省下的整图 ARGB 分配是划算的。
+ */
+private suspend fun buildImageSource(
+    source: PageSource,
+    page: ReaderPage,
+): ImageSource? {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    runCatching { source.open(page).use { BitmapFactory.decodeStream(it, null, bounds) } }
+    val width = bounds.outWidth
+    val height = bounds.outHeight
+    if (width <= 0 || height <= 0) {
+        // 读不到尺寸（格式不支持等）时不猜：把原始流交给库，由它给出失败回调。
+        val raw = runCatching { source.open(page) }.getOrNull() ?: return null
+        return ImageSource.inputStream(raw)
+    }
+
+    val longest = maxOf(width, height)
+    if (longest <= MAX_ENGINE_LONG_EDGE) {
+        // 常见情形：不采样，直接把原始流交给库，一个字节都不多搬。
+        val raw = runCatching { source.open(page) }.getOrNull() ?: return null
+        return ImageSource.inputStream(raw)
+    }
+
+    var sample = 1
+    while (longest / (sample * 2) >= MAX_ENGINE_LONG_EDGE) sample *= 2
+    val options = BitmapFactory.Options().apply { inSampleSize = sample }
+    val sampled = runCatching {
+        source.open(page).use { BitmapFactory.decodeStream(it, null, options) }
+    }.getOrNull() ?: run {
+        val raw = runCatching { source.open(page) }.getOrNull() ?: return null
+        return ImageSource.inputStream(raw)
+    }
+
+    // 立刻把降采样后的位图编成流并回收：库后面会自己再解一次流，
+    // 因此这里不能把位图留着，否则峰值变成"位图 + 库的整图解码"两份。
+    val bytes = runCatching {
+        java.io.ByteArrayOutputStream().use { buffer ->
+            sampled.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, buffer)
+            buffer.toByteArray()
+        }
+    }.getOrNull()
+    sampled.recycle()
+    if (bytes == null) {
+        val raw = runCatching { source.open(page) }.getOrNull() ?: return null
+        return ImageSource.inputStream(raw)
+    }
+    return ImageSource.provider { java.io.ByteArrayInputStream(bytes) }
+}
+
+/** 交给引擎前允许的最长边；超过则按 2 的幂降采样。见 [buildImageSource]。 */
+private const val MAX_ENGINE_LONG_EDGE = 3000
 
 /**
  * 应用与 Mihon 同源的引擎配置。
