@@ -192,4 +192,98 @@ class ReaderChaptersTest {
         assertEquals(null, alone.neighbor(forward = true))
         assertEquals(null, alone.neighbor(forward = false))
     }
+
+    // ------------------------------------------------------------ 跨章落点
+
+    @Test
+    fun `翻过过渡项后落在目标章第一页而不是上一章的页`() {
+        val issue1 = chapter("c1", 3)
+        val issue2 = chapter("c2", 2)
+        // 读者在 Issue 1 末尾点"下一页"，落到了过渡项上。
+        val before = buildReaderItems(ViewerChapters(current = issue1), alwaysShowTransition = true)
+        val transition = before.items.filterIsInstance<ReaderItem.Transition>().single()
+        assertEquals(3, before.items.indexOfFirst { it.key == transition.key })
+
+        // 提升后 Issue 2 成为当前章，Issue 1 变成上一章。
+        val after = buildReaderItems(
+            ViewerChapters(current = issue2, previous = issue1),
+            alwaysShowTransition = true,
+        )
+
+        val landing = landingAfterTransition(
+            after.items,
+            transition.key,
+            fallback = after.currentChapterOffset,
+        )
+
+        // 关键断言：落点必须是 Issue 2 的第一页，而不是过渡项自身、也不是 Issue 1 的页。
+        // 这里曾经用"按项身份找回位置"，而那个身份正是过渡项自身，
+        // 于是提升后落回过期位置，读者被送回上一章。
+        val landed = assertIs<ReaderItem.PageItem>(after.items[landing])
+        assertEquals("c2", landed.chapterId)
+        assertEquals(0, landed.page.ordinal)
+        assertEquals(after.currentChapterOffset, landing)
+    }
+
+    @Test
+    fun `反向翻落在上一章的最后一页`() {
+        val issue1 = chapter("c1", 2)
+        val issue2 = chapter("c2", 2)
+
+        // 反向翻**不经过过渡项**：过渡项只插入在当前章之后（其 `from` 是当前章），
+        // 因此往回翻的落点是上一章的最后一页，是一个 PageItem。
+        // 这个用例把这条真实结构钉住——它同时说明 `settleOn` 里的过渡项分支只需要
+        // 处理向前的情形，不需要（也无法）处理向后。
+        val before = buildReaderItems(
+            ViewerChapters(current = issue2, previous = issue1),
+            alwaysShowTransition = true,
+        )
+        assertTrue(
+            before.items.filterIsInstance<ReaderItem.Transition>().all { it.forward },
+            "过渡项永远是从当前章指向下一章",
+        )
+        val landedBefore = assertIs<ReaderItem.PageItem>(before.items[1])
+        assertEquals("c1", landedBefore.chapterId)
+        assertEquals(1, landedBefore.page.ordinal, "往回翻落在上一章的最后一页")
+
+        // 提升上一章为当前章后，同一个页面身份仍能被找回（这正是 settleOn 的
+        // `else` 分支所做的事：按项身份定位，而不是猜章首）。
+        val after = buildReaderItems(
+            ViewerChapters(current = issue1, next = issue2),
+            alwaysShowTransition = true,
+        )
+        val anchor = before.items[1].key
+        val found = after.items.indexOfFirst { it.key == anchor }
+        assertTrue(found >= 0, "页面身份在新列表里必须仍然存在")
+        val landedAfter = assertIs<ReaderItem.PageItem>(after.items[found])
+        assertEquals("c1", landedAfter.chapterId)
+        assertEquals(1, landedAfter.page.ordinal)
+    }
+
+    @Test
+    fun `过渡项在新列表里找不到时退回兜底位置`() {
+        val current = chapter("c1", 2)
+        val items = buildReaderItems(
+            ViewerChapters(current = current),
+            alwaysShowTransition = true,
+        ).items
+
+        val landing = landingAfterTransition(items, transitionKey = "transition:不存在", fallback = 1)
+
+        assertEquals(1, landing)
+    }
+
+    @Test
+    fun `落点始终被夹在合法下标内`() {
+        val current = chapter("c1", 1)
+        val items = buildReaderItems(
+            ViewerChapters(current = current),
+            alwaysShowTransition = true,
+        ).items
+
+        // 兜底值越界时不抛异常而是夹回范围——越界会让分页器直接崩。
+        assertEquals(0, landingAfterTransition(items, "transition:无", fallback = -5))
+        assertEquals(items.lastIndex, landingAfterTransition(items, "transition:无", fallback = 999))
+        assertEquals(0, landingAfterTransition(emptyList(), "transition:无", fallback = 3))
+    }
 }

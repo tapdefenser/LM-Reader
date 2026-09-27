@@ -134,3 +134,25 @@ internal data class ReaderItems(
     /** 当前章第一项在 [items] 中的下标。 */
     val currentChapterOffset: Int,
 )
+
+/**
+ * 翻过章节过渡项之后应当落在哪一项。
+ *
+ * 单独抽出来是为了可测，也因为这里出过一次**回归**：当时用"按项身份找回位置"，
+ * 而那个身份**正是过渡项自身**，于是提升之后落回过期位置，读者被送回上一章、
+ * 过渡页也看不到。
+ *
+ * 语义：过渡项的**下一个位置**必然是目标章第一页——这正是"翻过这一页就到了下一章"
+ * 的字面含义。因此按 key 找到过渡项后取其后继；找不到（目标章未拼进列表等）时退回
+ * [fallback]。
+ */
+internal fun landingAfterTransition(
+    newItems: List<ReaderItem>,
+    transitionKey: String,
+    fallback: Int,
+): Int {
+    if (newItems.isEmpty()) return 0
+    val transitionIndex = newItems.indexOfFirst { it.key == transitionKey }
+    val candidate = if (transitionIndex >= 0) transitionIndex + 1 else fallback
+    return candidate.coerceIn(newItems.indices)
+}

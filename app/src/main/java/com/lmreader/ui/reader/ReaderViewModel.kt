@@ -411,8 +411,11 @@ class ReaderViewModel(
                 // 那个身份**就是过渡项自身**，提升后会落回过期位置（曾经因此把读者
                 // 送回上一章，并且看不到过渡页）。而"过渡项在新列表里的下一个位置"
                 // 必然是目标章的第一页——这正是"翻过这一页就到了下一章"的字面含义。
+                //
+                // 只有向前翻会走到这里：过渡项只插入在当前章**之后**（它的 `from` 就是
+                // 当前章），所以往回翻的落点是上一章的最后一页，走下面的 PageItem 分支。
                 val target = item.to
-                if (item.forward && target != null && target.state == ViewerChapter.LoadState.Loaded) {
+                if (target != null && target.state == ViewerChapter.LoadState.Loaded) {
                     promoteChapter(target.chapterId, afterTransitionFrom = item)
                 } else {
                     _state.update { it.copy(currentPageIndex = absoluteIndex) }
@@ -460,10 +463,11 @@ class ReaderViewModel(
         val chapters = ViewerChapters(current = promoted)
         val readerItems = buildReaderItems(chapters, snapshot.settings.alwaysShowChapterTransition)
         val newIndex = if (afterTransitionFrom != null) {
-            // 过渡项在新列表里的位置 + 1 = 目标章第一页。
-            val transitionIndex = readerItems.items.indexOfFirst { it.key == afterTransitionFrom.key }
-            (transitionIndex + 1).takeIf { it in readerItems.items.indices }
-                ?: readerItems.currentChapterOffset
+            landingAfterTransition(
+                newItems = readerItems.items,
+                transitionKey = afterTransitionFrom.key,
+                fallback = readerItems.currentChapterOffset,
+            )
         } else {
             val anchorKey = snapshot.items.getOrNull(snapshot.currentPageIndex)?.key
             anchorKey
