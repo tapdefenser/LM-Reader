@@ -48,17 +48,11 @@ class AppContainer(private val application: Application) {
     private val maintenanceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     init {
-        // 阅读器页面的位图格式必须是 565，而不是库默认的 8888。
-        //
-        // 真机上出现过 OutOfMemoryError：库在 `Decoder.init` 里为每一页分配
-        // `宽 × 高 × 4` 字节，一张 3024×1700 的图就约 20MB；分页器同时持有相邻页，
-        // 而进程堆上限 256MB，于是**第一次打开那一章就崩**。改成 565 后每像素 2 字节，
-        // 内存直接减半。
-        //
-        // 必须是**静态**设置且在任何视图创建之前：库把它存在静态字段上。
-        // 放在容器初始化里，保证早于任何阅读器实例。
-        com.davemorrissey.labs.subscaleview.SubsamplingScaleImageView
-            .setPreferredBitmapConfig(android.graphics.Bitmap.Config.RGB_565)
+        // 这里曾经调用 `SubsamplingScaleImageView.setPreferredBitmapConfig(RGB_565)` 以期
+        // 把每页的内存减半。反编译该 fork 的解码器后确认**它无效**：位图格式在
+        // `decoder.Decoder.init` 里硬编码为 ARGB_8888，静态配置根本不参与。
+        // 真正的对策见 ReaderImageView（控制送进去的像素量）与 PagePrefetcher
+        // （字节只落磁盘、不压堆）。留着那行只会让人以为内存已经被限制住了。
 
         maintenanceScope.launch {
             runCatching { mangaRepository.markOrphanedAsStale() }
@@ -131,6 +125,17 @@ class AppContainer(private val application: Application) {
     }
 
     val pageSourceFactory by lazy { PageSourceFactory(treeAccess) }
+
+    /**
+     * 页面字节的磁盘预取缓存（见 [com.lmreader.ui.reader.PagePrefetcher]）。
+     *
+     * 放在容器里而不是阅读器 ViewModel 里：缓存的价值在于**跨会话存活**，
+     * 读者退出再进来时那几页应该还在。缓存目录由系统管理，随时可被清理，
+     * 因此不需要应用自己关心它的生命周期。
+     */
+    val pagePrefetcher by lazy {
+        com.lmreader.ui.reader.PagePrefetcher(application)
+    }
 
     /**
      * 结构扫描器是**纯算法**，不认识任何具体来源：它只通过 [TreeFactory] 读目录。

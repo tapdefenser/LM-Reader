@@ -57,6 +57,8 @@ internal fun EnginePageView(
     onSingleTap: (x: Float, y: Float) -> Unit,
     onLongPress: (() -> Unit)? = null,
     onReady: () -> Unit = {},
+    /** 页面字节的预取缓存；命中时不必再过一次 SAF。 */
+    prefetcher: PagePrefetcher? = null,
 ) {
     // 视图实例随页面身份重建：库内部持有解码状态与瓦片缓存，复用实例会让上一页的
     // 缩放位置与瓦片残留到下一页（Mihon 在 `ReaderPageImageView.recycle()` 里显式清理
@@ -95,10 +97,10 @@ internal fun EnginePageView(
     // 2. **同一页只 setImage 一次**：见下面关于"整图解码"的说明。
     //
     // 流在协程里先准备好，布局回调只负责 `setImage`。
-    LaunchedEffect(page.pageId, source) {
+    LaunchedEffect(page.pageId, source, prefetcher) {
         val target = view ?: return@LaunchedEffect
         decodeFailed = false
-        val imageSource = runCatching { buildImageSource(source, page) }.getOrNull()
+        val imageSource = runCatching { buildImageSource(source, page, prefetcher) }.getOrNull()
         if (imageSource == null) {
             decodeFailed = true
             return@LaunchedEffect
@@ -165,7 +167,25 @@ private const val IMAGE_LOADED_TAG = -0x4C4D52 // 负数，避开库与框架可
 private suspend fun buildImageSource(
     source: PageSource,
     page: ReaderPage,
+    prefetcher: PagePrefetcher?,
 ): ImageSource? {
+    // 预取命中时优先走本地字节：省掉一次跨进程的 `openInputStream`，而且字节已经在磁盘上，
+    // 尺寸可以从头部读出来，于是下面的降采样探测与二次读流也一并不必做。
+    //
+    // 尺寸仍然要看：超过 `MAX_ENGINE_LONG_EDGE` 的页必须降采样（那是真机上 OOM 的来源），
+    // 而预取缓存里放的是**原始字节**，不保证已经够小。过大的页因此落回常规路径。
+    if (prefetcher != null) {
+        val bytes = prefetcher.stream(page.pageId)?.use { it.readBytes() }
+        if (bytes != null) {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+            val longest = maxOf(bounds.outWidth, bounds.outHeight)
+            if (longest in 1..MAX_ENGINE_LONG_EDGE) {
+                return ImageSource.provider { java.io.ByteArrayInputStream(bytes) }
+            }
+        }
+    }
+
     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
     runCatching { source.open(page).use { BitmapFactory.decodeStream(it, null, bounds) } }
     val width = bounds.outWidth

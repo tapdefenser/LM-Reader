@@ -8,12 +8,14 @@ import androidx.lifecycle.viewmodel.viewModelFactory
 import com.lmreader.core.model.ChapterRecord
 import com.lmreader.core.model.MangaRepository
 import com.lmreader.core.model.NavigationRegions
+import com.lmreader.core.model.ReaderOrientation
 import com.lmreader.core.model.ReaderSettings
 import com.lmreader.core.model.ReadingMode
 import com.lmreader.core.model.ReadingProgress
 import com.lmreader.core.model.ReadingProgressRepository
 import com.lmreader.core.model.TapAction
 import com.lmreader.core.model.withMangaOverride
+import com.lmreader.core.storage.reader.PageSource
 import com.lmreader.core.storage.reader.PageSourceFactory
 import com.lmreader.core.storage.reader.PageSourceOpenResult
 import com.lmreader.core.storage.reader.ReaderPage
@@ -34,13 +36,16 @@ import kotlinx.coroutines.sync.withLock
  *
  * ## 章节编排照搬 Mihon 的地方
  *
- * Mihon 的阅读器**同时持有当前章与相邻两章**（`ViewerChapters(curr, prev, next)`），
- * 并把"章节过渡"作为与页面并列的项放进同一个列表（`PagerViewerAdapter.setChapters`）。
- * 这样才能做到章末接着翻、条带尾部预置下一章。此前这里只加载当前章，于是到章末就停住
- * ——那是"多章节读取基本上是坏的"的直接原因。
+ * Mihon 的阅读器同时持有当前章与相邻章（`ViewerChapters(curr, prev, next)`），并把
+ * "章节过渡"作为与页面并列的项放进同一个列表（`PagerViewerAdapter.setChapters`）。
+ * 这样才能做到章末接着翻、条带尾部预置下一章。
  *
- * 项列表的组装顺序见 [buildReaderItems]；本类负责加载相邻章、把落点换算成进度，
- * 以及在预载完成导致下标整体后移时**按页面身份重新定位**，避免读者突然跳页。
+ * 与 Mihon 的两处差异，都是应真机反馈做的：
+ *
+ * 1. **窗口不止一格**。预载量可配（[ReaderSettings.preloadPages]），预算大于一章的页数
+ *    时会继续要下一章，因此 [ViewerChapters] 用列表表达两侧的窗口。
+ * 2. **过渡页会停住**（[ReaderSettings.pauseOnChapterTransition]）。Mihon 到达过渡页即
+ *    自动推进；真机实测里读者因此怀疑自己落错了页，所以默认停下等再翻一次。
  *
  * ## 进度粒度
  *
@@ -61,6 +66,13 @@ class ReaderViewModel(
     private val progressRepository: ReadingProgressRepository,
     private val pageSourceFactory: PageSourceFactory,
     private val readerPreferences: ReaderPreferences,
+    /**
+     * 页面字节的预取缓存。
+     *
+     * 可空是为了让不需要 Android 上下文的场景（单元测试）不必构造它；为空时阅读器一切
+     * 照旧，只是每页都走页源现读。
+     */
+    private val prefetcher: PagePrefetcher? = null,
     private val clock: () -> Long = System::currentTimeMillis,
 ) : ViewModel() {
     private val _state = MutableStateFlow(ReaderUiState())
@@ -77,15 +89,30 @@ class ReaderViewModel(
      * 若不留着它，设置流的下一次发射会把合并结果整个换成"纯全局"，漫画级覆盖就丢了。
      */
     private var mangaModeOverride: ReadingMode? = null
-    private var mangaOrientationOverride: com.lmreader.core.model.ReaderOrientation? = null
+    private var mangaOrientationOverride: ReaderOrientation? = null
 
     /**
-     * 相邻章的加载任务。
+     * 已安排的章节加载任务，按章节 ID 保存。
      *
-     * 按章节 ID 保存是为了在快速换章时取消上一轮预载：不取消会让多个章节同时列页，
-     * 既浪费 IO，也可能用过期结果覆盖当前状态。
+     * 按 ID 保存是为了在换章时取消**已经不在窗口里的**那些任务：不取消会让多个章节
+     * 同时列页，既浪费 IO，也可能用过期结果覆盖当前状态。
      */
     private val neighborJobs = HashMap<String, Job>()
+
+    /** 当前生效的预载规划；换章或设置变化时重算。 */
+    private var preloadPlan: PreloadPlan = PreloadPlan.EMPTY
+
+
+
+    /**
+     * 换章代数：每次当前章变化就 +1。
+     *
+     * [applyWindow] 先用快照算规划、再写回状态，这两步之间读者可能已经换了章（邻章加载
+     * 完成、快速连翻都会触发）。不加校验的话，一个**上一章**算出来的窗口会被追加到
+     * **当前章**的窗口上，于是窗口变成"当前章之后紧跟着一个已读过的章"这种畸形结构，
+     * 项列表随之把某一页画成过渡页、末页误报"已是最后一章"。
+     */
+    private var chapterGeneration = 0
 
     init {
         // 设置持续观察：用户在阅读器内改模式后应立刻换布局并停在原处。
@@ -94,11 +121,17 @@ class ReaderViewModel(
                 // 每次都重新叠加这部漫画的覆盖，而不是直接用全局值——否则设置流的
                 // 任何一次发射都会把漫画级覆盖抹掉。
                 val merged = global.withMangaOverride(mangaModeOverride, mangaOrientationOverride)
+                val previous = _state.value.settings
                 val wasContinuous = _state.value.isContinuous
+                val preloadChanged = previous.preloadPages != merged.preloadPages
                 _state.update { it.copy(settings = merged) }
                 if (wasContinuous != merged.readingMode.continuous) {
                     // 分页 ↔ 条漫互换时项的渲染方式变了，按身份重新定位避免跳页。
                     reanchorCurrentPage()
+                }
+                // 预载预算变了：重新规划窗口，把新纳入的章排上加载。
+                if (preloadChanged && _state.value.chapters != null) {
+                    applyWindow()
                 }
             }
         }
@@ -183,7 +216,7 @@ class ReaderViewModel(
     }
 
     /**
-     * 打开第 [chapterIndex] 章，把它放在正中，然后预载相邻两章。
+     * 打开第 [chapterIndex] 章，把它放在正中，预载两侧窗口，然后预取页字节。
      *
      * @param requestedPage 章内页序号（0 基）
      */
@@ -204,9 +237,11 @@ class ReaderViewModel(
                 val current = loaded.chapter
                 val pageIndex = requestedPage.coerceIn(current.pages.indices)
                 val chapters = ViewerChapters(current = current)
-                val readerItems = buildReaderItems(chapters, snapshot.settings.alwaysShowChapterTransition)
+                val readerItems = rebuildItems(_state.value, chapters).second
                 // 当前章页在项列表中的起点就是"章内第 0 页"的绝对下标。
-                val offset = readerItems.currentChapterOffset
+                val offset = readerItems.currentChapterOffset ?: 0
+                // 换章：让任何还在飞的窗口写入作废（见 chapterGeneration）。
+                chapterGeneration++
 
                 _state.update {
                     it.copy(
@@ -227,116 +262,296 @@ class ReaderViewModel(
                     coverDocumentId = current.pages.firstOrNull()?.documentId,
                 )
                 saveProgress()
-                preloadNeighbors(chapterIndex)
+                applyWindow()
             }
         }
     }
 
     /**
-     * 预载相邻章节。
+     * 按预载预算算出两侧窗口。
      *
-     * 这是"多章节能连续读"的关键：分页要在末页之后放下一章的过渡页，条漫要在条带尾部
-     * 预置下一章的页。不做这一步，读者到章末会撞到一堵墙。
-     *
-     * 只预载**两侧各一章**，与 Mihon 的 `ViewerChapters` 一致：再远就不必，读到那里时
-     * 会再次触发预载。
+     * 页数来源按优先级：**已加载的页清单**（最准）→ **数据库里的 pageCount**（扫描或
+     * 详情页回填写入的）→ 未知。未知的章会被当作"边界章"放进来并要求枚举一次——
+     * 没有这一步，第一部打开的漫画就会因为"谁都不知道有几页"而把窗口算成空的，
+     * 末页的过渡页只能显示"已是最后一章"，而后面其实还有几十章（真机上就是这样）。
      */
-    private fun preloadNeighbors(chapterIndex: Int) {
-        val snapshot = _state.value
-        val treeUri = snapshot.sourceTreeUri ?: return
-        val list = snapshot.chapterList
-        val current = snapshot.chapters?.current ?: return
+    /** 某一章已知的页数；页清单优先于数据库列，因为它更可能是刚枚举出来的。 */
+    private fun knownPageCountOf(window: ViewerChapters?, list: List<ChapterRecord>, index: Int): Int? {
+        val record = list.getOrNull(index) ?: return null
+        val inWindow = window?.chapterInWindow(record.chapterId)
+        if (inWindow != null) return inWindow.knownPageCount
+        return record.pageCount?.takeIf { it > 0 }
+    }
 
-        neighborJobs.values.forEach { it.cancel() }
-        neighborJobs.clear()
+    /**
+     * 计算某一章的窗口应该收哪些章。
+     *
+     * 页数来源：**已加载的页清单**（最准）→ 数据库的 `pageCount` → 未知。未知的章会被
+     * 当作"边界章"放进来并要求枚举一次——没有这一步，第一部打开的漫画会因为"谁都不知道
+     * 有几页"而把窗口算成空的，末页只能显示"已是最后一章"，而后面其实还有几十章。
+     */
+    private fun planFor(
+        window: ViewerChapters?,
+        chapterList: List<ChapterRecord>,
+        currentIndex: Int,
+        settings: ReaderSettings,
+    ): PreloadPlan = PreloadPlan.compute(
+        chapterCount = chapterList.size,
+        currentIndex = currentIndex,
+        budget = settings.preloadPages,
+        maxChapters = MAX_PRELOAD_CHAPTERS_PER_SIDE,
+        pagesOf = { index -> knownPageCountOf(window, chapterList, index) },
+    )
 
-        val previousIndex = chapterIndex - 1
-        val nextIndex = chapterIndex + 1
-        if (previousIndex >= 0) {
-            loadNeighbor(list[previousIndex], treeUri, current.chapterId, forward = false)
+    /**
+     * 窗口外侧再各接一格边界章。
+     *
+     * 规划用的是"已经知道的页数"，而一章的页数要等它加载完才知道。因此"刚量到页数的那些章"
+     * 会立刻改变规划结果，一次规划只能多覆盖一章，窗口永远比预载进度慢一步——读者在章末
+     * 看到的就永远是"正在载入"，而下一章其实早就好了。补上这一格，下一轮规划就能看到它的
+     * 真实页数，再补下一格，逐格追上预载进度。
+     *
+     * 单侧最多接 [MAX_PRELOAD_CHAPTERS_PER_SIDE] 格，防止"某章页数始终未知"时无限外扩。
+     */
+    private fun frontierAdditions(
+        list: List<ChapterRecord>,
+        window: ViewerChapters,
+    ): List<Pair<Int, Boolean>> {
+        val currentIndex = list.indexOfFirst { it.chapterId == window.current.chapterId }
+        if (currentIndex < 0) return emptyList()
+        val additions = ArrayList<Pair<Int, Boolean>>(2)
+        val farthestNext = window.nextWindow
+            .maxOfOrNull { record -> list.indexOfFirst { it.chapterId == record.chapterId } }
+        val farthestPrevious = window.previousWindow
+            .minOfOrNull { record -> list.indexOfFirst { it.chapterId == record.chapterId } }
+        val nextTarget = (farthestNext ?: currentIndex) + 1
+        val previousTarget = (farthestPrevious ?: currentIndex) - 1
+        if (nextTarget in list.indices && window.nextWindow.size < MAX_PRELOAD_CHAPTERS_PER_SIDE) {
+            additions += nextTarget to true
         }
-        if (nextIndex in list.indices) {
-            loadNeighbor(list[nextIndex], treeUri, current.chapterId, forward = true)
+        if (previousTarget in list.indices && window.previousWindow.size < MAX_PRELOAD_CHAPTERS_PER_SIDE) {
+            additions += previousTarget to false
+        }
+        return additions
+    }
+
+    /**
+     * 按当前规划补齐窗口，并把结果**原子地**写进状态。
+     *
+     * ## 为什么必须是一次更新的单一入口
+     *
+     * 这里连续出过两次错，根因是同一件事：**用快照算出来的结果去和实时状态比较**。
+     *
+     * 1. 先在 `_state.value` 的快照上补齐，再用 `if (rebuilt != chapters)` 决定要不要写。
+     *    于是当"实时状态的页清单已经变了、而快照里没变"时，这次写入被整个跳过——
+     *    刚加载好的页永远进不了项列表，读者看到的是"下一章正在载入"，而它其实已经好了。
+     * 2. 窗口与项列表分两次读状态再写，两个并发回调（两个邻章同时加载完成）会互相覆盖。
+     *
+     * 因此现在：读取、补齐、排序、构建项列表、写入全部在**同一个** `_state.update` 里完成，
+     * 并且用代数校验丢弃过期的规划结果。窗口与项列表在任何时刻都是一致的，
+     * 也不会出现"页明明加载好了却显示正在载入"。
+     */
+    private fun applyWindow() {
+        val generation = chapterGeneration
+        // 补齐窗口这一步只依赖"已知页数"，而页数只增不减，因此用快照先算一遍是可以的；
+        // 关键是**不能拿它去和实时状态比较**，写入统一在下面的 update 里按实时状态重做。
+        val preview = _state.value.chapters ?: return
+        val list = _state.value.chapterList
+        val currentIndex = _state.value.currentChapterIndex
+        val planned = planFor(preview, list, currentIndex, _state.value.settings)
+        preloadPlan = planned
+
+        var pending: ViewerChapters? = null
+        _state.update { live ->
+            if (chapterGeneration != generation) return@update live
+            val window = live.chapters ?: return@update live
+            // 从**当前章**重新拼窗口，并把旧窗口里**已经加载好**的章节接回去。
+            //
+            // 不能从旧窗口原样扩张：换章时旧窗口的 current 已经过期（它现在应该待在上一章
+            // 列表里）。但也不能把旧窗口里的邻章丢掉——它们的页清单是宝贵的。真机上正是因为
+            // 换章时把它们换成空占位，才出现"每跨一章都要等载入，而下一章其实早就加载好了"。
+            var rebuilt = ViewerChapters(current = window.current)
+            val nextIds = window.nextWindow.mapTo(mutableSetOf()) { it.chapterId }
+            for (chapter in window.nextWindow + window.previousWindow) {
+                if (!chapter.isUsable) continue
+                rebuilt = rebuilt.withAdded(chapter, forward = chapter.chapterId in nextIds)
+            }
+            val additions = planned.nextIndices.map { it to true } +
+                planned.previousIndices.asReversed().map { it to false }
+            for ((target, forward) in additions) {
+                val record = list.getOrNull(target) ?: continue
+                rebuilt = rebuilt.withAdded(placeholderFor(record, window), forward)
+            }
+            for ((target, forward) in frontierAdditions(list, rebuilt)) {
+                val record = list.getOrNull(target) ?: continue
+                rebuilt = rebuilt.withAdded(placeholderFor(record, window), forward)
+            }
+            val sanitized = rebuilt
+                .sortedByChapterOrder { id -> list.indexOfFirst { it.chapterId == id } }
+                .sanitized { id -> list.indexOfFirst { it.chapterId == id } }
+            val readerItems = buildReaderItems(sanitized)
+            val items = readerItems.items
+            pending = sanitized
+            if (sanitized == window && items.size == live.items.size) return@update live
+            live.copy(
+                chapters = sanitized,
+                items = items,
+                currentPageIndex = reanchorIndex(live.items, live.currentPageIndex, items),
+            )
+        }
+
+        val windowNow = pending ?: return
+        // 取消已经不在窗口里的加载任务。
+        val inWindow = buildSet {
+            add(windowNow.current.chapterId)
+            windowNow.previousWindow.forEach { add(it.chapterId) }
+            windowNow.nextWindow.forEach { add(it.chapterId) }
+        }
+        for (chapterId in neighborJobs.keys.filterNot { it in inWindow }) {
+            neighborJobs.remove(chapterId)?.cancel()
+        }
+
+        if (chapterGeneration != generation) return
+        scheduleNeighborLoads(list, windowNow, _state.value.sourceTreeUri ?: return)
+        // 窗口定下来之后再算预取。顺序不能反：预取要按窗口里的页清单来排序。
+        warmPrefetch()
+    }
+
+    /**
+     * 窗口里某一章的占位。
+     *
+     * 页源只能借用当前章的实例——项列表只需要章节身份就能拼出来，真正的页源在加载完成
+     * 后被替换（`PageSource` 是每章一个实例）。
+     */
+    private fun placeholderFor(record: ChapterRecord, window: ViewerChapters): ViewerChapter =
+        ViewerChapter(
+            chapter = record,
+            pages = emptyList(),
+            source = window.current.source,
+            state = ViewerChapter.LoadState.LOADING,
+        )
+
+    /**
+     * 安排加载，顺序"由近及远"：最可能被翻到的章先就绪。
+     *
+     * 窗口里出现的章，加上两侧边界章，全部排进加载队列。
+     */
+    private fun scheduleNeighborLoads(
+        list: List<ChapterRecord>,
+        window: ViewerChapters,
+        treeUri: String,
+    ) {
+        val order = ArrayList<Pair<Int, Boolean>>()
+        window.nextWindow.forEach { record ->
+            list.indexOfFirst { it.chapterId == record.chapterId }.takeIf { it >= 0 }
+                ?.let { order += it to true }
+        }
+        window.previousWindow.asReversed().forEach { record ->
+            list.indexOfFirst { it.chapterId == record.chapterId }.takeIf { it >= 0 }
+                ?.let { order += it to false }
+        }
+        order += frontierAdditions(list, window)
+        for ((target, _) in order) {
+            val record = list.getOrNull(target) ?: continue
+            if (record.chapterId == window.current.chapterId) continue
+            if (window.chapterInWindow(record.chapterId)?.isUsable == true) continue
+            loadNeighbor(record, treeUri)
         }
     }
 
-    private fun loadNeighbor(
-        chapter: ChapterRecord,
-        treeUri: String,
-        currentChapterId: String,
-        forward: Boolean,
-    ) {
+    /**
+     * 加载窗口里的一章。
+     *
+     * 占位（`LOADING`）已由 [applyWindow] 放进窗口，于是项列表里立刻有它的过渡页——
+     * 读者翻到章末时看到的是"正在载入下一章"而不是空白。Mihon 的 `ChapterTransition`
+     * 就是为这件事存在的。
+     */
+    private fun loadNeighbor(chapter: ChapterRecord, treeUri: String) {
         if (neighborJobs.containsKey(chapter.chapterId)) return
-        // 先放一个"加载中"的占位：项列表因此立刻包含目标章的过渡页，
-        // 读者翻到章末时看到的是"正在载入下一章"而不是空白。
-        val placeholder = ViewerChapter(
-            chapter = chapter,
-            pages = emptyList(),
-            source = _state.value.chapters?.current?.source ?: return,
-            state = ViewerChapter.LoadState.LOADING,
-        )
-        applyNeighbor(currentChapterId, placeholder, forward)
+        val chapters = _state.value.chapters ?: return
+        val placeholder = chapters.chapterInWindow(chapter.chapterId) ?: return
+        if (placeholder.isUsable) return
 
         neighborJobs[chapter.chapterId] = viewModelScope.launch {
             val resolved = when (val result = loadChapter(chapter, treeUri)) {
                 is ChapterLoadResult.Ok -> result.chapter
                 is ChapterLoadResult.Failed -> placeholder.copy(state = ViewerChapter.LoadState.FAILED)
             }
-            // 结果回来时当前章可能已经换了：只在仍然相邻时应用，否则丢弃。
-            val now = _state.value.chapters ?: return@launch
-            applyNeighbor(now.current.chapterId, resolved, forward)
-        }
-    }
-
-    /** 把相邻章写进状态并重建项列表。 */
-    private fun applyNeighbor(currentChapterId: String, neighbor: ViewerChapter, forward: Boolean) {
-        _state.update { snapshot ->
-            val existing = snapshot.chapters ?: return@update snapshot
-            if (existing.current.chapterId != currentChapterId) return@update snapshot
-            val updated = if (forward) existing.copy(next = neighbor) else existing.copy(previous = neighbor)
-            rebuild(snapshot, updated)
+            // **必须在这里重新读状态**，不能用启动时的快照：列一页目录要几百毫秒，
+            // 这段时间里读者可能已经换了章。用旧快照写回会把整个窗口（包括当前章）
+            // 退回到加载开始前的那一刻——真机上表现为"翻着翻着突然回到上一章"。
+            applyLoaded(chapter.chapterId, resolved)
+            // 这一章刚拿到页清单：重新规划（真实页数可能比数据库里的更新）并预取。
+            applyWindow()
         }
     }
 
     /**
-     * 重建项列表，同时**保持读者当前所在的项**。
+     * 把加载好的某一章写进窗口并重建项列表，同时保持读者当前所在的项。
      *
-     * 这一步不能省：预载完成会把上一章的页插到列表前面，于是所有绝对下标整体后移。
-     * 若不按身份重新定位，读者会突然跳到另一页。
+     * ## 为什么要在写入时才检查窗口
+     *
+     * 这个函数由异步的章节加载回调调用，而加载可能比读者的翻页慢得多。若它拿着
+     * **启动时**的窗口快照直接写回，就会覆盖掉这期间读者的所有进展——真机上出现过
+     * "翻到第 3 章又被送回第 2 章"，根因就是这里。因此：
+     *
+     * 1. 写回时重新读取 [ReaderUiState.chapters]，而不是用外部传来的快照；
+     * 2. 目标章若已经不在窗口里（读者已经走远），整次写回丢弃；
+     * 3. 当前章一律沿用**读取到的那一刻**的那一章，绝不因这次写回而改变。
      */
-    private fun rebuild(snapshot: ReaderUiState, chapters: ViewerChapters): ReaderUiState {
-        val readerItems = buildReaderItems(chapters, snapshot.settings.alwaysShowChapterTransition)
-        val newIndex = reanchorIndex(snapshot.items, snapshot.currentPageIndex, readerItems.items)
-        return snapshot.copy(chapters = chapters, items = readerItems.items, currentPageIndex = newIndex)
+    private fun applyLoaded(targetChapterId: String, loaded: ViewerChapter) {
+        _state.update { snapshot ->
+            val live = snapshot.chapters ?: return@update snapshot
+            if (!live.contains(targetChapterId)) return@update snapshot
+            val chapters = live.withChapter(loaded, force = true)
+            if (chapters == live) return@update snapshot
+            val (window, items) = rebuildItems(snapshot, chapters)
+            snapshot.copy(
+                chapters = window,
+                items = items.items,
+                currentPageIndex = reanchorIndex(snapshot.items, snapshot.currentPageIndex, items.items),
+            )
+        }
     }
 
-    /** 设置变化时（分页 ↔ 条漫）重新按身份定位，避免下标语义变化导致跳页。 */
+    /** 重新按项身份定位，避免项列表重建后跳到别的页。 */
     private fun reanchorCurrentPage() {
         _state.update { snapshot ->
             val chapters = snapshot.chapters ?: return@update snapshot
-            val readerItems = buildReaderItems(chapters, snapshot.settings.alwaysShowChapterTransition)
-            val newIndex = reanchorIndex(snapshot.items, snapshot.currentPageIndex, readerItems.items)
-            snapshot.copy(items = readerItems.items, currentPageIndex = newIndex)
+            val (window, readerItems) = rebuildItems(snapshot, chapters)
+            val items = readerItems.items
+            snapshot.copy(
+                chapters = window,
+                items = items,
+                currentPageIndex = reanchorIndex(snapshot.items, snapshot.currentPageIndex, items),
+            )
         }
     }
 
-    /** 按项身份在新列表里找回位置；身份丢失时退回到夹取后的原下标。 */
-    private fun reanchorIndex(
-        oldItems: List<ReaderItem>,
-        oldIndex: Int,
-        newItems: List<ReaderItem>,
-    ): Int {
-        if (newItems.isEmpty()) return 0
-        val anchorKey = oldItems.getOrNull(oldIndex)?.key
-        if (anchorKey != null) {
-            val found = newItems.indexOfFirst { it.key == anchorKey }
-            if (found >= 0) return found
+    /**
+     * 重建项列表的唯一入口。
+     *
+     * 每次构建之前先把窗口修自洽（[ViewerChapters.sanitized]）：窗口被三处异步代码改写，
+     * 任何一处把章放错侧或放重，项列表就会把某一页画成过渡页，或让读者翻到
+     * "已是最后一章"而后面其实还有章。与其在每处防御，不如在这里统一兜住。
+     *
+     * @param snapshot 本次写入所基于的状态。**必须与将要写入的状态是同一次快照**，
+     *   因为 [ViewerChapters.sanitized] 要用 `currentChapterIndex` 判断每一章该在哪一侧：
+     *   真机上曾经用"实时状态里的下标"去校验"旧快照里的窗口"，于是窗口被整体重排成
+     *   错误的形状（当前章被挪进上一章列表、末章的项被打乱），读者来回翻都会撞墙。
+     */
+    private fun rebuildItems(
+        snapshot: ReaderUiState,
+        window: ViewerChapters,
+    ): Pair<ViewerChapters, ReaderItems> {
+        val list = snapshot.chapterList
+        val sanitized = window.sanitized { id -> list.indexOfFirst { it.chapterId == id } }
+        if (sanitized != window) {
         }
-        return oldIndex.coerceIn(newItems.indices)
+        return sanitized to buildReaderItems(sanitized)
     }
 
-    /** 列出一章的页；失败返回结构化原因而不是抛异常（章级问题要能显示重试）。 */
-    private suspend fun loadChapter(chapter: ChapterRecord, treeUri: String): ChapterLoadResult = try {
+    /** 列出一章的页；失败返回结构化原因而不是抛异常（章级问题要能显示重试）。 */    private suspend fun loadChapter(chapter: ChapterRecord, treeUri: String): ChapterLoadResult = try {
         when (val opened = pageSourceFactory.open(treeUri, chapter)) {
             is PageSourceOpenResult.Unsupported -> ChapterLoadResult.Failed(opened.reason)
 
@@ -383,7 +598,7 @@ class ReaderViewModel(
         val current = _state.value
         val chapter = current.chapters?.current ?: return
         if (localPageIndex !in chapter.pages.indices) return
-        val offset = current.indexOfFirstPageOf(chapter.chapterId)
+        val offset = current.items.indexOfFirstPageOfChapter(chapter.chapterId)
         if (offset < 0) return
         settleOn(offset + localPageIndex)
     }
@@ -403,90 +618,137 @@ class ReaderViewModel(
         if (absoluteIndex !in snapshot.items.indices) return
         if (absoluteIndex == snapshot.currentPageIndex) return
 
-        when (val item = snapshot.items[absoluteIndex]) {
-            is ReaderItem.Transition -> {
-                // 目标章**已经加载好**时直接推进到它的第一页，不再把过渡项当作停留点。
-                //
-                // 落点必须显式算出来，不能指望 `promoteChapter` 用"项身份"找回来：
-                // 那个身份**就是过渡项自身**，提升后会落回过期位置（曾经因此把读者
-                // 送回上一章，并且看不到过渡页）。而"过渡项在新列表里的下一个位置"
-                // 必然是目标章的第一页——这正是"翻过这一页就到了下一章"的字面含义。
-                //
-                // 只有向前翻会走到这里：过渡项只插入在当前章**之后**（它的 `from` 就是
-                // 当前章），所以往回翻的落点是上一章的最后一页，走下面的 PageItem 分支。
-                val target = item.to
-                if (target != null && target.state == ViewerChapter.LoadState.Loaded) {
-                    promoteChapter(target.chapterId, afterTransitionFrom = item)
-                } else {
-                    _state.update { it.copy(currentPageIndex = absoluteIndex) }
-                    retryNeighborIfFailed(item)
-                }
-            }
+        when {
+            snapshot.items[absoluteIndex] is ReaderItem.Transition ->
+                handleTransitionSettled(snapshot, absoluteIndex, snapshot.items[absoluteIndex] as ReaderItem.Transition)
 
-            is ReaderItem.PageItem -> {
-                val activeId = snapshot.chapters?.current?.chapterId
-                // 先记录落点再考虑换章：顺序反了的话，换章过程里的任何位置调整都会把
-                // 读者刚翻到的页覆盖掉，进度也就被写错。
-                _state.update { it.copy(currentPageIndex = absoluteIndex) }
-                if (item.chapterId != activeId) {
-                    // 读者翻进了相邻章（例如从上一章末尾继续往前）：把它提升为当前章。
-                    promoteChapter(item.chapterId, afterTransitionFrom = null)
-                } else {
-                    saveProgress()
-                }
-            }
+            snapshot.items[absoluteIndex] is ReaderItem.PageItem ->
+                handlePageSettled(snapshot, absoluteIndex, snapshot.items[absoluteIndex] as ReaderItem.PageItem)
+        }
+    }
+
+    /** 落点是章节过渡项。 */
+    private fun handleTransitionSettled(
+        snapshot: ReaderUiState,
+        absoluteIndex: Int,
+        item: ReaderItem.Transition,
+    ) {
+        // 先把落点记下来：过渡页本身就是一个停留点，读者要能看到"进入下一章"，
+        // 也要有机会确认自己为什么换了章。
+        _state.update { it.copy(currentPageIndex = absoluteIndex) }
+        val target = item.to
+        when {
+            // 章节目录端点：停在这里就好。
+            target == null -> Unit
+
+            snapshot.settings.pauseOnChapterTransition -> retryNeighborIfFailed(item)
+
+            // 立刻推进到目标章第一页；目标章还没加载好就只能先停着，
+            // 让读者看到"正在载入下一章"。
+            target.isUsable -> promoteChapter(
+                chapterId = target.chapterId,
+                landingPage = target.pages.first(),
+                from = item,
+            )
+
+            else -> retryNeighborIfFailed(item)
+        }
+    }
+
+    /** 落点是某一页。 */
+    private fun handlePageSettled(
+        snapshot: ReaderUiState,
+        absoluteIndex: Int,
+        item: ReaderItem.PageItem,
+    ) {
+        val activeId = snapshot.chapters?.current?.chapterId
+        // 先记录落点再考虑换章：顺序反了的话，换章过程里的任何位置调整都会把
+        // 读者刚翻到的页覆盖掉，进度也就被写错。
+        _state.update { it.copy(currentPageIndex = absoluteIndex) }
+        val previous = pastStartChapter(snapshot, absoluteIndex)
+        when {
+            item.chapterId != activeId ->
+                // 读者翻进了窗口里的另一章：提升它。落点用**页身份**表达，
+                // 它不随预载窗口变化而失效。
+                promoteChapter(chapterId = item.chapterId, landingPage = item.page, from = null)
+
+            // 顺着阅读顺序往前、却离开了当前章的页 → 那是上一章的最后一页，
+            // 必须把上一章提升为当前章。不处理的话读者会"撞到墙上弹回来"：
+            // 真机上往回翻越过章界时就是这个表现。
+            previous != null && previous.isUsable -> promoteChapter(
+                chapterId = previous.chapterId,
+                landingPage = previous.pages.last(),
+                from = null,
+            )
+
+            else -> saveProgress()
         }
     }
 
     /**
-     * 把已加载的相邻章提升为当前章。
+     * 判断读者是否刚翻出了当前章的**开头**，返回应该提升的上一章。
      *
-     * @param afterTransitionFrom 非空表示这次提升是"翻过了这个过渡项"触发的，
-     *   落点取该项在新列表中的下一个位置，也就是目标章的第一页。
-     *   为空表示读者已经落在目标章的某一页上，此时按项身份找回位置——
-     *   新列表前面多了"上一章"的页与过渡项，绝对下标会平移，必须重新定位。
-     *
-     * 提升后必须**重新预载两侧**：原来的"上一章"位置现在应该放更早的一章。
+     * 结构依据：在 [buildReaderItems] 生成的列表里，某一章**之前**的第一项就是
+     * "到达该章"的正向过渡（阅读顺序上，前一章末尾的下一个位置）。因此当读者落在
+     * 一个正向过渡上、而它的目标恰好是当前章时，就说明他是从当前章第一页往回翻出来的。
      */
-    private fun promoteChapter(chapterId: String, afterTransitionFrom: ReaderItem.Transition?) {
+    private fun pastStartChapter(snapshot: ReaderUiState, absoluteIndex: Int): ViewerChapter? {
+        val current = snapshot.chapters?.current ?: return null
+        val previousItem = snapshot.items.getOrNull(absoluteIndex + 1) as? ReaderItem.PageItem ?: return null
+        if (previousItem.chapterId != current.chapterId || previousItem.page.ordinal != 0) return null
+        return snapshot.chapters?.previous
+    }
+
+    /**
+     * 把窗口里已加载的章节提升为当前章。
+     *
+     * @param landingPage 读者翻到的那一页。这是落点的**首选**依据：页身份与预载窗口无关，
+     *   因此不会出现"提升后过渡项从新列表里消失、只能退回章首"的情形。
+     * @param from 若非空，表示这次提升是"翻过这个过渡项"触发的；[landingPage] 之外还会
+     *   依次尝试过渡项的后继与章首兜底。
+     *
+     * 提升后必须**重新规划并加载两侧**，否则读者翻两章之后会撞到墙。
+     */
+    private fun promoteChapter(
+        chapterId: String,
+        landingPage: ReaderPage,
+        from: ReaderItem.Transition?,
+    ) {
         val snapshot = _state.value
         val existing = snapshot.chapters ?: return
-        val promoted = when (chapterId) {
-            existing.previous?.chapterId -> existing.previous
-            existing.next?.chapterId -> existing.next
-            else -> null
-        } ?: return
-        if (promoted.state != ViewerChapter.LoadState.Loaded) return
+        val promoted = existing.chapterInWindow(chapterId) ?: return
+        if (!promoted.isUsable) return
         val index = snapshot.chapterList.indexOfFirst { it.chapterId == chapterId }
         if (index < 0) return
 
-        val chapters = ViewerChapters(current = promoted)
-        val readerItems = buildReaderItems(chapters, snapshot.settings.alwaysShowChapterTransition)
-        val newIndex = if (afterTransitionFrom != null) {
-            landingAfterTransition(
-                newItems = readerItems.items,
-                transitionKey = afterTransitionFrom.key,
-                fallback = readerItems.currentChapterOffset,
-            )
-        } else {
-            val anchorKey = snapshot.items.getOrNull(snapshot.currentPageIndex)?.key
-            anchorKey
-                ?.let { key -> readerItems.items.indexOfFirst { it.key == key }.takeIf { it >= 0 } }
-                ?: readerItems.currentChapterOffset
-        }
-        val safeIndex = newIndex.coerceIn(readerItems.items.indices)
+        // 提升时**保留整个窗口**，只把 current 换成已加载好的那一章。
+        //
+        // 不能写成 `ViewerChapters(current = promoted)`：那样会丢掉窗口里其他章的页清单，
+        // 而它们正是接下来要显示的内容。真机上因此出现"每跨一章都要重新等载入"，
+        // 已经加载好的下一章也变成空占位。窗口的自洽性由 `rebuildItems` 里的
+        // `sanitized` 兜住（放错侧的章会被挪回正确一侧）。
+        val chapters = existing.copy(current = promoted)
+        val items = rebuildItems(snapshot, chapters).second.items
+        val newIndex = resolveLanding(
+            newItems = items,
+            preferredPageId = landingPage.pageId,
+            transitionKey = from?.key,
+            fallbackOffset = 0,
+        )
+        // 换章：让任何还在飞的窗口写入作废（见 chapterGeneration）。
+        chapterGeneration++
 
         _state.update {
             it.copy(
                 currentChapterIndex = index,
                 chapters = chapters,
-                items = readerItems.items,
-                currentPageIndex = safeIndex,
+                items = items,
+                currentPageIndex = newIndex.coerceIn(items.indices),
                 pageHeights = emptyMap(),
             )
         }
         saveProgress()
-        preloadNeighbors(index)
+        applyWindow()
     }
 
     /** 过渡项的目标章若是失败态则重试一次（Mihon 的过渡页也带重试按钮）。 */
@@ -500,9 +762,96 @@ class ReaderViewModel(
         val treeUri = snapshot.sourceTreeUri ?: return
         val target = item.to ?: return
         if (target.state != ViewerChapter.LoadState.FAILED) return
-        val current = snapshot.chapters?.current ?: return
-        val forward = snapshot.chapters?.next?.chapterId == target.chapterId
-        loadNeighbor(target.chapter, treeUri, current.chapterId, forward)
+        loadNeighbor(target.chapter, treeUri)
+    }
+
+    // ------------------------------------------------------------ 预取页字节
+
+    /**
+     * 把当前页附近 [ReaderSettings.preloadPages] 页的**图片字节**提前读进磁盘缓存。
+     *
+     * 与"加载章节"是两件事：加载章节是列页（一次目录枚举，得到页清单），预取是把每页的
+     * 图像数据先读出来。真机上这两步都在翻页时被感觉到，而页源是 SAF，
+     * 每页一次 `openInputStream` 的延迟并不小。
+     *
+     * 缓存**只放磁盘**、不放堆：真机上解码一页就已经吃过整图分配的亏（见
+     * `ReaderImageView` 的说明），再往堆里压几页字节会把 OOM 重新引回来。
+     *
+     * 距离计算与窗口规划同一套规则：往后每跨一章先付一个过渡页，再付该章页数。
+     */
+    private fun warmPrefetch() {
+        val prefetcher = prefetcher ?: return
+        val snapshot = _state.value
+        val chapters = snapshot.chapters ?: return
+        val budget = snapshot.settings.preloadPages
+        if (budget <= 0) return
+
+        val current = chapters.current
+        if (current.pages.isEmpty()) return
+        val anchored = (snapshot.items.getOrNull(snapshot.currentPageIndex) as? ReaderItem.PageItem)
+            ?.takeIf { it.chapter.chapterId == current.chapterId }
+        val localOrdinal = anchored?.page?.ordinal ?: 0
+
+        // 1. 当前章内部：页清单已在手上，按"离当前页的距离"排序。
+        val ahead = ArrayList<PrefetchCandidate>()
+        val behind = ArrayList<PrefetchCandidate>()
+        for (page in current.pages) {
+            when {
+                page.ordinal > localOrdinal -> ahead += PrefetchCandidate(page, current.source)
+                page.ordinal < localOrdinal -> behind += PrefetchCandidate(page, current.source)
+            }
+        }
+        behind.reverse() // 由近及远
+
+        // 2. 后续章节：由近及远，每跨一章先付一个过渡页。
+        var remaining = budget
+        for (chapter in chapters.nextWindow) {
+            remaining -= 1
+            if (remaining <= 0) break
+            if (!chapter.isUsable) break
+            for (page in chapter.pages) {
+                if (ahead.size >= budget * 2) break
+                ahead += PrefetchCandidate(page, chapter.source)
+            }
+            remaining -= chapter.pages.size
+            if (remaining <= 0) break
+        }
+
+        // 3. 前面的章节：同样由近及远。
+        var backwardRemaining = budget
+        for (chapter in chapters.previousWindow.asReversed()) {
+            backwardRemaining -= 1
+            if (backwardRemaining <= 0) break
+            if (!chapter.isUsable) break
+            for (page in chapter.pages.asReversed()) {
+                if (behind.size >= budget * 2) break
+                behind += PrefetchCandidate(page, chapter.source)
+            }
+            backwardRemaining -= chapter.pages.size
+            if (backwardRemaining <= 0) break
+        }
+
+        prefetcher.request(
+            scopeKey = prefetchScopeKey(snapshot),
+            ahead = ahead.take(budget),
+            behind = behind.take(budget),
+        )
+    }
+
+    /**
+     * 预取范围的稳定标识。
+     *
+     * 只在"这部漫画 + 当前章 + 两侧窗口边界"变化时才需要清理旧缓存，**不随翻页变化**——
+     * 否则每翻一页都要删掉整批缓存再重建，比不预取还慢。
+     */
+    private fun prefetchScopeKey(snapshot: ReaderUiState): String {
+        val chapters = snapshot.chapters
+        return buildString {
+            append(mangaId)
+            append('|').append(chapters?.current?.chapterId.orEmpty())
+            append('|').append(chapters?.previousWindow?.firstOrNull()?.chapterId.orEmpty())
+            append('|').append(chapters?.nextWindow?.lastOrNull()?.chapterId.orEmpty())
+        }
     }
 
     // ------------------------------------------------------------ 条漫
@@ -518,13 +867,13 @@ class ReaderViewModel(
     }
 
     /** 记录一页在条带里的布局高度，供滚动定位使用。 */
-    fun onPageHeightMeasured(pageId: String, heightPx: Int) {
-        if (heightPx <= 0) return
+    fun onPageHeightMeasured(pageId: String, heightDp: Int) {
+        if (heightDp <= 0) return
         _state.update { current ->
-            if (current.pageHeights[pageId] == heightPx) {
+            if (current.pageHeights[pageId] == heightDp) {
                 current
             } else {
-                current.copy(pageHeights = current.pageHeights + (pageId to heightPx))
+                current.copy(pageHeights = current.pageHeights + (pageId to heightDp))
             }
         }
     }
@@ -605,7 +954,7 @@ class ReaderViewModel(
     }
 
     /** 设置这部漫画的屏幕方向覆盖；null 表示清除覆盖。 */
-    fun setOrientationOverride(orientation: com.lmreader.core.model.ReaderOrientation?) {
+    fun setOrientationOverride(orientation: ReaderOrientation?) {
         viewModelScope.launch {
             mangaOrientationOverride = orientation
             mangaRepository.updateReaderOverrides(mangaId, mangaModeOverride, orientation)
@@ -649,11 +998,27 @@ class ReaderViewModel(
         }
     }
 
+    override fun onCleared() {
+        super.onCleared()
+        neighborJobs.values.forEach { it.cancel() }
+        neighborJobs.clear()
+        prefetcher?.cancelAll()
+    }
+
     companion object {
         const val RESUME_CHAPTER = "resume"
 
         /** 没有指定起始页的哨兵值；见 [requestedStartPage]。 */
         const val NO_START_PAGE = -1
+
+        /**
+         * 单侧最多预载几章。
+         *
+         * 预算是页数，理论上"每章只有 1 页"的长篇会把整部作品拉进来；这个上限把最坏
+         * 情况钉住。取 3 是因为真机样本里一章 29–106 页，而预算上限 60 页在 3 章内
+         * 必然用完，再多也不会被预算选中。
+         */
+        const val MAX_PRELOAD_CHAPTERS_PER_SIDE = 3
 
         fun factory(
             container: com.lmreader.di.AppContainer,
@@ -670,10 +1035,17 @@ class ReaderViewModel(
                     progressRepository = container.readingProgressRepository,
                     pageSourceFactory = container.pageSourceFactory,
                     readerPreferences = container.readerPreferences,
+                    prefetcher = container.pagePrefetcher,
                 )
             }
         }
     }
+}
+
+/** 窗口里指定章的当前状态；不在窗口里时返回 null。 */
+private fun ViewerChapters.chapterInWindow(chapterId: String): ViewerChapter? = when (chapterId) {
+    current.chapterId -> current
+    else -> (previousWindow + nextWindow).firstOrNull { it.chapterId == chapterId }
 }
 
 data class ReaderUiState(
@@ -684,11 +1056,18 @@ data class ReaderUiState(
     val chapterList: List<ChapterRecord> = emptyList(),
     val currentChapterIndex: Int = 0,
     val chapters: ViewerChapters? = null,
-    /** 分页器/条带实际显示的项：上一章页 + 过渡 + 当前章页 + 过渡 + 下一章页。 */
+    /** 分页器/条带实际显示的项：窗口里的章页 + 章之间的过渡项。 */
     val items: List<ReaderItem> = emptyList(),
     /** 在 [items] 中的绝对下标。 */
     val currentPageIndex: Int = 0,
-    val chromeVisible: Boolean = true,
+    /**
+     * 控制栏是否可见。
+     *
+     * 默认**隐藏**：阅读器一打开就应该是内容，控制栏是"要看时才叫出来"的东西
+     * （Mihon 的 `ReaderActivity` 同样以隐藏态进入）。之前默认可见，真机上表现为
+     * "一进阅读器就被上下两条黑栏夹住"。
+     */
+    val chromeVisible: Boolean = false,
     val tapZoneOverlayVisible: Boolean = false,
     /** 已探测到的条带页高（dp），键为页 ID。 */
     val pageHeights: Map<String, Int> = emptyMap(),
@@ -701,7 +1080,7 @@ data class ReaderUiState(
      */
     val mangaModeOverride: ReadingMode? = null,
     /** 这部漫画的屏幕方向覆盖；null 表示跟随全局默认。 */
-    val mangaOrientationOverride: com.lmreader.core.model.ReaderOrientation? = null,
+    val mangaOrientationOverride: ReaderOrientation? = null,
     val error: String? = null,
 ) {
     val currentChapter: ChapterRecord? get() = chapterList.getOrNull(currentChapterIndex)
@@ -722,7 +1101,22 @@ data class ReaderUiState(
     val currentItemIsTransition: Boolean
         get() = items.getOrNull(currentPageIndex) is ReaderItem.Transition
 
-    /** 指定章第一项在 [items] 里的绝对下标；找不到返回 -1。 */
-    fun indexOfFirstPageOf(chapterId: String): Int =
-        items.indexOfFirst { it is ReaderItem.PageItem && it.chapterId == chapterId }
+    /**
+     * 窗口里是否有章还没加载完（含失败）。
+     *
+     * 用于区分"到底了"与"还在载入"两种过渡页：只有确认没有更远的章时才敢说到底了，
+     * 否则读者会以为作品只有这么几章。
+     */
+    val windowHasPendingChapters: Boolean
+        get() = chapters?.let { viewer ->
+            (viewer.previousWindow + viewer.nextWindow).any { !it.isUsable }
+        } ?: false
+
+    /** 窗口里是否有章加载失败，供过渡页显示重试。 */
+    val windowHasFailedChapter: Boolean
+        get() = chapters?.let { viewer ->
+            (viewer.previousWindow + viewer.nextWindow).any {
+                it.state == ViewerChapter.LoadState.FAILED
+            }
+        } ?: false
 }

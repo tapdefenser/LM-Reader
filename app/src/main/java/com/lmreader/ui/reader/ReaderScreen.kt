@@ -141,6 +141,7 @@ fun ReaderScreen(
             onLeave = leave,
             volumeKeyModifier = volumeKeyModifier,
             measureHeightDp = measureHeightDp,
+            prefetcher = container.pagePrefetcher,
             onOpenSettings = { settingsOpen = true },
         )
 
@@ -156,14 +157,23 @@ fun ReaderScreen(
         }
     }
 
-    // 首次进入时短暂显示点按区域，让用户知道分区在哪 —— 对应 Mihon
-    // `ReaderNavigationOverlayView` 的一次性闩锁与 `..._on_start` 偏好。
-    LaunchedEffect(state.items.isNotEmpty()) {
-        if (state.items.isNotEmpty() && state.settings.showTapZoneOverlayOnce) {
-            viewModel.showTapZoneOverlay()
-            kotlinx.coroutines.delay(TAP_ZONE_OVERLAY_MILLIS)
-            viewModel.hideTapZoneOverlay()
-        }
+    // 点按区域提示：**每次切换阅读方式时显示一次**。
+    //
+    // 为什么不是"只在首次进入时显示"：分区表随阅读方式变化（默认布局下横向是左右两栏、
+    // 竖向是 L 形），用户换了方式之后看到的就不是同一套分区了，此时不提示等于让他自己猜。
+    // 为什么也不是"常驻"：它是解释性内容，一直在屏幕上会挡住页面。
+    //
+    // `modeHintShown` 从 null 开始，因此**第一次进入也会提示一次**（那时还没有"上一次的
+    // 方式"可比）。`showTapZoneOverlayOnce` 关掉即完全不提示——那是给老用户的开关。
+    var modeHintShown by remember { mutableStateOf<ReadingMode?>(null) }
+    LaunchedEffect(state.items.isNotEmpty(), state.readingMode) {
+        if (state.items.isEmpty()) return@LaunchedEffect
+        if (!state.settings.showTapZoneOverlayOnce) return@LaunchedEffect
+        if (modeHintShown == state.readingMode) return@LaunchedEffect
+        modeHintShown = state.readingMode
+        viewModel.showTapZoneOverlay()
+        kotlinx.coroutines.delay(TAP_ZONE_OVERLAY_MILLIS)
+        viewModel.hideTapZoneOverlay()
     }
 }
 
@@ -188,6 +198,7 @@ private fun ReaderChrome(
     onLeave: () -> Unit,
     volumeKeyModifier: Modifier,
     measureHeightDp: suspend (ReaderItem.PageItem, Float) -> Int?,
+    prefetcher: PagePrefetcher?,
     onOpenSettings: () -> Unit,
 ) {
     Surface(
@@ -204,6 +215,7 @@ private fun ReaderChrome(
                 viewModel = viewModel,
                 onLeave = onLeave,
                 measureHeightDp = measureHeightDp,
+                prefetcher = prefetcher,
             )
 
             if (state.tapZoneOverlayVisible) {
@@ -244,6 +256,7 @@ private fun ReaderContent(
     viewModel: ReaderViewModel,
     onLeave: () -> Unit,
     measureHeightDp: suspend (ReaderItem.PageItem, Float) -> Int?,
+    prefetcher: PagePrefetcher?,
 ) {
     when {
         state.loading -> Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -266,6 +279,7 @@ private fun ReaderContent(
                         measureHeightDp = measureHeightDp,
                         onTap = viewModel::onTap,
                         onTransitionAction = viewModel::retryNeighbor,
+                        prefetcher = prefetcher,
                         onScrollDelta = { delta ->
                             // 只在控制栏可见时判断，避免已在隐藏状态下反复调用。
                             if (state.chromeVisible &&
@@ -284,6 +298,7 @@ private fun ReaderContent(
                         onItemSettled = viewModel::onItemSettled,
                         onTap = viewModel::onTap,
                         onTransitionAction = viewModel::retryNeighbor,
+                        prefetcher = prefetcher,
                         modifier = Modifier.fillMaxSize(),
                     )
                 }
@@ -415,35 +430,6 @@ private fun ReaderBottomBar(
                     Icon(Icons.Filled.Settings, contentDescription = "阅读设置", tint = Color.White)
                 }
             }
-            ReadingModeSelector(current = state.readingMode, onSelect = viewModel::setReadingMode)
-        }
-    }
-}
-
-/**
- * 阅读模式切换（Mihon 底部栏第一个按钮的简化形态）。
- *
- * 用可横向滚动的 `Row` 而不是 `LazyRow`：只有五项，全部组合代价可忽略，而 `LazyRow`
- * 会把屏幕外的项留到滚动时才组合——横向空间不足的机型上最后一个模式就点不到。
- *
- * 完整的阅读设置界面（点按区域、缩放类型、滤镜等）在 [ReaderSettingsDialog]；
- * 这里只放模式本身，因为它是阅读时最常改的一项。
- */
-@Composable
-private fun ReadingModeSelector(current: ReadingMode, onSelect: (ReadingMode) -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState())
-            .padding(top = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        for (mode in ReadingMode.entries) {
-            FilterChip(
-                selected = mode == current,
-                onClick = { onSelect(mode) },
-                label = { Text(mode.label, maxLines = 1, style = MaterialTheme.typography.labelSmall) },
-            )
         }
     }
 }

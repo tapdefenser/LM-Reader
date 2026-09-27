@@ -276,8 +276,31 @@ data class ReaderSettings(
     val fullscreen: Boolean = true,
     /** Mihon `pref_keep_screen_on_key`，默认 false。 */
     val keepScreenOn: Boolean = false,
-    /** Mihon `always_show_chapter_transition`，默认 true。 */
-    val alwaysShowChapterTransition: Boolean = true,
+    /**
+     * 翻到章节过渡页时是否**停住**等读者再翻一次。
+     *
+     * 默认 true（读者要求的手感）：过渡页是一个真实的停留点，再翻一次才进入下一章。
+     *
+     * 关闭时阅读器会立刻推进到下一章第一页。那个模式在实现上要额外解决一个顺序问题：
+     * "读者翻到了哪里"与"我们把分页器挪到了哪里"会互相回放（分页器的 `settledPage`
+     * 分不清两者），连点时会看到"跳了一章"或"停在载入中"。停住模式没有这个回放，
+     * 位置变化只由读者的翻页产生，因此行为可预测。
+     *
+     * 这不是"要不要插入过渡页"。过渡页是必须的：它是目标章还在加载时唯一的可见反馈
+     * （Mihon 的 `ChapterTransition` 同样如此）。
+     */
+    val pauseOnChapterTransition: Boolean = true,
+    /**
+     * 预载页数预算。
+     *
+     * 语义照用户的要求：从当前页往后数，凑够这么多页就停；**章节过渡页也算一页**。
+     * 因此预算 9 而下一章只有 2 页时会继续要再下一章，直到预算用完或没有更多章节。
+     * 0 表示不预载（窗口里只剩当前章）。
+     *
+     * 同一个数同时决定"窗口里放几章"与"提前读取多少页的图片字节"，不拆成两个设置：
+     * 拆开之后用户无法预测哪一个在起作用。
+     */
+    val preloadPages: Int = PRELOAD_PAGES_DEFAULT,
     /** Mihon `reader_navigation_overlay_on_start`，默认 false。点按区域遮罩层。 */
     val showTapZoneOverlayOnStart: Boolean = false,
     /** 首次进入是否自动显示一次点按区域遮罩（Mihon `reader_navigation_overlay_new_user` 的一次性闩锁）。 */
@@ -313,6 +336,15 @@ data class ReaderSettings(
     /** 当前模式下实际生效的裁白边开关（Mihon 对条漫用独立的偏好键）。 */
     val effectiveCropBorders: Boolean
         get() = if (readingMode.continuous) cropBordersWebtoon else cropBorders
+
+    companion object {
+        /** [preloadPages] 的默认预算：一章的量级，够盖住一次翻页的等待。 */
+        const val PRELOAD_PAGES_DEFAULT = 9
+
+        /** [preloadPages] 的上下限；0 表示不预载。 */
+        const val PRELOAD_PAGES_MIN = 0
+        const val PRELOAD_PAGES_MAX = 60
+    }
 }
 
 /**

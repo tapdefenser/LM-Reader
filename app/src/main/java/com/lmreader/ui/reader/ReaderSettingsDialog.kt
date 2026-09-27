@@ -264,9 +264,33 @@ private fun GeneralPage(settings: ReaderSettings, onUpdate: ((ReaderSettings) ->
     ToggleRow("页切换动画", settings.pageTransitions) { value ->
         onUpdate { it.copy(pageTransitions = value) }
     }
-    ToggleRow("始终显示章节过渡页", settings.alwaysShowChapterTransition) { value ->
-        onUpdate { it.copy(alwaysShowChapterTransition = value) }
+
+    Spacer(Modifier.height(20.dp))
+    SectionTitle("章节")
+    ToggleRow("翻到过渡页时停住", settings.pauseOnChapterTransition) { value ->
+        onUpdate { it.copy(pauseOnChapterTransition = value) }
     }
+    Text(
+        text = "开启时翻到「下一章」那一页会停下，再翻一次才进入下一章；关闭时自动推进，" +
+            "少翻一次但不容易看出自己换了章。",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Spacer(Modifier.height(12.dp))
+    LabeledSlider(
+        label = "预载页数",
+        value = settings.preloadPages.toFloat(),
+        range = ReaderSettings.PRELOAD_PAGES_MIN.toFloat()..ReaderSettings.PRELOAD_PAGES_MAX.toFloat(),
+        steps = (ReaderSettings.PRELOAD_PAGES_MAX - ReaderSettings.PRELOAD_PAGES_MIN - 1).coerceAtLeast(0),
+        display = if (settings.preloadPages == 0) "不预载" else "${settings.preloadPages} 页",
+    ) { value -> onUpdate { it.copy(preloadPages = value.toInt()) } }
+    Text(
+        text = "按阅读顺序往后预读这么多页的图片字节，翻页时不必现读。" +
+            "章节过渡页也算一页，因此后一章比预算短时会继续往后预载一章" +
+            "（预算 9 页而后一章只有 2 页时，会再要一章）。0 表示不预载。",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
 }
 
 /**

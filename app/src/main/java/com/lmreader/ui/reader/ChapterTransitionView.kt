@@ -38,9 +38,10 @@ import com.lmreader.core.model.ReaderSettings
  *
  * 1. **没有目标章节时仍然显示过渡页**，文案是"已是最后一章"。Mihon 在列表端点同样插入
  *    过渡项（`to == null`），这是"到底了"的明确表达，不是错误状态。
- * 2. **`always_show_chapter_transition` 关闭时，只在目标章尚未加载完成才显示**。
- *    目的是不让读者看到一段空白，而不是省掉过渡本身——已经加载好的相邻章应当直接接上。
- *    这个判定与 Mihon 的 `forceTransition` 同义。
+ * 2. **过渡页永远可见**。上一版在"关闭始终显示过渡页"时会让已加载的相邻章直接接页，
+ *    但预载窗口现在可以有很多章，读者根本无从判断某一章是"作品本来就到这"还是
+ *    "还有更多但没预载"。因此改为总是显示，`pauseOnChapterTransition` 只决定到达之后
+ *    停不停。
  *
  * 未实现（记录在此以免被当成遗漏）：Mihon 的完整版还在这里显示章节下载按钮、
  * 页码范围与封面缩略图。本项目没有下载子系统，因此只保留标题、状态与重试。
@@ -53,9 +54,6 @@ internal fun ChapterTransitionView(
     onTap: (x: Float, y: Float) -> Unit,
 ) {
     val target = transition.to
-    // 不需要显示的情形：目标章已经加载好，且用户没要求始终显示过渡。
-    val visible = settings.alwaysShowChapterTransition ||
-        target?.state != ViewerChapter.LoadState.Loaded
 
     Box(
         modifier = Modifier
@@ -65,8 +63,6 @@ internal fun ChapterTransitionView(
             .pointerTapNormalized(onTap),
         contentAlignment = Alignment.Center,
     ) {
-        if (!visible) return@Box
-
         Column(
             modifier = Modifier.fillMaxWidth().padding(32.dp),
             horizontalAlignment = Alignment.CenterHorizontally,

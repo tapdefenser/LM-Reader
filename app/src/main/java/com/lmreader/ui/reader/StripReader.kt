@@ -65,6 +65,8 @@ internal fun StripReader(
     onTap: (x: Float, y: Float) -> Unit,
     onTransitionAction: (ReaderItem.Transition) -> Unit,
     onScrollDelta: (Int) -> Unit = {},
+    /** 页面字节的预取缓存；命中时不必再过一次 SAF。 */
+    prefetcher: PagePrefetcher? = null,
     modifier: Modifier = Modifier,
 ) {
     if (items.isEmpty()) return
@@ -172,6 +174,7 @@ internal fun StripReader(
                                 zoomStart = ZoomStart.CENTER,
                             ),
                             onSingleTap = onTap,
+                            prefetcher = prefetcher,
                         )
                     }
                 }
