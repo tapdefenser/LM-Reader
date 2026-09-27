@@ -13,6 +13,8 @@ import com.lmreader.core.model.ReadingProgress
 import com.lmreader.core.model.ReadingProgressRepository
 import com.lmreader.core.model.ShelfRepository
 import com.lmreader.core.model.SourceRepository
+import com.lmreader.core.storage.reader.PageSourceFactory
+import com.lmreader.core.storage.reader.PageSourceOpenResult
 import com.lmreader.core.storage.scan.ChapterSyncOutcome
 import com.lmreader.core.storage.scan.MangaChapterSyncer
 import kotlinx.coroutines.CancellationException
@@ -29,9 +31,18 @@ class MangaDetailViewModel(
     private val shelfRepository: ShelfRepository,
     private val chapterSyncer: MangaChapterSyncer,
     private val progressRepository: ReadingProgressRepository,
+    private val pageSourceFactory: PageSourceFactory,
 ) : ViewModel() {
     private val _state = MutableStateFlow(MangaDetailUiState())
     val state: StateFlow<MangaDetailUiState> = _state.asStateFlow()
+
+    /**
+     * 页数回填只跑一次。
+     *
+     * 用一个字段而不是每次 `reload()` 都跑：`reload()` 会在每次回到详情页时触发
+     * （含从阅读器返回），不能让它每次都去枚举目录。
+     */
+    private var pageBackfillStarted = false
 
     init {
         viewModelScope.launch {
@@ -44,7 +55,69 @@ class MangaDetailViewModel(
     }
 
     fun reload() {
-        viewModelScope.launch { loadDetail(showLoading = _state.value.manga == null) }
+        viewModelScope.launch {
+            loadDetail(showLoading = _state.value.manga == null)
+            backfillPageCounts()
+        }
+    }
+
+    /**
+     * 给还没有页数的章节补上页数。
+     *
+     * ## 为什么需要它
+     *
+     * 页数原本只在**打开过那一章**时回填（`ImageDirectoryPageSource.pages()` 之后由
+     * `updateChapterPageInfo` 写入）。真机核查发现可读的 4704 个章节里**只有 6 个**
+     * 有页数——于是详情页几乎看不到「共 X 页」，用户会以为「更新章节」坏了。
+     *
+     * ## 为什么不在扫描/同步时就全量补齐
+     *
+     * 那需要打开每一个章节目录并列出其子项。对一部 100 章的漫画就是 100 次目录枚举，
+     * 会让扫描变得很慢，而且大多数章节用户根本不会打开。这里改成**按需、有上限**：
+     * 每次打开详情页最多补 [PAGE_BACKFILL_LIMIT] 章，剩下的下次再补。
+     *
+     * ## 与「更新章节」的分工
+     *
+     * 那个按钮走 `MangaChapterSyncer.sync`，负责**章节集合本身**的变化（新增/消失）。
+     * 这里只补页数，不改章节集合，因此不会与它冲突。
+     */
+    private fun backfillPageCounts() {
+        if (pageBackfillStarted) return
+        val chapters = _state.value.chapters
+        val sourceTreeUri = _state.value.sourceTreeUri ?: return
+        val pending = chapters.filter { it.pageCount == null }
+        if (pending.isEmpty()) return
+        pageBackfillStarted = true
+
+        viewModelScope.launch {
+            var filled = 0
+            for (chapter in pending.take(PAGE_BACKFILL_LIMIT)) {
+                val counted = runCatching {
+                    when (val opened = pageSourceFactory.open(sourceTreeUri, chapter)) {
+                        is PageSourceOpenResult.Unsupported -> null
+                        is PageSourceOpenResult.Ready -> {
+                            val pages = opened.source.pages()
+                            // 空页清单不写：写了会显示"共 0 页"，比"未知"更糟。
+                            if (pages.isEmpty()) null else pages.size to pages.first().documentId
+                        }
+                    }
+                }.getOrNull() ?: continue
+
+                val (pageCount, coverDocumentId) = counted
+                runCatching {
+                    mangaRepository.updateChapterPageInfo(
+                        chapterId = chapter.chapterId,
+                        pageCount = pageCount,
+                        coverDocumentId = coverDocumentId,
+                    )
+                }
+                filled++
+            }
+            if (filled > 0) {
+                // 只在真的补到了东西时重载：否则每次进详情页都会多一次数据库往返。
+                loadDetail(showLoading = false)
+            }
+        }
     }
 
     fun syncChapters() {
@@ -142,11 +215,14 @@ class MangaDetailViewModel(
                     shelfRepository = container.shelfRepository,
                     chapterSyncer = container.mangaChapterSyncer,
                     progressRepository = container.readingProgressRepository,
+                    pageSourceFactory = container.pageSourceFactory,
                 )
             }
         }
     }
 }
+
+private const val PAGE_BACKFILL_LIMIT = 8
 
 data class MangaDetailUiState(
     val loading: Boolean = true,
