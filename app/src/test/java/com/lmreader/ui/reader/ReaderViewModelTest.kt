@@ -20,6 +20,7 @@ import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -32,6 +33,54 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 class ReaderViewModelTest {
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun `later chapter finishing first cannot appear before the missing neighbor`() = runTest {
+        Dispatchers.setMain(StandardTestDispatcher(testScheduler))
+        try {
+            val chapters = (0 until 3).map(::chapter)
+            val delayedPages = CompletableDeferred<List<ReaderPage>>()
+            val delayedSource = mockk<PageSource> {
+                coEvery { pages() } coAnswers { delayedPages.await() }
+            }
+            val mangaRepository = mockk<MangaRepository>(relaxed = true) {
+                coEvery { getBackfillTarget(MANGA_ID) } returns target(chapters)
+            }
+            val pageSourceFactory = mockk<PageSourceFactory> {
+                every { open(TREE_URI, any()) } answers {
+                    val record = secondArg<ChapterRecord>()
+                    PageSourceOpenResult.Ready(
+                        if (record.chapterId == "c1") delayedSource else sourceFor(record),
+                    )
+                }
+            }
+            val readerPreferences = mockk<ReaderPreferences> {
+                every { settings } returns flowOf(ReaderSettings(preloadPages = 9))
+            }
+            val viewModel = ReaderViewModel(
+                mangaId = MANGA_ID,
+                requestedChapterId = "c0",
+                mangaRepository = mangaRepository,
+                progressRepository = mockk(relaxed = true),
+                pageSourceFactory = pageSourceFactory,
+                readerPreferences = readerPreferences,
+            )
+
+            advanceUntilIdle()
+            assertTrue(viewModel.state.value.items.none { it.chapterId == "c2" })
+            delayedPages.complete((0 until PAGES_PER_CHAPTER).map { ordinal ->
+                ReaderPage("c1-p$ordinal", ordinal, "$ordinal.jpg", "c1/$ordinal.jpg")
+            })
+            advanceUntilIdle()
+            val keys = viewModel.state.value.items.map(ReaderItem::key)
+            assertTrue("c1-p0" in keys)
+            assertTrue("c2-p0" in keys)
+            assertTrue(keys.indexOf("c1-p0") < keys.indexOf("c2-p0"))
+        } finally {
+            Dispatchers.resetMain()
+        }
+    }
 
     @OptIn(ExperimentalCoroutinesApi::class)
     @Test

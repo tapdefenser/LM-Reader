@@ -102,6 +102,8 @@ class ReaderViewModel(
                     previous.preloadPages != merged.preloadPages
                 ) {
                     rebuild()
+                    loadNeighbors()
+                    warmPrefetch()
                 }
             }
         }
@@ -184,8 +186,16 @@ class ReaderViewModel(
         _state.update { state ->
             val items = state.items
             val first = items.indexOfFirstPageOfChapter(record.chapterId).coerceAtLeast(0)
-            val target = (first + page).coerceIn(0, (items.size - 1).coerceAtLeast(0))
-            state.copy(loading = false, currentPageIndex = target, error = null)
+            val target = first + page.coerceIn(0, current.pages.lastIndex)
+            state.copy(
+                loading = false,
+                chapters = state.chapters?.let { existing ->
+                    existing.copy(currentIndex = existing.indexOf(record.chapterId).coerceAtLeast(0))
+                },
+                currentPageIndex = target,
+                scrollRequest = state.scrollRequest + 1,
+                error = null,
+            )
         }
         val opened = _state.value
         mangaRepository.updateChapterPageInfo(
@@ -257,7 +267,7 @@ class ReaderViewModel(
         val next = base.nextIndices.toMutableList()
         val previous = base.previousIndices.toMutableList()
         val nextFrontier = (next.lastOrNull() ?: currentIndex) + 1
-        val previousFrontier = (previous.firstOrNull() ?: currentIndex) - 1
+        val previousFrontier = (previous.lastOrNull() ?: currentIndex) - 1
         if (nextFrontier in list.indices && next.size < MAX_PRELOAD_CHAPTERS_PER_SIDE) {
             next += nextFrontier
         }
@@ -307,10 +317,18 @@ class ReaderViewModel(
                 showTransitions = state.settings.showChapterTransitions,
                 isFinalChapter = { id -> state.chapterList.lastOrNull()?.chapterId == id },
             )
+            val anchoredIndex = reanchorIndex(state.items, state.currentPageIndex, items)
+            val anchoredChapter = items.getOrNull(anchoredIndex)?.chapterId
+            val chapterIndex = anchoredChapter?.let(chapters::indexOf)?.takeIf { it >= 0 }
+            val retainedPageIds = items.asSequence()
+                .filterIsInstance<ReaderItem.PageItem>()
+                .map { it.page.pageId }
+                .toHashSet()
             state.copy(
-                chapters = chapters,
+                chapters = if (chapterIndex != null) chapters.copy(currentIndex = chapterIndex) else chapters,
                 items = items,
-                currentPageIndex = reanchorIndex(state.items, state.currentPageIndex, items),
+                currentPageIndex = anchoredIndex,
+                pageHeights = state.pageHeights.filterKeys { it in retainedPageIds },
                 itemsRevision = if (state.items.map(ReaderItem::key) == items.map(ReaderItem::key)) {
                     state.itemsRevision
                 } else {
@@ -553,20 +571,10 @@ class ReaderViewModel(
         // 已经取到了；这里只处理"当前页本身位于过渡页上"的情形——那时 currentPageIndex
         // 指向过渡项，它后面/前面第一次扫描就会取到两侧的页。
         prefetcher.request(
-            scopeKey = prefetchScopeKey(snapshot),
+            scopeKey = mangaId,
             ahead = ahead,
             behind = behind,
         )
-    }
-
-    /** 预取范围的稳定标识；只在窗口边界变化时才清理旧缓存。 */
-    private fun prefetchScopeKey(snapshot: ReaderUiState): String {
-        val chapters = snapshot.chapters
-        return buildString {
-            append(mangaId)
-            append('|').append(chapters?.window?.firstOrNull()?.chapterId.orEmpty())
-            append('|').append(chapters?.window?.lastOrNull()?.chapterId.orEmpty())
-        }
     }
 
     // ------------------------------------------------------------ 点按与控制栏
@@ -589,6 +597,10 @@ class ReaderViewModel(
 
     fun toggleChrome() {
         _state.update { it.copy(chromeVisible = !it.chromeVisible) }
+    }
+
+    fun showChrome() {
+        _state.update { if (it.chromeVisible) it else it.copy(chromeVisible = true) }
     }
 
     fun showTapZoneOverlay() {
@@ -656,9 +668,10 @@ class ReaderViewModel(
         viewModelScope.launch {
             mangaOrientationOverride = orientation
             mangaRepository.updateReaderOverrides(mangaId, mangaModeOverride, orientation)
+            val global = readerPreferences.settings.first()
             _state.update {
                 it.copy(
-                    settings = it.settings.withMangaOverride(mangaModeOverride, orientation),
+                    settings = global.withMangaOverride(mangaModeOverride, orientation),
                     mangaOrientationOverride = orientation,
                 )
             }

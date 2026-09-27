@@ -29,7 +29,11 @@ internal fun rememberStripHeightMeasurer(): suspend (ReaderItem.PageItem, Float)
     // density 变化（例如切换显示尺寸）会使 dp 换算失效，因此把它作为 remember 的键。
     val density = LocalDensity.current.density
     return remember(density) {
-        val cache = HashMap<String, PageGeometry?>()
+        val cache = object : LinkedHashMap<String, PageGeometry?>(512, 0.75f, true) {
+            override fun removeEldestEntry(
+                eldest: MutableMap.MutableEntry<String, PageGeometry?>?,
+            ): Boolean = size > 512
+        }
         suspend fun measure(item: ReaderItem.PageItem, widthDp: Float): Int? {
             val key = item.page.pageId
             val geometry = if (cache.containsKey(key)) {

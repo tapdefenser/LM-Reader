@@ -69,60 +69,40 @@ data class ViewerChapters(
     val currentChapterId: String get() = current.chapterId
 
     /**
-     * 整条直线的项列表。
-     *
-     * ## 只收录"已知页数"的章
-     *
-     * 还没加载完的章**完全不出现**：它既不贡献页，也不贡献过渡页。理由是过渡页的语义是
-     * "上一章读完了、下面是下一章"，若下一章还没加载出来就插入过渡页，读者会看到一个
-     * 悬空的过渡页（甚至两个过渡页挨在一起）。
-     *
-     * 加载完成后它的页与过渡页一起插入，此时按页身份重新定位，画面不跳。
-     *
-     * ## 过渡页可以关掉
-     *
-     * [showTransitions] 为 false 时章与章直接相接，一次翻页就从上一章末页到下一章首页。
-     * 它与翻页逻辑无关——只是"组装列表时插不插这一项"。
-     */
-    /**
-     * 整条直线的项列表。
-     *
-     * ## 只收录"已知页数"的章
-     *
-     * 还没加载完的章**完全不出现**：它既不贡献页，也不贡献过渡页。理由是过渡页的语义是
-     * "上一章读完了、下面是下一章"，若下一章还没加载出来就插入过渡页，读者会看到一个
-     * 悬空的过渡页（甚至两个过渡页挨在一起）。
-     *
-     * 加载完成后它的页与过渡页一起插入，此时按页身份重新定位，画面不跳。
-     *
-     * ## 过渡页没有方向
-     *
-     * 一个过渡项就是"前一章与后一章之间那一张"。往前翻会遇到它、往后翻会遇到同一个它，
-     * 不是两个不同的项——这正是"过渡页就是夹在中间的一张图"的字面含义。
-     *
-     * @param isFinalChapter 给定的章是否是整部的最后一章；是则在它后面补一个终点标记
+     * 从当前章所在的连续可读区间组装项列表。章与章之间的过渡页仍是普通的一项；
+     * 相邻章载入中或失败时，只放一张指向该章的过渡页并停止，不能越过它接上更远的章。
+     * 关闭过渡页时只移除这些过渡项，不改变章节连续性。
      */
     fun items(showTransitions: Boolean, isFinalChapter: (String) -> Boolean): List<ReaderItem> {
         val items = ArrayList<ReaderItem>()
-        window.forEachIndexed { index, chapter ->
-            if (!chapter.isUsable) return@forEachIndexed
-            // 章与章之间恰好一个过渡项，且它**归属后一章**（这样它在任何窗口下键都一样）。
-            if (index > 0 && showTransitions) {
-                items += ReaderItem.Transition(from = previousUsable(index), to = chapter)
+        if (window.isEmpty()) return items
+        // 落在失败章的过渡项时，currentIndex 属于失败章；仍保留前一章与过渡项。
+        val anchor = if (window[currentIndex].isUsable) currentIndex else {
+            (currentIndex - 1 downTo 0).firstOrNull { window[it].isUsable }
+                ?: (currentIndex + 1..window.lastIndex).firstOrNull { window[it].isUsable }
+                ?: return items
+        }
+        var first = anchor
+        while (first > 0 && window[first - 1].isUsable) first--
+        var last = anchor
+        while (last < window.lastIndex && window[last + 1].isUsable) last++
+        for (index in first..last) {
+            val chapter = window[index]
+            if (index > first && showTransitions) {
+                items += ReaderItem.Transition(from = window[index - 1], to = chapter)
             }
             items += chapter.pages.map { ReaderItem.PageItem(it, chapter) }
         }
-        // 末尾的"到底了"标记：窗口里最后那一章就是整部的最后一章时才加。
-        val last = window.lastOrNull()
-        if (showTransitions && last != null && last.isUsable && isFinalChapter(last.chapterId)) {
-            items += ReaderItem.Transition(from = last, to = null)
+        if (showTransitions) {
+            val blocked = window.getOrNull(last + 1)
+            if (blocked != null && !blocked.isUsable) {
+                items += ReaderItem.Transition(from = window[last], to = blocked)
+            } else if (last == window.lastIndex && isFinalChapter(window[last].chapterId)) {
+                items += ReaderItem.Transition(from = window[last], to = null)
+            }
         }
         return items
     }
-
-    /** [index] 之前最近的一个"已知页数"的章；用于给过渡项标注它从哪一章来。 */
-    private fun previousUsable(index: Int): ViewerChapter? =
-        window.subList(0, index).lastOrNull { it.isUsable }
 
     /** 用加载好的状态**替换**窗口里同 ID 的那一格；不在窗口里时返回自身。 */
     fun withChapter(replacement: ViewerChapter): ViewerChapters {
@@ -270,10 +250,25 @@ internal data class PreloadPlan(
 }
 
 /**
- * 从当前章向两侧展开窗口，补齐还没在窗口里的章。
+ * 从当前章向两侧展开窗口：结果是**包含当前章的连续目录区间**，且只收规划覆盖、
+ * `existing` 里**确实有**的章。
  *
- * @param existing 已经有页清单的章；只取当前规划覆盖的部分。走远的章不能永久保留，
- *   否则数千章漫画会让页清单与页源随阅读进度无界增长。
+ * ## 为什么必须连续
+ *
+ * 窗口是项列表的骨架。若允许缺口（例如 A、C 有页而中间的 B 没有），过渡页就会把 A
+ * 直接接到 C——读者看到的"下一章"与目录里的下一章不是同一章；B 加载完成后又会插到
+ * 中间，让已读位置整体平移。要求连续之后，缺口处的章到位时只是把区间**扩一格**，
+ * 已有项的身份不变，[reanchorIndex] 照常把读者放回原处。
+ *
+ * ## 展开规则
+ *
+ * 从当前章出发，左右各一次扩一格，**在第一个收不进的格子停下**（不跨过它继续往外找）：
+ * 目录里没有这个下标、规划没覆盖它、或 `existing` 里没有它——三者都算边界。
+ * `FAILED` 的章也在 `existing` 里，因此**算作存在**（它是一个确定状态，跳过它反而
+ * 会在窗口里挖出缺口）。
+ *
+ * @param existing 已经有页清单（或已明确失败）的章；只取当前规划覆盖的部分。走远的章
+ *   不能永久保留，否则数千章漫画会让页清单与页源随阅读进度无界增长。
  * @return 新的窗口（按目录顺序）与当前章在其中的下标
  */
 internal fun buildWindow(
@@ -284,13 +279,24 @@ internal fun buildWindow(
 ): Pair<List<ViewerChapter>, Int> {
     val currentIndex = chapterList.indexOfFirst { it.chapterId == currentChapterId }
     if (currentIndex < 0) return emptyList<ViewerChapter>() to 0
-    val wanted = sortedSetOf(currentIndex)
-    wanted += plan.nextIndices
-    wanted += plan.previousIndices
-    val window = wanted.mapNotNull { index ->
-        val record = chapterList.getOrNull(index) ?: return@mapNotNull null
-        existing[record.chapterId]
+    val planned = sortedSetOf(currentIndex)
+    planned += plan.nextIndices
+    planned += plan.previousIndices
+
+    // 能收进窗口的那一格；越出目录、规划未覆盖、existing 里没有——都返回 null。
+    fun at(index: Int): ViewerChapter? {
+        if (index !in chapterList.indices) return null
+        if (index !in planned) return null
+        return existing[chapterList[index].chapterId]
     }
+
+    // 当前章本身不可用时不硬凑窗口：那会让 currentIndex 指向别的章。
+    if (at(currentIndex) == null) return emptyList<ViewerChapter>() to 0
+    var first = currentIndex
+    while (at(first - 1) != null) first--
+    var last = currentIndex
+    while (at(last + 1) != null) last++
+    val window = (first..last).mapNotNull { at(it) }
     val newCurrentIndex = window.indexOfFirst { it.chapterId == currentChapterId }
     return window to newCurrentIndex.coerceAtLeast(0)
 }
@@ -311,6 +317,33 @@ internal fun reanchorIndex(
     if (anchorKey != null) {
         val found = newItems.indexOfFirst { it.key == anchorKey }
         if (found >= 0) return found
+    }
+    // 关闭过渡页时，它从列表消失。优先落到目标章首页，再退到来源章末页。
+    val old = oldItems.getOrNull(oldIndex)
+    if (old is ReaderItem.Transition) {
+        old.to?.chapterId?.let { nextChapter ->
+            val nextPage = newItems.indexOfFirstPageOfChapter(nextChapter)
+            if (nextPage >= 0) return nextPage
+        }
+        old.from?.chapterId?.let { previousChapter ->
+            val previousPage = newItems.indexOfLast {
+                it is ReaderItem.PageItem && it.chapterId == previousChapter
+            }
+            if (previousPage >= 0) return previousPage
+        }
+    }
+    // 窗口收缩移除了旧项时，按旧阅读顺序找仍在新列表中的最近页面。
+    for (distance in 1..oldItems.size) {
+        val forward = oldItems.getOrNull(oldIndex + distance)?.key
+        if (forward != null) {
+            val found = newItems.indexOfFirst { it.key == forward }
+            if (found >= 0) return found
+        }
+        val backward = oldItems.getOrNull(oldIndex - distance)?.key
+        if (backward != null) {
+            val found = newItems.indexOfFirst { it.key == backward }
+            if (found >= 0) return found
+        }
     }
     return oldIndex.coerceIn(newItems.indices)
 }

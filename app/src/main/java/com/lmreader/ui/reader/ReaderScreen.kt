@@ -218,6 +218,32 @@ private fun ReaderChrome(
                 prefetcher = prefetcher,
             )
 
+            val atUnreadyBoundary = state.items.getOrNull(state.currentPageIndex) is ReaderItem.PageItem &&
+                state.currentPageIndex == state.items.lastIndex && state.hasNextChapter
+            if (atUnreadyBoundary) {
+                val nextId = state.chapterList.getOrNull(state.currentChapterListIndex + 1)?.chapterId
+                val nextState = state.chapters?.window?.firstOrNull { it.chapterId == nextId }?.state
+                if (nextState != ViewerChapter.LoadState.Loaded) Surface(
+                    color = Color.Black.copy(alpha = 0.82f),
+                    modifier = Modifier.align(Alignment.BottomCenter)
+                        .windowInsetsPadding(WindowInsets.navigationBars)
+                        .padding(bottom = if (state.chromeVisible) 130.dp else 48.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            if (nextState == ViewerChapter.LoadState.FAILED) "下一章载入失败" else "正在载入下一章…",
+                            color = Color.White,
+                        )
+                        if (nextState == ViewerChapter.LoadState.FAILED) {
+                            Button(onClick = viewModel::retryFailedChapters) { Text("重试") }
+                        }
+                    }
+                }
+            }
+
             if (state.tapZoneOverlayVisible) {
                 TapZoneOverlay(state = state, onDismiss = viewModel::hideTapZoneOverlay)
             }
@@ -288,6 +314,7 @@ private fun ReaderContent(
                         onPageHeightMeasured = viewModel::onPageHeightMeasured,
                         measureHeightDp = measureHeightDp,
                         onTap = viewModel::onTap,
+                        onLongPress = viewModel::showChrome,
                         onTransitionAction = { viewModel.retryFailedChapters() },
                         prefetcher = prefetcher,
                         onScrollDelta = { delta ->
@@ -309,6 +336,7 @@ private fun ReaderContent(
                         scrollRequest = state.scrollRequest,
                         onItemSettled = viewModel::onItemSettled,
                         onTap = viewModel::onTap,
+                        onLongPress = viewModel::showChrome,
                         onTransitionAction = { viewModel.retryFailedChapters() },
                         prefetcher = prefetcher,
                         modifier = Modifier.fillMaxSize(),

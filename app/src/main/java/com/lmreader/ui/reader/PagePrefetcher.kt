@@ -5,6 +5,7 @@ import com.lmreader.core.storage.reader.PageSource
 import com.lmreader.core.storage.reader.ReaderPage
 import java.io.File
 import java.io.FileInputStream
+import java.io.FileOutputStream
 import java.io.InputStream
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CancellationException
@@ -12,6 +13,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -56,7 +59,7 @@ class PagePrefetcher(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val directory = File(context.cacheDir, "reader-pages")
     private val entries = ConcurrentHashMap<String, File>()
-    private var currentScopeKey: String? = null
+    @Volatile private var currentScopeKey: String? = null
     private var scheduled: Set<String> = emptySet()
 
     /** 预取任务；新范围到来时取消上一个，避免旧任务把已失效的页读满磁盘。 */
@@ -84,11 +87,12 @@ class PagePrefetcher(
         val changedScope = scopeKey != currentScopeKey
         if (changedScope) currentScopeKey = scopeKey
 
+        val prefix = scopePrefix(scopeKey)
         val missing = wanted.filterKeys { pageId ->
-            entries[pageId]?.isFile != true
+            entries[pageId]?.let { it.isFile && it.name.startsWith(prefix) } != true
         }
         // 同一范围内、待取集合也没变时不重复排队（翻页会高频触发本方法）。
-        if (!changedScope && missing.keys == scheduled) return
+        if (!changedScope && missing.keys == scheduled && job?.isActive == true) return
         scheduled = missing.keys
 
         job?.cancel()
@@ -119,6 +123,7 @@ class PagePrefetcher(
      */
     fun stream(pageId: String): InputStream? {
         val file = entries[pageId] ?: return null
+        if (currentScopeKey?.let { !file.name.startsWith(scopePrefix(it)) } == true) return null
         if (!file.isFile) {
             entries.remove(pageId)
             return null
@@ -130,6 +135,7 @@ class PagePrefetcher(
     fun cancelAll() {
         job?.cancel()
         job = null
+        scheduled = emptySet()
     }
 
     /**
@@ -143,25 +149,44 @@ class PagePrefetcher(
         directory.listFiles()?.forEach { file ->
             if (!file.name.startsWith(keep)) {
                 file.delete()
-                entries.remove(file.name)
+                removeEntryFor(file)
             }
         }
         Unit
     }
 
-    /** 读取一页的全部字节并落盘。 */
+    /** 边读边限制大小并落盘，不把整页先装进堆里。 */
     private suspend fun fetch(candidate: PrefetchCandidate, scopeKey: String): File? =
         withContext(Dispatchers.IO) {
-            val bytes = runCatching {
-                candidate.source.open(candidate.page).use { it.readBytes() }
-            }.getOrNull() ?: return@withContext null
-            if (bytes.isEmpty() || bytes.size > maxEntryBytes) return@withContext null
-            runCatching {
-                directory.mkdirs()
+            directory.mkdirs()
+            val temporary = File.createTempFile(scopePrefix(scopeKey), ".part", directory)
+            try {
+                var total = 0L
+                candidate.source.open(candidate.page).use { input ->
+                    FileOutputStream(temporary).use { output ->
+                        val buffer = ByteArray(64 * 1024)
+                        while (true) {
+                            currentCoroutineContext().ensureActive()
+                            val count = input.read(buffer)
+                            if (count < 0) break
+                            total += count
+                            if (total > maxEntryBytes) return@withContext null
+                            output.write(buffer, 0, count)
+                        }
+                    }
+                }
+                if (total == 0L) return@withContext null
                 val file = File(directory, fileName(scopeKey, candidate.page.pageId))
-                file.writeBytes(bytes)
+                if (file.isFile) return@withContext file
+                if (!temporary.renameTo(file)) return@withContext null
                 file
-            }.getOrNull()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                null
+            } finally {
+                temporary.delete()
+            }
         }
 
     /** 超出总量上限时按"最早写入"淘汰到上限以下。 */
@@ -174,9 +199,15 @@ class PagePrefetcher(
             if (total <= maxBytes) break
             val length = file.length()
             if (file.delete()) {
-                entries.remove(file.name)
+                removeEntryFor(file)
                 total -= length
             }
+        }
+    }
+
+    private fun removeEntryFor(file: File) {
+        entries.forEach { (pageId, cached) ->
+            if (cached == file) entries.remove(pageId, cached)
         }
     }
 

@@ -2,24 +2,39 @@ package com.lmreader.ui.reader
 
 import android.graphics.BitmapFactory
 import android.graphics.PointF
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.background
+import androidx.compose.material3.Button
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.doOnLayout
 import com.davemorrissey.labs.subscaleview.ImageSource
 import com.davemorrissey.labs.subscaleview.SubsamplingScaleImageView
 import com.lmreader.core.model.ImageScaleType
 import com.lmreader.core.model.ReaderSettings
+import com.lmreader.core.model.ReaderTheme
 import com.lmreader.core.model.ZoomStart
 import com.lmreader.core.storage.reader.PageSource
 import com.lmreader.core.storage.reader.ReaderPage
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * 一页的渲染视口：由 Mihon 使用的图片引擎承担缩放、平移、分块解码与裁白边。
@@ -60,38 +75,72 @@ internal fun EnginePageView(
     /** 页面字节的预取缓存；命中时不必再过一次 SAF。 */
     prefetcher: PagePrefetcher? = null,
 ) {
+    val latestSettings by rememberUpdatedState(settings)
+    val latestLongPress by rememberUpdatedState(onLongPress)
     // 视图实例随页面身份重建：库内部持有解码状态与瓦片缓存，复用实例会让上一页的
     // 缩放位置与瓦片残留到下一页（Mihon 在 `ReaderPageImageView.recycle()` 里显式清理
     // 同一个实例，我们选择更简单且不会串页的做法）。
-    var view by remember(page.pageId) {
+    var retryAttempt by remember(page.pageId) { mutableIntStateOf(0) }
+    var view by remember(page.pageId, retryAttempt) {
         mutableStateOf<TapAwareSubsamplingImageView?>(null)
     }
-    var decodeFailed by remember(page.pageId) { mutableStateOf(false) }
+    var decodeFailed by remember(page.pageId, retryAttempt) { mutableStateOf(false) }
 
-    AndroidView(
+    Box(modifier = modifier.fillMaxSize()) {
+        key(page.pageId, retryAttempt) { AndroidView(
         factory = { context ->
             TapAwareSubsamplingImageView(
                 context = context,
                 onSingleTap = onSingleTap,
-                onLongPress = onLongPress,
+                onLongPress = { latestLongPress?.invoke() },
             ).also { created ->
                 // 解码完成之前视图是"什么都没有"，而分页器在滑动过程中就会把它画出来。
                 // 不给底色的话，那一瞬间看到的是**下层内容透出来**（看起来就是"闪一下"）。
                 // 给一个与阅读背景同色的不透明底色，同一帧里就是一块纯色，而不是穿帮。
-                created.setBackgroundColor(android.graphics.Color.BLACK)
-                configure(created, settings, onReady = { onReady() }, onError = { decodeFailed = true })
+                created.setBackgroundColor(settings.theme.engineBackgroundColor())
+                configure(created, settings, onReady = {
+                    applyZoomStart(created, latestSettings)
+                    onReady()
+                }, onError = { decodeFailed = true })
                 view = created
             }
         },
-        modifier = modifier.fillMaxSize(),
+        modifier = Modifier.fillMaxSize(),
         // 等布局完成再载图。
         //
         // 尺寸为 0 时 `setImage` 的行为不可预期：真机日志里出现过
         // `setImage: 001.jpg view=0x0`，而库的瓦片初始化依赖视图尺寸。
         // 在那之前载图既可能白跑一次（随后尺寸变化还要重来），也是"同一页被解码
         // 多次"的一个来源，而每次解码都要一整张图的 ByteBuffer（见下）。
-        update = { created -> view = created },
-    )
+        update = { created ->
+            created.setBackgroundColor(settings.theme.engineBackgroundColor())
+            view = created
+        },
+    ) }
+        if (decodeFailed) {
+            Column(
+                modifier = Modifier.align(Alignment.Center)
+                    .background(Color.Black.copy(alpha = 0.85f))
+                    .padding(16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text("图片加载失败", color = Color.White)
+                Button(onClick = { retryAttempt++ }) { Text("重试") }
+            }
+        }
+    }
+
+    LaunchedEffect(view, settings.imageScaleType, settings.effectiveCropBorders,
+        settings.doubleTapAnimMillis, settings.zoomStart, settings.readingMode,
+        settings.webtoonDisableZoomOut) {
+        view?.let { target ->
+            target.setMinimumScaleType(settings.imageScaleType.toLibraryScaleType())
+            if (target.isReady) applyWebtoonMinimumScale(target, settings)
+            target.setCropBorders(settings.effectiveCropBorders)
+            target.setDoubleTapZoomDuration(settings.doubleTapAnimMillis.coerceAtLeast(1))
+            applyZoomStart(target, settings)
+        }
+    }
 
     // 载入这一页的图像流。
     //
@@ -101,22 +150,25 @@ internal fun EnginePageView(
     // 2. **同一页只 setImage 一次**：见下面关于"整图解码"的说明。
     //
     // 流在协程里先准备好，布局回调只负责 `setImage`。
-    LaunchedEffect(page.pageId, source, prefetcher) {
+    LaunchedEffect(page.pageId, source, prefetcher, retryAttempt, view) {
         val target = view ?: return@LaunchedEffect
         decodeFailed = false
-        val imageSource = runCatching { buildImageSource(source, page, prefetcher) }.getOrNull()
+        val imageSource = withContext(Dispatchers.IO) {
+            runCatching { buildImageSource(source, page, prefetcher) }.getOrNull()
+        }
         if (imageSource == null) {
             decodeFailed = true
             return@LaunchedEffect
         }
         target.doOnLayout {
+            if (view !== target) return@doOnLayout
             if (target.getTag(IMAGE_LOADED_TAG) == page.pageId) return@doOnLayout
             target.setTag(IMAGE_LOADED_TAG, page.pageId)
             target.setImage(imageSource)
         }
     }
 
-    DisposableEffect(page.pageId) {
+    DisposableEffect(view) {
         val target = view
         onDispose {
             // 清理顺序有讲究：先摘监听器，再 recycle。
@@ -128,9 +180,15 @@ internal fun EnginePageView(
             target?.setOnImageEventListener(null)
             target?.setTag(IMAGE_LOADED_TAG, null)
             target?.recycle()
-            view = null
+            if (view === target) view = null
         }
     }
+}
+
+private fun ReaderTheme.engineBackgroundColor(): Int = when (this) {
+    ReaderTheme.WHITE -> android.graphics.Color.WHITE
+    ReaderTheme.GRAY -> android.graphics.Color.rgb(48, 48, 48)
+    ReaderTheme.BLACK, ReaderTheme.AUTO -> android.graphics.Color.BLACK
 }
 
 /** 标记"这一页已经载图"，防止重组时重复整图解码。见上面的载图分支。 */
@@ -207,34 +265,39 @@ private suspend fun buildImageSource(
         return ImageSource.inputStream(raw)
     }
 
-    var sample = 1
-    while (longest / (sample * 2) >= MAX_ENGINE_LONG_EDGE) sample *= 2
+    val sample = sampleSizeForEdge(longest, MAX_ENGINE_LONG_EDGE)
     val options = BitmapFactory.Options().apply { inSampleSize = sample }
     val sampled = runCatching {
         source.open(page).use { BitmapFactory.decodeStream(it, null, options) }
-    }.getOrNull() ?: run {
-        val raw = runCatching { source.open(page) }.getOrNull() ?: return null
-        return ImageSource.inputStream(raw)
-    }
+    }.getOrNull() ?: return null
 
     // 立刻把降采样后的位图编成流并回收：库后面会自己再解一次流，
     // 因此这里不能把位图留着，否则峰值变成"位图 + 库的整图解码"两份。
     val bytes = runCatching {
         java.io.ByteArrayOutputStream().use { buffer ->
-            sampled.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, buffer)
+            if (!sampled.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, buffer)) {
+                return@runCatching null
+            }
             buffer.toByteArray()
         }
     }.getOrNull()
     sampled.recycle()
-    if (bytes == null) {
-        val raw = runCatching { source.open(page) }.getOrNull() ?: return null
-        return ImageSource.inputStream(raw)
-    }
+    if (bytes == null) return null
     return ImageSource.provider { java.io.ByteArrayInputStream(bytes) }
 }
 
 /** 交给引擎前允许的最长边；超过则按 2 的幂降采样。见 [buildImageSource]。 */
 private const val MAX_ENGINE_LONG_EDGE = 3000
+
+/** 取最小的 2 次幂，让最长边降到上限以内。 */
+internal fun sampleSizeForEdge(longest: Int, maximum: Int): Int {
+    if (longest <= 0 || maximum <= 0) return 1
+    var sample = 1
+    while (longest.toLong() > maximum.toLong() * sample && sample <= Int.MAX_VALUE / 2) {
+        sample *= 2
+    }
+    return sample
+}
 
 /**
  * 应用与 Mihon 同源的引擎配置。
@@ -272,6 +335,7 @@ private fun configure(
                 val base = view.scale
                 view.maxScale = base * MAX_ZOOM_SCALE
                 view.setDoubleTapZoomScale(base * DOUBLE_TAP_ZOOM_FACTOR)
+                applyWebtoonMinimumScale(view, settings)
                 applyZoomStart(view, settings)
 
                 onReady()
@@ -282,6 +346,16 @@ private fun configure(
             }
         },
     )
+}
+
+private fun applyWebtoonMinimumScale(view: SubsamplingScaleImageView, settings: ReaderSettings) {
+    if (!settings.readingMode.continuous || !settings.webtoonDisableZoomOut) return
+    // 自定义最小缩放取当前“适应宽度”比例；否则 setMinScale 对内建缩放类型不生效。
+    val fitWidth = view.minScale
+    if (fitWidth > 0f && fitWidth.isFinite()) {
+        view.setMinScale(fitWidth)
+        view.setMinimumScaleType(SubsamplingScaleImageView.SCALE_TYPE_CUSTOM)
+    }
 }
 
 
