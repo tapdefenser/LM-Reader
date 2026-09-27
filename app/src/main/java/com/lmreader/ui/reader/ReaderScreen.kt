@@ -124,7 +124,7 @@ fun ReaderScreen(
                 Key.VolumeUp -> state.settings.volumeKeysInverted
                 else -> return@onPreviewKeyEvent false
             }
-            viewModel.turnPage(if (forward) 1 else -1)
+            viewModel.move(if (forward) 1 else -1)
             true
         }
     } else {
@@ -227,11 +227,11 @@ private fun ReaderChrome(
             if (!state.chromeVisible &&
                 state.settings.showPageNumber &&
                 state.error == null &&
-                state.currentPages.isNotEmpty()
+                state.currentPageCount > 0
             ) {
                 PageIndicator(
-                    current = displayPageNumber(state.localPageIndex, state.currentPages.size),
-                    total = state.currentPages.size,
+                    current = displayPageNumber(state.localPageIndex ?: 0, state.currentPageCount),
+                    total = state.currentPageCount,
                     modifier = Modifier.align(Alignment.BottomCenter),
                 )
             }
@@ -267,7 +267,7 @@ private fun ReaderContent(
 
         state.items.isNotEmpty() -> {
             // 换章必须重建阅读组件：分页器实例、滚动位置与条带页高缓存都与章节绑定。
-            key(state.currentChapter?.chapterId, state.readingMode) {
+            key(state.chapters?.currentChapterId, state.readingMode) {
                 if (state.isContinuous) {
                     StripReader(
                         items = state.items,
@@ -278,7 +278,7 @@ private fun ReaderContent(
                         onPageHeightMeasured = viewModel::onPageHeightMeasured,
                         measureHeightDp = measureHeightDp,
                         onTap = viewModel::onTap,
-                        onTransitionAction = viewModel::retryNeighbor,
+                        onTransitionAction = { viewModel.retryFailedChapters() },
                         prefetcher = prefetcher,
                         onScrollDelta = { delta ->
                             // 只在控制栏可见时判断，避免已在隐藏状态下反复调用。
@@ -297,7 +297,7 @@ private fun ReaderContent(
                         currentIndex = state.currentPageIndex,
                         onItemSettled = viewModel::onItemSettled,
                         onTap = viewModel::onTap,
-                        onTransitionAction = viewModel::retryNeighbor,
+                        onTransitionAction = { viewModel.retryFailedChapters() },
                         prefetcher = prefetcher,
                         modifier = Modifier.fillMaxSize(),
                     )
@@ -374,18 +374,22 @@ private fun ReaderBottomBar(
     onOpenSettings: () -> Unit,
     modifier: Modifier,
 ) {
-    val pageCount = state.currentPages.size
-    var sliderValue by remember(state.currentChapter?.chapterId) {
-        mutableFloatStateOf(pageFraction(state.localPageIndex, pageCount))
+    val pageCount = state.currentPageCount
+    // 过渡页上"页码相关的一律置零置灰"（用户要求）：滑杆显示 0/0 且不可拖，
+    // 页码文字隐藏。过渡页本身没有任何按钮——它就是夹在中间的一张图。
+    val onTransition = state.currentItemIsTransition
+    val localPage = state.localPageIndex
+    var sliderValue by remember(state.chapters?.currentChapterId) {
+        mutableFloatStateOf(pageFraction(localPage ?: 0, pageCount))
     }
-    LaunchedEffect(state.localPageIndex, pageCount) {
-        sliderValue = pageFraction(state.localPageIndex, pageCount)
+    LaunchedEffect(localPage, pageCount, onTransition) {
+        sliderValue = if (onTransition) 0f else pageFraction(localPage ?: 0, pageCount)
     }
     Surface(color = Color.Black.copy(alpha = 0.76f), modifier = modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                // 贴屏幕底边会被系统导航栏/手势条压住：模式 chip 恰好落在手势区内，
+                // 贴屏幕底边会被系统导航栏/手势条压住：按钮恰好落在手势区内，
                 // 点它反而触发"回到桌面"。必须留出导航栏高度。
                 .windowInsetsPadding(WindowInsets.navigationBars)
                 .padding(horizontal = 16.dp, vertical = 10.dp),
@@ -398,15 +402,18 @@ private fun ReaderBottomBar(
                 },
                 valueRange = 0f..1f,
                 // 页数不足两页时滑杆没有可移动区间，禁用而不是让 steps 变成负数
-                // （早前真机因为 -1 上限崩溃过）。
-                enabled = pageCount > 1,
+                // （早前真机因为 -1 上限崩溃过）。过渡页上同样禁用。
+                enabled = pageCount > 1 && !onTransition,
             )
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                IconButton(onClick = viewModel::openPreviousChapter, enabled = state.hasPreviousChapter) {
+                IconButton(
+                    onClick = { viewModel.jumpToAdjacentChapter(forward = false) },
+                    enabled = state.hasPreviousChapter,
+                ) {
                     Icon(
                         Icons.AutoMirrored.Filled.KeyboardArrowLeft,
                         contentDescription = "上一章",
@@ -414,10 +421,14 @@ private fun ReaderBottomBar(
                     )
                 }
                 Text(
-                    "${displayPageNumber(state.localPageIndex, pageCount)} / $pageCount",
-                    color = Color.White,
+                    // 过渡页上不显示页码：它不属于任何一页。
+                    text = if (onTransition) "0 / 0" else "${displayPageNumber(localPage ?: 0, pageCount)} / $pageCount",
+                    color = if (onTransition) Color.Gray else Color.White,
                 )
-                IconButton(onClick = viewModel::openNextChapter, enabled = state.hasNextChapter) {
+                IconButton(
+                    onClick = { viewModel.jumpToAdjacentChapter(forward = true) },
+                    enabled = state.hasNextChapter,
+                ) {
                     Icon(
                         Icons.AutoMirrored.Filled.KeyboardArrowRight,
                         contentDescription = "下一章",

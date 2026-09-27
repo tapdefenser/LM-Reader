@@ -69,7 +69,7 @@ internal object ReaderSettingsCodec {
         putFlag(KEY_SHOW_PAGE_NUMBER, settings.showPageNumber, defaults.showPageNumber)
         putFlag(KEY_FULLSCREEN, settings.fullscreen, defaults.fullscreen)
         putFlag(KEY_KEEP_SCREEN_ON, settings.keepScreenOn, defaults.keepScreenOn)
-        putFlag(KEY_ALWAYS_TRANSITION, settings.pauseOnChapterTransition, defaults.pauseOnChapterTransition)
+        putFlag(KEY_ALWAYS_TRANSITION, settings.showChapterTransitions, defaults.showChapterTransitions)
         put(KEY_PRELOAD_PAGES, settings.preloadPages.toString(), defaults.preloadPages.toString())
         putFlag(KEY_OVERLAY_ON_START, settings.showTapZoneOverlayOnStart, defaults.showTapZoneOverlayOnStart)
         putFlag(KEY_OVERLAY_ONCE, settings.showTapZoneOverlayOnce, defaults.showTapZoneOverlayOnce)
@@ -131,10 +131,10 @@ internal object ReaderSettingsCodec {
             showPageNumber = readFlag(fields, KEY_SHOW_PAGE_NUMBER, defaults.showPageNumber),
             fullscreen = readFlag(fields, KEY_FULLSCREEN, defaults.fullscreen),
             keepScreenOn = readFlag(fields, KEY_KEEP_SCREEN_ON, defaults.keepScreenOn),
-            pauseOnChapterTransition = readFlag(
+            showChapterTransitions = readFlag(
                 fields,
                 KEY_ALWAYS_TRANSITION,
-                defaults.pauseOnChapterTransition,
+                defaults.showChapterTransitions,
             ),
             preloadPages = fields[KEY_PRELOAD_PAGES]?.toIntOrNull()
                 ?.coerceIn(ReaderSettings.PRELOAD_PAGES_MIN, ReaderSettings.PRELOAD_PAGES_MAX)
@@ -188,9 +188,9 @@ internal object ReaderSettingsCodec {
     private const val KEY_KEEP_SCREEN_ON = "keepScreenOn"
     private const val KEY_ALWAYS_TRANSITION = "alwaysTransition"
     /**
-     * 键名沿用 `alwaysTransition`：它是**旧语义**（是否插入过渡项）的持久化契约。
-     * 插入现在是必须的，这个布尔被重新解释为"到达过渡页后停不停"，因此老用户
-     * 显式设过的值仍然有意义（当时关掉它的人现在得到"不停"）。
+     * 键名沿用 `alwaysTransition`：它是这个开关最早的持久化契约（当时的语义是"是否插入
+     * 过渡项"，中间一度被解释为"到达后停不停"，现在回到"是否插入"）。因此老用户显式
+     * 设过的值一直有意义，不需要迁移。
      */
     private const val KEY_PRELOAD_PAGES = "preloadPages"
     private const val KEY_OVERLAY_ON_START = "overlayOnStart"

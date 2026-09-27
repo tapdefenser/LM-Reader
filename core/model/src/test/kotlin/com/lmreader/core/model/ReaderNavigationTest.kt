@@ -301,7 +301,7 @@ class ReaderNavigationTest {
         assertTrue(settings.showPageNumber)
         assertTrue(settings.fullscreen)
         assertFalse(settings.keepScreenOn)
-        assertTrue(settings.pauseOnChapterTransition)
+        assertTrue(settings.showChapterTransitions)
         assertEquals(ReaderSettings.PRELOAD_PAGES_DEFAULT, settings.preloadPages)
         assertFalse(settings.grayscale)
         assertFalse(settings.invertedColors)

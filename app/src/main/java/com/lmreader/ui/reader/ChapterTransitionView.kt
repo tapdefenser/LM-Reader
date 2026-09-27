@@ -28,23 +28,31 @@ import com.lmreader.core.model.ReaderSettings
 /**
  * 章节过渡页（Mihon `ChapterTransition` + `PagerTransitionHolder` / `ReaderTransitionView`）。
  *
- * ## 它解决什么问题
+ * ## 它是什么
  *
- * 分页阅读器到了末页**不跨章翻页**——跨界的表达方式就是这一页。读者翻过它进入下一章，
- * 于是"多章节连续读"有了明确的落点；同时它也是预载失败的落点，可以在原地显示原因与
- * 重试，而不是把读者丢回上一页。
+ * 夹在两章之间的一张"图"。它在项列表里**占一格**，和普通页面没有本质区别——只是显示
+ * 的不是图片而是"已读完哪一章 / 下面是哪一章"。因此从上一章末页到下一章首页要翻**两次**，
+ * 这是设计意图（用户明确要求）；想一次翻过去就在设置里关掉「章节过渡页」。
  *
- * ## 与 Mihon 的两处对齐细节
+ * 它同时也是预载失败的落点：可以在原地显示原因与重试，而不是把读者丢回上一页。
  *
- * 1. **没有目标章节时仍然显示过渡页**，文案是"已是最后一章"。Mihon 在列表端点同样插入
- *    过渡项（`to == null`），这是"到底了"的明确表达，不是错误状态。
- * 2. **过渡页永远可见**。上一版在"关闭始终显示过渡页"时会让已加载的相邻章直接接页，
- *    但预载窗口现在可以有很多章，读者根本无从判断某一章是"作品本来就到这"还是
- *    "还有更多但没预载"。因此改为总是显示，`pauseOnChapterTransition` 只决定到达之后
- *    停不停。
+ * ## 它没有方向
+ *
+ * 往前翻会遇到它、往后翻会遇到同一个它（[ReaderItem.Transition] 里没有 `forward`）。
+ * 它不表达"正在进入下一章"这个动作，只表达"这里是前一章与后一章之间"。
+ *
+ * ## 与 Mihon 的对齐
+ *
+ * **没有目标章节时仍然显示过渡页**，文案是"已是最后一章"。Mihon 在列表端点同样插入
+ * 过渡项（`to == null`），这是"到底了"的明确表达，不是错误状态。
+ *
+ * ## 它没有按钮
+ *
+ * 用户明确要求：过渡页上没有任何按钮，它就是一张正常的图。因此这里不含任何操作入口
+ * （除了载入失败时的重试）；页码相关的控件由 [ReaderBottomBar] 置零置灰。
  *
  * 未实现（记录在此以免被当成遗漏）：Mihon 的完整版还在这里显示章节下载按钮、
- * 页码范围与封面缩略图。本项目没有下载子系统，因此只保留标题、状态与重试。
+ * 页码范围与封面缩略图。本项目没有下载子系统，因此只保留标题与状态。
  */
 @Composable
 internal fun ChapterTransitionView(
@@ -54,6 +62,7 @@ internal fun ChapterTransitionView(
     onTap: (x: Float, y: Float) -> Unit,
 ) {
     val target = transition.to
+    val source = transition.from
 
     Box(
         modifier = Modifier
@@ -68,17 +77,23 @@ internal fun ChapterTransitionView(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
         ) {
-            val heading = when {
-                target == null && transition.forward -> "已是最后一章"
-                target == null -> "已是第一章"
-                transition.forward -> "下一章"
-                else -> "上一章"
-            }
+            val heading = if (target == null) "已是最后一章" else "下一章"
             Text(
                 text = heading,
                 color = Color.White.copy(alpha = 0.7f),
                 style = MaterialTheme.typography.labelLarge,
             )
+
+            // 显示"已读完哪一章 → 下面是哪一章"，让读者一眼看出中间夹了什么。
+            if (source != null) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = "已读完 ${source.title}",
+                    color = Color.White.copy(alpha = 0.5f),
+                    style = MaterialTheme.typography.bodySmall,
+                    textAlign = TextAlign.Center,
+                )
+            }
 
             if (target != null) {
                 Spacer(Modifier.height(8.dp))
@@ -92,7 +107,7 @@ internal fun ChapterTransitionView(
 
             Spacer(Modifier.height(24.dp))
             when (target?.state) {
-                ViewerChapter.LoadState.LOADING, ViewerChapter.LoadState.WAITING -> {
+                ViewerChapter.LoadState.LOADING -> {
                     CircularProgressIndicator(modifier = Modifier.size(28.dp))
                     Spacer(Modifier.height(12.dp))
                     Text(
@@ -112,18 +127,7 @@ internal fun ChapterTransitionView(
                     OutlinedButton(onClick = onRetry) { Text("重试") }
                 }
 
-                ViewerChapter.LoadState.Loaded, null -> {
-                    // 加载完了但用户要求始终显示过渡：给一个可点的前进提示，
-                    // 否则这一页看起来像死路。
-                    if (transition.forward) {
-                        Text(
-                            text = "继续滑动进入下一章",
-                            color = Color.White.copy(alpha = 0.6f),
-                            style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.clickable { onRetry() },
-                        )
-                    }
-                }
+                ViewerChapter.LoadState.Loaded, null -> Unit
             }
         }
     }

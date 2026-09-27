@@ -78,7 +78,7 @@ class ReaderSettingsCodecTest {
             ReaderSettings(showPageNumber = false),
             ReaderSettings(fullscreen = false),
             ReaderSettings(keepScreenOn = true),
-            ReaderSettings(pauseOnChapterTransition = false),
+            ReaderSettings(showChapterTransitions = false),
             ReaderSettings(preloadPages = 0),
             ReaderSettings(preloadPages = 40),
             ReaderSettings(showTapZoneOverlayOnStart = true),
@@ -125,7 +125,7 @@ class ReaderSettingsCodecTest {
             showPageNumber = false,
             fullscreen = false,
             keepScreenOn = true,
-            pauseOnChapterTransition = false,
+            showChapterTransitions = false,
             preloadPages = 25,
             showTapZoneOverlayOnStart = true,
             showTapZoneOverlayOnce = false,
@@ -149,7 +149,7 @@ class ReaderSettingsCodecTest {
             webtoonDoubleTapZoom = false,
             showPageNumber = false,
             fullscreen = false,
-            pauseOnChapterTransition = false,
+            showChapterTransitions = false,
             showReadingMode = false,
         )
 
@@ -164,7 +164,7 @@ class ReaderSettingsCodecTest {
         assertFalse(decoded.webtoonDoubleTapZoom)
         assertFalse(decoded.showPageNumber)
         assertFalse(decoded.fullscreen)
-        assertFalse(decoded.pauseOnChapterTransition)
+        assertFalse(decoded.showChapterTransitions)
         assertFalse(decoded.showReadingMode)
     }
 

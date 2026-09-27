@@ -267,12 +267,12 @@ private fun GeneralPage(settings: ReaderSettings, onUpdate: ((ReaderSettings) ->
 
     Spacer(Modifier.height(20.dp))
     SectionTitle("章节")
-    ToggleRow("翻到过渡页时停住", settings.pauseOnChapterTransition) { value ->
-        onUpdate { it.copy(pauseOnChapterTransition = value) }
+    ToggleRow("显示章节过渡页", settings.showChapterTransitions) { value ->
+        onUpdate { it.copy(showChapterTransitions = value) }
     }
     Text(
-        text = "开启时翻到「下一章」那一页会停下，再翻一次才进入下一章；关闭时自动推进，" +
-            "少翻一次但不容易看出自己换了章。",
+        text = "过渡页是夹在两章之间的一张「图」，在列表里占一格，因此从上一章末页到下一章" +
+            "首页要翻两次。关掉它两章直接相接，一次翻页就过去。",
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
