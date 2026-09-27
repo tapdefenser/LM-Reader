@@ -638,8 +638,20 @@ class ReaderViewModel(
         _state.update { it.copy(currentPageIndex = absoluteIndex) }
         val target = item.to
         when {
-            // 章节目录端点：停在这里就好。
             target == null -> Unit
+
+            // 反向过渡（本章与前一个边界）：它排在当前章**页之前**，是列表最靠前的位置，
+            // 再往回翻不会越界（下标 0 仍在范围内），因此**不能**在这里停住让读者再翻一次——
+            // 那样读者会永远卡在这一页上。真机上就是这个症状：一直显示"上一章"而翻不动。
+            !item.forward -> if (target.isUsable) {
+                promoteChapter(
+                    chapterId = target.chapterId,
+                    landingPage = target.pages.last(),
+                    from = null,
+                )
+            } else {
+                retryNeighborIfFailed(item)
+            }
 
             snapshot.settings.pauseOnChapterTransition -> retryNeighborIfFailed(item)
 

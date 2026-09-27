@@ -96,7 +96,13 @@ internal fun PagerReader(
         }
     }
     // 外部位置变化（点按翻页、滑杆、恢复进度、换章落点）驱动分页器滚动。
-    LaunchedEffect(currentIndex, items.size) {
+    //
+    // key 用**当前位置的项身份**，而不是"下标 + 项数"。窗口重排会让某一项的下标变而
+    // 项数不变（提升章节后当前章页面从下标 9 变到 1 就是这种），只盯项数的话不会触发
+    // 归位，分页器就停在旧下标上——那个下标现在指向另一页，于是"往回翻"跳到不相干的
+    // 位置，而状态机仍认为自己在原处。真机上表现为往回翻时乱跳。
+    val positionKey = items.getOrNull(currentIndex.coerceIn(items.indices))?.key
+    LaunchedEffect(positionKey) {
         val target = currentIndex.coerceIn(items.indices)
         if (!pagerState.isScrollInProgress && pagerState.currentPage != target) {
             suppressSettleFrom = target
