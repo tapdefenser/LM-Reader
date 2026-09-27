@@ -270,27 +270,14 @@ private fun GeneralPage(settings: ReaderSettings, onUpdate: ((ReaderSettings) ->
     ToggleRow("显示章节过渡页", settings.showChapterTransitions) { value ->
         onUpdate { it.copy(showChapterTransitions = value) }
     }
-    Text(
-        text = "过渡页是夹在两章之间的一张「图」，在列表里占一格，因此从上一章末页到下一章" +
-            "首页要翻两次。关掉它两章直接相接，一次翻页就过去。",
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
     Spacer(Modifier.height(12.dp))
     LabeledSlider(
         label = "预载页数",
         value = settings.preloadPages.toFloat(),
         range = ReaderSettings.PRELOAD_PAGES_MIN.toFloat()..ReaderSettings.PRELOAD_PAGES_MAX.toFloat(),
         steps = (ReaderSettings.PRELOAD_PAGES_MAX - ReaderSettings.PRELOAD_PAGES_MIN - 1).coerceAtLeast(0),
-        display = if (settings.preloadPages == 0) "不预载" else "${settings.preloadPages} 页",
+        display = "${settings.preloadPages} 页",
     ) { value -> onUpdate { it.copy(preloadPages = value.toInt()) } }
-    Text(
-        text = "按阅读顺序往后预读这么多页的图片字节，翻页时不必现读。" +
-            "章节过渡页也算一页，因此后一章比预算短时会继续往后预载一章" +
-            "（预算 9 页而后一章只有 2 页时，会再要一章）。0 表示不预载。",
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
 }
 
 /**

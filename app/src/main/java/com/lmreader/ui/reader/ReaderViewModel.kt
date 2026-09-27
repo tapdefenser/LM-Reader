@@ -233,17 +233,23 @@ class ReaderViewModel(
     ): PreloadPlan {
         val currentIndex = list.indexOfFirst { it.chapterId == currentChapterId }
         if (currentIndex < 0) return PreloadPlan.EMPTY
+        val budgets = prefetchBudget(settings.preloadPages)
         val base = PreloadPlan.compute(
             chapterCount = list.size,
             currentIndex = currentIndex,
-            budget = settings.preloadPages,
+            budget = budgets.forward,
             maxChapters = MAX_PRELOAD_CHAPTERS_PER_SIDE,
+            // 往前读的预算略多于往后：凑整时余数给"往前"，因为往前读的第一步
+            // 往往要先跨一个过渡页（见 [prefetchBudget]）。
+            backBudget = budgets.backward,
             pagesOf = { index ->
                 list.getOrNull(index)?.let { record ->
                     loaded[record.chapterId]?.pages?.size?.takeIf { size -> size > 0 }
                 }
             },
         )
+        // 边界章：规划覆盖不到的那一章正好是"下一步需要知道页数"的那一章。
+        // 它必须一并加载，否则它的页数永远未知、窗口再也长不起来。
         val next = base.nextIndices.toMutableList()
         val previous = base.previousIndices.toMutableList()
         val nextFrontier = (next.lastOrNull() ?: currentIndex) + 1
@@ -256,6 +262,33 @@ class ReaderViewModel(
         }
         return PreloadPlan(previousIndices = previous, nextIndices = next)
     }
+
+    /**
+     * 把「预载页数」拆成往后读与往前读两份预算。
+     *
+     * ## 为什么往前也要预载
+     *
+     * 预载的**价值在于"从哪一页打开"**，而不只是"往后读到哪"。读者从第 37 页打开、
+     * 或者看了一会儿想往回翻，此时前面几页若没预读就要现等——那与他从第 1 页开始读
+     * 时的体验不一致。因此预算对半分，两侧都覆盖。
+     *
+     * ## 边界情况
+     *
+     * - **预算 9 → 往后 4、往前 5。** 余数给"往前"是因为往前读的第一步常常要先跨一个
+     *   **过渡页**（它占一格）。从某章第一页打开时：往前 5 格 = 1 个过渡页 + 上一章末尾
+     *   **4 页**，覆盖了"至少要看到上一章最后几页"这个需求。
+     * - 从第 1 页打开：往前没有内容，`PreloadPlan` 取不到更早的章，于是这份预算自然落空，
+     *   往后仍然是 4 页。**不会**因为往前没东西就把预算挪过去——那会让"预载 9"在首页
+     *   表现出 9 页、在第 37 页表现出 4 页，行为不可预测。
+     * - 预算 2 → 往后 1、往前 1：下限保证"往后翻一页"永远不用现读。
+     */
+    private fun prefetchBudget(total: Int): PrefetchBudget = PrefetchBudget(
+        forward = total / 2,
+        backward = total - total / 2,
+    )
+
+    /** 两侧各自的预载预算（格数，过渡页也算一格）。 */
+    private data class PrefetchBudget(val forward: Int, val backward: Int)
 
     /**
      * 需要加载的章：规划覆盖的章 **加上** 一格边界章。
@@ -439,7 +472,18 @@ class ReaderViewModel(
     // ------------------------------------------------------------ 预取页字节
 
     /**
-     * 把当前页附近 [ReaderSettings.preloadPages] 页的**图片字节**提前读进磁盘缓存。
+     * 把当前页**前后各** [PrefetchBudget] 格之内的**图片字节**提前读进磁盘缓存。
+     *
+     * ## 为什么前后都要
+     *
+     * 预载的价值在于"从哪一页打开"：读者从第 37 页打开、或看了一会儿想往回翻，
+     * 前面几页若没预读就要现等，与他从第 1 页开始读的体验不一致。因此两侧用同一套
+     * 拆分（[prefetchBudget]），与窗口规划保持一致。
+     *
+     * ## 格数而不是页数
+     *
+     * 计数单位是**项**（含过渡页），与预算规则一致：过渡页也算一格，因为它翻过去也要
+     * 一瞬间。因此"从某章第一页往前 5 格"= 1 个过渡页 + 上一章末尾 4 页。
      *
      * 缓存只放磁盘、不放堆：真机上解码一页就已经吃过整图分配的亏（见 `ReaderImageView`），
      * 再往堆里压几页字节会把 OOM 重新引回来。
@@ -447,40 +491,45 @@ class ReaderViewModel(
     private fun warmPrefetch() {
         val prefetcher = prefetcher ?: return
         val snapshot = _state.value
-        val budget = snapshot.settings.preloadPages
-        if (budget <= 0) return
+        val budgets = prefetchBudget(snapshot.settings.preloadPages)
+        if (budgets.forward <= 0 && budgets.backward <= 0) return
         val chapters = snapshot.chapters ?: return
 
+        // 直接按项列表走：项序就是阅读顺序，因此"前 N 格 / 后 N 格"不需要再分章计算，
+        // 跨章与过渡页自动正确。
         val ahead = ArrayList<PrefetchCandidate>()
         val behind = ArrayList<PrefetchCandidate>()
-        val anchored = (snapshot.items.getOrNull(snapshot.currentPageIndex) as? ReaderItem.PageItem)
-            ?.takeIf { it.chapter.chapterId == chapters.currentChapterId }
-        val localOrdinal = anchored?.page?.ordinal ?: 0
+        var aheadSlots = budgets.forward
+        var behindSlots = budgets.backward
 
-        chapters.current.pages.forEach { page ->
-            when {
-                page.ordinal > localOrdinal -> ahead += PrefetchCandidate(page, chapters.current.source)
-                page.ordinal < localOrdinal -> behind += PrefetchCandidate(page, chapters.current.source)
+        for (index in snapshot.currentPageIndex + 1 until snapshot.items.size) {
+            if (aheadSlots <= 0) break
+            when (val item = snapshot.items[index]) {
+                // 过渡页占一格：翻到它也要一瞬间，所以它消耗预算。
+                is ReaderItem.Transition -> aheadSlots--
+                is ReaderItem.PageItem -> {
+                    ahead += PrefetchCandidate(item.page, item.chapter.source)
+                    aheadSlots--
+                }
             }
         }
-        behind.reverse()
-
-        // 当前页之后的项（含过渡页与后续章节的页），按列表顺序取前 budget 个。
-        for (index in snapshot.currentPageIndex + 1 until snapshot.items.size) {
-            if (ahead.size >= budget) break
-            val item = snapshot.items[index] as? ReaderItem.PageItem ?: continue
-            ahead += PrefetchCandidate(item.page, item.chapter.source)
-        }
         for (index in snapshot.currentPageIndex - 1 downTo 0) {
-            if (behind.size >= budget) break
-            val item = snapshot.items[index] as? ReaderItem.PageItem ?: continue
-            behind += PrefetchCandidate(item.page, item.chapter.source)
+            if (behindSlots <= 0) break
+            when (val item = snapshot.items[index]) {
+                is ReaderItem.Transition -> behindSlots--
+                is ReaderItem.PageItem -> {
+                    behind += PrefetchCandidate(item.page, item.chapter.source)
+                    behindSlots--
+                }
+            }
         }
-
+        // 当前章内、当前页之后的页也要覆盖：项列表里它们本来就在后面，上面两个循环
+        // 已经取到了；这里只处理"当前页本身位于过渡页上"的情形——那时 currentPageIndex
+        // 指向过渡项，它后面/前面第一次扫描就会取到两侧的页。
         prefetcher.request(
             scopeKey = prefetchScopeKey(snapshot),
-            ahead = ahead.take(budget),
-            behind = behind.take(budget),
+            ahead = ahead,
+            behind = behind,
         )
     }
 

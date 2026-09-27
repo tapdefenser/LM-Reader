@@ -212,6 +212,108 @@ class ReaderChaptersTest {
         )
     }
 
+    // ------------------------------------------------------------ 前后双向预载
+
+    /**
+     * 预算拆成"往后一半、往前多于一半"。余数给往前，因为往前读的第一步常常要先跨
+     * 一个过渡页（它占一格）。
+     *
+     * 每章 1 页时跨一章付 2 格，因此 4 格恰好拿到 2 章；往前 5 格在拿到 2 章后还剩
+     * 1 格，于是再收一章（"只够一格也要收"——见 `walk` 里的说明）。
+     */
+    @Test
+    fun `预算拆成往后一半往前多于一半`() {
+        val plan = PreloadPlan.compute(
+            chapterCount = 20,
+            currentIndex = 10,
+            budget = 4,
+            maxChapters = 5,
+            backBudget = 5,
+            pagesOf = { 1 },
+        )
+
+        assertEquals(listOf(11, 12), plan.nextIndices)
+        assertEquals(listOf(9, 8, 7), plan.previousIndices)
+    }
+
+    /**
+     * 用户点名的边界：**从某一章第一页打开**时，往前要能拿到上一章的末尾几页。
+     *
+     * 从第 2 章第 1 页打开时，往前的第 1 格是**过渡页**，再往前才是上一章的页。
+     * 预算 5 → 1（过渡页）+ 4 页，覆盖"至少看到上一章最后 3 页"。
+     */
+    @Test
+    fun `从某章第一页打开时往前会跨过过渡页拿到上一章`() {
+        // 第 1 章 76 页、第 2 章 54 页；当前在第 2 章（下标 1）。
+        val pages = mapOf(0 to 76, 1 to 54)
+        val plan = PreloadPlan.compute(
+            chapterCount = 2,
+            currentIndex = 1,
+            budget = 4,
+            maxChapters = 5,
+            backBudget = 5,
+            pagesOf = { pages[it] },
+        )
+
+        // 往前走的第一步要付 1（过渡页）+ 76 页 = 77 > 5，但预算仍 > 0，
+        // 因此上一章被收进窗口——**必须**是这样，否则从第 2 章第一页往回翻会撞到墙。
+        assertEquals(listOf(0), plan.previousIndices)
+        assertEquals(emptyList(), plan.nextIndices)
+    }
+
+    /**
+     * 从**第 1 页**打开时往前没有内容，往前那份预算自然落空，**不挪给往后**。
+     *
+     * 不挪的理由：否则"预载 9"在首页表现为 9 页、在第 37 页表现为 4 页，行为不可预测。
+     */
+    @Test
+    fun `首章首页往前无内容时往后预算不变`() {
+        val plan = PreloadPlan.compute(
+            chapterCount = 10,
+            currentIndex = 0,
+            budget = 4,
+            maxChapters = 5,
+            backBudget = 5,
+            pagesOf = { 1 },
+        )
+
+        assertEquals(emptyList(), plan.previousIndices)
+        // 往后仍是 4 格（每章 1 页 → 2 章），没有被往前那份预算放大。
+        assertEquals(listOf(1, 2), plan.nextIndices)
+    }
+
+    @Test
+    fun `末章时往后无内容往前仍按自己的预算取`() {
+        val plan = PreloadPlan.compute(
+            chapterCount = 10,
+            currentIndex = 9,
+            budget = 4,
+            maxChapters = 5,
+            backBudget = 5,
+            pagesOf = { 1 },
+        )
+
+        assertEquals(emptyList(), plan.nextIndices)
+        // 往前 5 格：每章 1 页付 2，拿两章后剩 1 格 → 再收一章。
+        assertEquals(listOf(8, 7, 6), plan.previousIndices)
+    }
+
+    @Test
+    fun `下限预算 2 时前后各一`() {
+        // 预载下限 2 → 往后 1、往前 1：保证"往后翻一页"永远不用现读。
+        val plan = PreloadPlan.compute(
+            chapterCount = 10,
+            currentIndex = 5,
+            budget = 1,
+            maxChapters = 5,
+            backBudget = 1,
+            pagesOf = { 1 },
+        )
+
+        assertEquals(listOf(4), plan.previousIndices)
+        assertEquals(listOf(6), plan.nextIndices)
+    }
+
     // ------------------------------------------------------------ 预载预算
 
     @Test

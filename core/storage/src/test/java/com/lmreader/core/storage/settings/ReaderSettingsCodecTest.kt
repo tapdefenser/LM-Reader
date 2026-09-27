@@ -79,8 +79,8 @@ class ReaderSettingsCodecTest {
             ReaderSettings(fullscreen = false),
             ReaderSettings(keepScreenOn = true),
             ReaderSettings(showChapterTransitions = false),
-            ReaderSettings(preloadPages = 0),
-            ReaderSettings(preloadPages = 40),
+            ReaderSettings(preloadPages = ReaderSettings.PRELOAD_PAGES_MIN),
+            ReaderSettings(preloadPages = ReaderSettings.PRELOAD_PAGES_MAX),
             ReaderSettings(showTapZoneOverlayOnStart = true),
             ReaderSettings(showTapZoneOverlayOnce = false),
             ReaderSettings(showReadingMode = false),
@@ -126,7 +126,7 @@ class ReaderSettingsCodecTest {
             fullscreen = false,
             keepScreenOn = true,
             showChapterTransitions = false,
-            preloadPages = 25,
+            preloadPages = 17,
             showTapZoneOverlayOnStart = true,
             showTapZoneOverlayOnce = false,
             showReadingMode = false,
@@ -263,6 +263,20 @@ class ReaderSettingsCodecTest {
         assertEquals(
             0,
             ReaderSettingsCodec.decode("brightnessValue=abc").customBrightnessValue,
+        )
+        // 预载页数上限 19、下限 2。下限不是 0：这是一个"读多少页之内不用等"的预算，
+        // 不是开关，至少 2 页才能保证"往后翻一页"不需要现读。
+        assertEquals(
+            ReaderSettings.PRELOAD_PAGES_MAX,
+            ReaderSettingsCodec.decode("preloadPages=999").preloadPages,
+        )
+        assertEquals(
+            ReaderSettings.PRELOAD_PAGES_MIN,
+            ReaderSettingsCodec.decode("preloadPages=0").preloadPages,
+        )
+        assertEquals(
+            ReaderSettings.PRELOAD_PAGES_DEFAULT,
+            ReaderSettingsCodec.decode("preloadPages=abc").preloadPages,
         )
     }
 

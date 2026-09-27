@@ -75,6 +75,10 @@ internal fun EnginePageView(
                 onSingleTap = onSingleTap,
                 onLongPress = onLongPress,
             ).also { created ->
+                // 解码完成之前视图是"什么都没有"，而分页器在滑动过程中就会把它画出来。
+                // 不给底色的话，那一瞬间看到的是**下层内容透出来**（看起来就是"闪一下"）。
+                // 给一个与阅读背景同色的不透明底色，同一帧里就是一块纯色，而不是穿帮。
+                created.setBackgroundColor(android.graphics.Color.BLACK)
                 configure(created, settings, onReady = { onReady() }, onError = { decodeFailed = true })
                 view = created
             }

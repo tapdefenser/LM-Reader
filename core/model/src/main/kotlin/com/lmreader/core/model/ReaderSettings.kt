@@ -287,11 +287,15 @@ data class ReaderSettings(
      */
     val showChapterTransitions: Boolean = true,
     /**
-     * 预载页数预算。
+     * 预载页数预算，默认 9。
      *
-     * 语义照用户的要求：从当前页往后数，凑够这么多页就停；**章节过渡页也算一页**。
-     * 因此预算 9 而下一章只有 2 页时会继续要再下一章，直到预算用完或没有更多章节。
-     * 0 表示不预载（窗口里只剩当前章）。
+     * 语义：以"当前页"为中心向两侧各预载，**章节过渡页也算一项**（它就是一张图）。
+     * 预算的前半用于往后读、后半用于往前读，因此从第 37 页打开时前后各有一段已经就绪，
+     * 往任一方向读都不会等。边界情况（从某章第一页打开时前半落在上一章末尾）见
+     * `ReaderViewModel.prefetchBudget`。
+     *
+     * 下限 2 而不是 0：这是一个"读多少页之内不用等"的预算，不是开关。至少 2 页才能保证
+     * "往后翻一页"不需要现读，那是最低限度的可用性。
      */
     val preloadPages: Int = PRELOAD_PAGES_DEFAULT,
     /** Mihon `reader_navigation_overlay_on_start`，默认 false。点按区域遮罩层。 */
@@ -334,9 +338,9 @@ data class ReaderSettings(
         /** [preloadPages] 的默认预算：一章的量级，够盖住一次翻页的等待。 */
         const val PRELOAD_PAGES_DEFAULT = 9
 
-        /** [preloadPages] 的上下限；0 表示不预载。 */
-        const val PRELOAD_PAGES_MIN = 0
-        const val PRELOAD_PAGES_MAX = 60
+        /** [preloadPages] 的上下限。下限 2 见字段说明；上限 19 让"两侧各 9 页"仍在合理范围。 */
+        const val PRELOAD_PAGES_MIN = 2
+        const val PRELOAD_PAGES_MAX = 19
     }
 }
 

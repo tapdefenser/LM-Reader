@@ -179,13 +179,16 @@ sealed interface ReaderItem {
 }
 
 /**
- * 预载窗口：当前章两侧各自要拿哪几章。
+ * 预载窗口：当前章前后各自要拿哪几章。
  *
  * ## 预算规则（用户定的）
  *
  * 「预载页数」默认 9。跨一章的代价 = **1 个过渡页 + 该章页数**——过渡页在阅读器里占一项，
  * 因此要算一页。预算耗尽即停。于是"预算 9 页而后一章只有 2 页"会得到 1 + 2 = 3，
  * 还剩 6 页，于是继续要下一章。
+ *
+ * 前后**各有独立预算**（[compute] 的 `budget` / `backBudget`）：预载的价值在于"从哪一页
+ * 打开"，读者从第 37 页打开时前后都该有内容，否则往回翻就要现等。
  *
  * 页数未知的章是**边界章**：它必须放进来并要求枚举一次，否则第一部打开的漫画会因为
  * "谁都不知道有几页"而把窗口算成空的，末页只能显示"已是最后一章"而后头还有几十章。
@@ -204,12 +207,13 @@ internal data class PreloadPlan(
             currentIndex: Int,
             budget: Int,
             maxChapters: Int,
+            backBudget: Int = budget,
             pagesOf: (Int) -> Int? = { null },
         ): PreloadPlan {
-            if (budget <= 0 || maxChapters <= 0 || chapterCount <= 0) return EMPTY
+            if (maxChapters <= 0 || chapterCount <= 0) return EMPTY
             if (currentIndex !in 0 until chapterCount) return EMPTY
             return PreloadPlan(
-                previousIndices = walk(chapterCount, currentIndex, budget, maxChapters, false, pagesOf),
+                previousIndices = walk(chapterCount, currentIndex, backBudget, maxChapters, false, pagesOf),
                 nextIndices = walk(chapterCount, currentIndex, budget, maxChapters, true, pagesOf),
             )
         }
@@ -223,6 +227,7 @@ internal data class PreloadPlan(
             pagesOf: (Int) -> Int?,
         ): List<Int> {
             val collected = ArrayList<Int>(maxChapters)
+            if (budget <= 0) return collected
             var remaining = budget
             var distance = 1
             while (collected.size < maxChapters) {

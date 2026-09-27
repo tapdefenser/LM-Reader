@@ -54,6 +54,15 @@ internal fun PagerReader(
     if (items.isEmpty()) return
     val horizontal = settings.readingMode.direction == ReadingDirection.HORIZONTAL
 
+    /**
+     * 视口外保留几页。
+     *
+     * 与「预载页数」挂钩：那个设置表达的是"我读多少页之内不想等"，因此它同时决定
+     * 预读多少**字节**（[com.lmreader.ui.reader.PagePrefetcher]）与保留多少**已解码的
+     * 页**。上限 2 是内存考量——每页解码后是整张位图，保留太多会把真机的 256MB 堆吃满。
+     */
+    val adjacentPagesAlive = (settings.preloadPages / 4).coerceIn(0, 2)
+
     // initialPage 只在首次组合时生效，因此换章与预载导致的下标平移要靠下面的
     // LaunchedEffect 同步。
     val pagerState = rememberPagerState(
@@ -136,10 +145,17 @@ internal fun PagerReader(
                 modifier = modifier,
                 // 右到左：索引更大的项排在左侧，与 Mihon 反转适配器列表等价。
                 reverseLayout = settings.readingMode.isRightToLeft,
-                // 0 而不是 Mihon 的 1：每一页都要解码成位图，相邻页同时存活会让
-                // 解码峰值翻倍，真机上已因此 OOM。代价是相邻页不预载，滑动时
-                // 多一次短暂占位。
-                beyondViewportPageCount = 0,
+                // 相邻页保持存活，否则会在"滑动结束的那一刻"闪一下。
+                //
+                // 成因：`0` 会在滑动过程中把相邻页的组合销毁。落页时 Compose 新建一个
+                // 引擎视图，而它的解码是异步的——于是有一帧什么都没有，看起来就是闪一下。
+                // 保留一页之后，相邻页在滑动期间就已经解码完成，落页直接是成品。
+                //
+                // 代价是同时最多解码 3 页。真机曾经因为同时存活两页 OOM 过，但那时是
+                // **整图 ARGB_8888 且没有降采样**；现在超过长边 3000 的页会先降采样
+                // （见 `ReaderImageView.buildImageSource`），因此这个数量是可承受的。
+                // 页数由「预载页数」控制，读者可以把内存换回速度。
+                beyondViewportPageCount = adjacentPagesAlive,
                 key = { items[it].key },
             ) { index -> renderItem(index) }
         } else {
