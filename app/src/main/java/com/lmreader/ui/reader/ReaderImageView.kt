@@ -34,7 +34,9 @@ import com.lmreader.core.model.ZoomStart
 import com.lmreader.core.storage.reader.PageSource
 import com.lmreader.core.storage.reader.ReaderPage
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import kotlin.math.abs
 
 /**
  * 一页的渲染视口：由 Mihon 使用的图片引擎承担缩放、平移、分块解码与裁白边。
@@ -85,6 +87,7 @@ internal fun EnginePageView(
         mutableStateOf<TapAwareSubsamplingImageView?>(null)
     }
     var decodeFailed by remember(page.pageId, retryAttempt) { mutableStateOf(false) }
+    var imageReady by remember(page.pageId, retryAttempt) { mutableStateOf(false) }
 
     Box(modifier = modifier.fillMaxSize()) {
         key(page.pageId, retryAttempt) { AndroidView(
@@ -93,13 +96,19 @@ internal fun EnginePageView(
                 context = context,
                 onSingleTap = onSingleTap,
                 onLongPress = { latestLongPress?.invoke() },
+                allowDoubleTapZoom = {
+                    !latestSettings.readingMode.continuous || latestSettings.webtoonDoubleTapZoom
+                },
             ).also { created ->
                 // 解码完成之前视图是"什么都没有"，而分页器在滑动过程中就会把它画出来。
                 // 不给底色的话，那一瞬间看到的是**下层内容透出来**（看起来就是"闪一下"）。
                 // 给一个与阅读背景同色的不透明底色，同一帧里就是一块纯色，而不是穿帮。
                 created.setBackgroundColor(settings.theme.engineBackgroundColor())
                 configure(created, settings, onReady = {
+                    created.setMinimumScaleType(latestSettings.imageScaleType.toLibraryScaleType())
+                    applyWebtoonMinimumScale(created, latestSettings)
                     applyZoomStart(created, latestSettings)
+                    imageReady = true
                     onReady()
                 }, onError = { decodeFailed = true })
                 view = created
@@ -140,6 +149,34 @@ internal fun EnginePageView(
             target.setDoubleTapZoomDuration(settings.doubleTapAnimMillis.coerceAtLeast(1))
             applyZoomStart(target, settings)
         }
+    }
+
+    LaunchedEffect(view, imageReady, settings.landscapeZoom, settings.imageScaleType,
+        settings.readingMode, settings.zoomStart) {
+        val target = view ?: return@LaunchedEffect
+        if (!imageReady || !settings.landscapeZoom || settings.readingMode.continuous ||
+            settings.imageScaleType != ImageScaleType.FIT_SCREEN || target.sWidth <= target.sHeight
+        ) return@LaunchedEffect
+        if (target.height <= 0 || target.sHeight <= 0) return@LaunchedEffect
+        val originalScale = target.scale
+        val originalCenter = target.center ?: return@LaunchedEffect
+        val desiredScale = (target.height.toFloat() / target.sHeight).coerceAtMost(target.maxScale)
+        if (desiredScale <= originalScale * 1.02f) return@LaunchedEffect
+        delay(500)
+        val centerNow = target.center ?: return@LaunchedEffect
+        if (view !== target || abs(target.scale - originalScale) > originalScale * 0.01f ||
+            abs(centerNow.x - originalCenter.x) > 1f || abs(centerNow.y - originalCenter.y) > 1f
+        ) return@LaunchedEffect
+        val zoomCenter = when (settings.zoomStart.resolve(settings.readingMode)) {
+            ZoomStart.LEFT -> PointF(0f, 0f)
+            ZoomStart.RIGHT -> PointF(target.sWidth.toFloat(), 0f)
+            ZoomStart.CENTER, ZoomStart.AUTOMATIC ->
+                PointF(target.sWidth / 2f, target.sHeight / 2f)
+        }
+        target.animateScaleAndCenter(desiredScale, zoomCenter)
+            ?.withDuration(500)
+            ?.withEasing(SubsamplingScaleImageView.EASE_IN_OUT_QUAD)
+            ?.start()
     }
 
     // 载入这一页的图像流。
