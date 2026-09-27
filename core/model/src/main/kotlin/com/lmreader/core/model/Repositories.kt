@@ -157,7 +157,13 @@ interface MangaRepository {
      * 才允许删除章节（框架 5.2）。
      */
     suspend fun upsertScanResult(result: ScanResult): ScanPersistReport
-    suspend fun search(query: String, offset: Int, limit: Int): MangaPage
+    /** 图库搜索；[sourceFilter] 非空时只在当前生效的图源筛选内搜索。 */
+    suspend fun search(
+        query: String,
+        offset: Int,
+        limit: Int,
+        sourceFilter: Set<String>? = null,
+    ): MangaPage
     suspend fun deleteManga(mangaId: String)
     suspend fun observeTotalCount(): Flow<Int>
 }

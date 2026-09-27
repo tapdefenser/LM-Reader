@@ -12,10 +12,13 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
@@ -59,7 +62,9 @@ internal fun StripReader(
     mode: ReadingMode,
     settings: ReaderSettings,
     currentIndex: Int,
-    onItemSettled: (Int) -> Unit,
+    itemsRevision: Long,
+    scrollRequest: Long,
+    onItemSettled: (String) -> Unit,
     onPageHeightMeasured: (pageId: String, heightDp: Int) -> Unit,
     measureHeightDp: suspend (ReaderItem.PageItem, Float) -> Int?,
     onTap: (x: Float, y: Float) -> Unit,
@@ -74,6 +79,9 @@ internal fun StripReader(
     val listState = rememberLazyListState(
         initialFirstVisibleItemIndex = currentIndex.coerceIn(items.indices),
     )
+    val latestItems by rememberUpdatedState(items)
+    val latestItemsRevision by rememberUpdatedState(itemsRevision)
+    var settledItemsRevision by remember { mutableLongStateOf(-1L) }
     val configuration = LocalConfiguration.current
 
     // 侧边距把条带内容缩窄（Mihon `webtoon_side_padding`，0..25%）。
@@ -100,17 +108,28 @@ internal fun StripReader(
                 val candidate = info.visibleItemsInfo
                     .lastOrNull { item -> item.offset + item.size <= viewportEnd }
                     ?: info.visibleItemsInfo.firstOrNull()
-                candidate?.index?.let { index ->
-                    if (index in items.indices) onItemSettled(index)
+                candidate?.let { visibleItem ->
+                    val key = visibleItem.key as? String
+                        ?: latestItems.getOrNull(visibleItem.index)?.key
+                    if (settledItemsRevision == latestItemsRevision && key != null) {
+                        onItemSettled(key)
+                    }
                 }
             }
     }
 
     // 外部位置变化驱动滚动；只在该项不在视口内时滚动，避免读者正在阅读时被"纠正"到页顶。
-    LaunchedEffect(currentIndex, items.size) {
+    var handledScrollRequest by remember { mutableLongStateOf(scrollRequest) }
+    LaunchedEffect(currentIndex, items.size, itemsRevision, scrollRequest) {
+        settledItemsRevision = -1L
         val target = currentIndex.coerceIn(items.indices)
-        val visible = listState.layoutInfo.visibleItemsInfo.any { it.index == target }
-        if (!visible) listState.scrollToItem(target)
+        val targetKey = items[target].key
+        val visible = listState.layoutInfo.visibleItemsInfo.any { it.key == targetKey }
+        val explicitlyRequested = scrollRequest != handledScrollRequest
+        handledScrollRequest = scrollRequest
+        if (explicitlyRequested || !visible) listState.scrollToItem(target)
+        withFrameNanos { }
+        settledItemsRevision = itemsRevision
     }
 
     /**

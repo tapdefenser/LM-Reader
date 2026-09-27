@@ -21,6 +21,7 @@ import com.lmreader.core.storage.reader.PageSourceOpenResult
 import com.lmreader.core.storage.reader.ReaderPage
 import com.lmreader.core.storage.settings.ReaderPreferences
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -49,11 +50,11 @@ import kotlinx.coroutines.sync.withLock
  * 要把位置在两套下标之间换算——跳页、卡住、"有时进下一章有时被送回上一章"全部由此而来。
  * 把跨章降级为位置之后，"翻页跳到别的页"在结构上不可能发生。
  *
- * ## 窗口固定，只在接近边界时才接
+ * ## 窗口有界，只在接近边界时滑动
  *
- * 窗口（这条线上有哪些章）在阅读过程中**不动**，因此所有项的下标不变。只有当读者走到
- * 窗口靠边的章时，才向那一端补一批章；补的时候按页身份重新定位（[reanchorIndex]），
- * 所以画面不跳。
+ * 窗口平时不动；读者走到靠边的章时，才向前接一批并淘汰走远的章。因为前端淘汰会让
+ * 数字下标整体平移，分页器与条带只按稳定 `item.key` 回报落点，重组时再按同一身份重新
+ * 定位（[reanchorIndex]）。这样既不跳页，也不会让 3000+ 章的页清单常驻内存。
  *
  * ## 进度粒度
  *
@@ -200,8 +201,8 @@ class ReaderViewModel(
     /**
      * 按预载预算补齐窗口，并重建项列表。
      *
-     * 已在窗口里的章**一律保留**（[buildWindow] 会用 `loaded` 兜住），因此这个方法可以
-     * 反复调用而不会丢掉已经加载好的内容。
+     * 窗口只保留当前预载计划覆盖的章；已经走远的章会从内存退出。这样即使漫画有数千章，
+     * 内存里的页清单仍然有上限。读者往回走到边缘时，会按同一规则重新加载。
      */
     private fun fillWindow(currentChapterId: String) {
         val snapshot = _state.value
@@ -213,6 +214,8 @@ class ReaderViewModel(
         val plan = planFor(list, effectiveCurrent, snapshot.settings)
         val (window, currentIndex) = buildWindow(list, effectiveCurrent, plan, loaded)
         if (window.isEmpty()) return
+        val retainedChapterIds = window.mapTo(HashSet(window.size)) { it.chapterId }
+        loaded.keys.retainAll(retainedChapterIds)
         val chapters = ViewerChapters(window = window, currentIndex = currentIndex)
         writeItems(chapters)
     }
@@ -242,6 +245,7 @@ class ReaderViewModel(
             // 往前读的预算略多于往后：凑整时余数给"往前"，因为往前读的第一步
             // 往往要先跨一个过渡页（见 [prefetchBudget]）。
             backBudget = budgets.backward,
+            transitionCost = if (settings.showChapterTransitions) 1 else 0,
             pagesOf = { index ->
                 list.getOrNull(index)?.let { record ->
                     loaded[record.chapterId]?.pages?.size?.takeIf { size -> size > 0 }
@@ -268,28 +272,16 @@ class ReaderViewModel(
      *
      * ## 为什么往前也要预载
      *
-     * 预载的**价值在于"从哪一页打开"**，而不只是"往后读到哪"。读者从第 37 页打开、
-     * 或者看了一会儿想往回翻，此时前面几页若没预读就要现等——那与他从第 1 页开始读
-     * 时的体验不一致。因此预算对半分，两侧都覆盖。
+     * 预载的**价值在于"从哪一页打开"**，而不只是"往后读到哪"。按用户确认的规则，
+     * 设置值 N 表示往阅读方向预载 N 格，反方向预载 N/2 格。
      *
      * ## 边界情况
      *
-     * - **预算 9 → 往后 4、往前 5。** 余数给"往前"是因为往前读的第一步常常要先跨一个
-     *   **过渡页**（它占一格）。从某章第一页打开时：往前 5 格 = 1 个过渡页 + 上一章末尾
-     *   **4 页**，覆盖了"至少要看到上一章最后几页"这个需求。
-     * - 从第 1 页打开：往前没有内容，`PreloadPlan` 取不到更早的章，于是这份预算自然落空，
-     *   往后仍然是 4 页。**不会**因为往前没东西就把预算挪过去——那会让"预载 9"在首页
-     *   表现出 9 页、在第 37 页表现出 4 页，行为不可预测。
-     * - 预算 2 → 往后 1、往前 1：下限保证"往后翻一页"永远不用现读。
+     * - **设置 9 → 往后 9、往前 4。**
+     * - 从第 1 页打开：往前没有内容，这份预算自然落空，不挪给往后；往后仍是 9。
+     * - 设置 2 → 往后 2、往前 1：下限保证往后至少两格就绪。
+     * - 开启过渡页时它与图片一样占一格；关闭后列表里没有它，也就不消耗预算。
      */
-    private fun prefetchBudget(total: Int): PrefetchBudget = PrefetchBudget(
-        forward = total / 2,
-        backward = total - total / 2,
-    )
-
-    /** 两侧各自的预载预算（格数，过渡页也算一格）。 */
-    private data class PrefetchBudget(val forward: Int, val backward: Int)
-
     /**
      * 需要加载的章：规划覆盖的章 **加上** 一格边界章。
      *
@@ -319,6 +311,11 @@ class ReaderViewModel(
                 chapters = chapters,
                 items = items,
                 currentPageIndex = reanchorIndex(state.items, state.currentPageIndex, items),
+                itemsRevision = if (state.items.map(ReaderItem::key) == items.map(ReaderItem::key)) {
+                    state.itemsRevision
+                } else {
+                    state.itemsRevision + 1
+                },
             )
         }
     }
@@ -349,20 +346,28 @@ class ReaderViewModel(
      * 页与过渡页是**插进**已有列表的，读者的位置不变。
      */
     private fun loadOne(record: ChapterRecord, treeUri: String) {
-        if (loadJobs.containsKey(record.chapterId)) return
-        loadJobs[record.chapterId] = viewModelScope.launch {
-            val result = loadChapter(record, treeUri)
-            loaded[record.chapterId] = result ?: ViewerChapter(
-                chapter = record,
-                pages = emptyList(),
-                source = _state.value.chapters?.current?.source
-                    ?: return@launch,
-                state = ViewerChapter.LoadState.FAILED,
-            )
-            rebuild()
-            loadNeighbors()
-            warmPrefetch()
+        if (loaded.containsKey(record.chapterId) || loadJobs.containsKey(record.chapterId)) return
+        val job = viewModelScope.launch(start = CoroutineStart.LAZY) {
+            try {
+                val result = loadChapter(record, treeUri)
+                loaded[record.chapterId] = result ?: ViewerChapter(
+                    chapter = record,
+                    pages = emptyList(),
+                    source = _state.value.chapters?.current?.source
+                        ?: return@launch,
+                    state = ViewerChapter.LoadState.FAILED,
+                )
+                rebuild()
+                loadNeighbors()
+                warmPrefetch()
+            } finally {
+                // 这里只记录仍在运行的任务。若把已完成 Job 永久留在 map 中，章节被有界
+                // 窗口淘汰后再往回读时，会被误判为“已经安排过”而永远无法重新加载。
+                loadJobs.remove(record.chapterId)
+            }
         }
+        loadJobs[record.chapterId] = job
+        job.start()
     }
 
     /** 列出一章的页；失败返回 null（章级问题由过渡页显示原因与重试）。 */
@@ -392,7 +397,7 @@ class ReaderViewModel(
         if (current.items.isEmpty()) return
         val target = (current.currentPageIndex + delta).coerceIn(current.items.indices)
         if (target == current.currentPageIndex) return
-        settleAt(target)
+        settleAt(target, requestScroll = true)
     }
 
     /** 「上一章 / 下一章」按钮：同样是移动一格，只是移动的是整章的量。 */
@@ -413,11 +418,19 @@ class ReaderViewModel(
         }
     }
 
-    private fun settleAt(absoluteIndex: Int) {
+    private fun settleAt(absoluteIndex: Int, requestScroll: Boolean) {
         val snapshot = _state.value
         if (absoluteIndex !in snapshot.items.indices) return
         if (absoluteIndex == snapshot.currentPageIndex) return
-        _state.update { it.copy(currentPageIndex = absoluteIndex) }
+        _state.update {
+            it.copy(
+                currentPageIndex = absoluteIndex,
+                // 点击区域、音量键和滑杆是“命令界面去这里”；滑动落页只是“界面报告
+                // 自己到了这里”。连续阅读器必须区分两者，否则目标页只露出一条边时会
+                // 被当成已经可见，点击下一页看起来就完全没反应。
+                scrollRequest = if (requestScroll) it.scrollRequest + 1 else it.scrollRequest,
+            )
+        }
         val item = snapshot.items[absoluteIndex]
         // 当前章由"当前项属于哪一章"反推——不再有提升动作。
         val chapterId = item.chapterId
@@ -432,6 +445,12 @@ class ReaderViewModel(
         }
         // 快走到窗口边缘时补窗口；补完按页身份定位，画面不跳。
         if (nearWindowEdge()) rebuild()
+        // 窗口规划只决定“接下来需要哪些章”，真正的页清单加载必须在读者移动后
+        // 继续推进。此前这里只 rebuild，初次打开时预载的几章一旦读完，新的边界章
+        // 永远不会被 loadOne，表现为多章节漫画最多只能连续读三四章。
+        loadNeighbors()
+        // 页字节预取也要跟着当前落点向前滚动，不能永远停留在刚打开章节时的范围。
+        warmPrefetch()
     }
 
     /** 读者是否已经走到窗口靠边的章（再往前一寸就该补窗口了）。 */
@@ -449,12 +468,19 @@ class ReaderViewModel(
         if (localPageIndex !in pages.indices) return
         val first = current.items.indexOfFirstPageOfChapter(chapterId)
         if (first < 0) return
-        settleAt(first + localPageIndex)
+        settleAt(first + localPageIndex, requestScroll = true)
     }
 
-    /** 分页器或条带落到了第 [absoluteIndex] 项。 */
-    fun onItemSettled(absoluteIndex: Int) {
-        settleAt(absoluteIndex)
+    /**
+     * 分页器或条带落到了稳定身份为 [itemKey] 的项。
+     *
+     * 不能回传绝对下标：快速滑动时窗口可能恰好淘汰前端章节，同一个数字在新列表里会
+     * 指向另一页，旧下标因此会把读者错误送回本章。找不到旧键时直接忽略，下一次布局
+     * 会报告当前可见项。
+     */
+    fun onItemSettled(itemKey: String) {
+        val index = _state.value.items.indexOfFirst { it.key == itemKey }
+        if (index >= 0) settleAt(index, requestScroll = false)
     }
 
     /** 记录一页在条带里的布局高度，供滚动定位使用。 */
@@ -472,18 +498,18 @@ class ReaderViewModel(
     // ------------------------------------------------------------ 预取页字节
 
     /**
-     * 把当前页**前后各** [PrefetchBudget] 格之内的**图片字节**提前读进磁盘缓存。
+     * 按 [PrefetchBudget] 把当前页前后的**图片字节**提前读进磁盘缓存。
      *
      * ## 为什么前后都要
      *
      * 预载的价值在于"从哪一页打开"：读者从第 37 页打开、或看了一会儿想往回翻，
      * 前面几页若没预读就要现等，与他从第 1 页开始读的体验不一致。因此两侧用同一套
-     * 拆分（[prefetchBudget]），与窗口规划保持一致。
+     * 预算规则（向后 N、向前 N/2）与窗口规划保持一致。
      *
      * ## 格数而不是页数
      *
      * 计数单位是**项**（含过渡页），与预算规则一致：过渡页也算一格，因为它翻过去也要
-     * 一瞬间。因此"从某章第一页往前 5 格"= 1 个过渡页 + 上一章末尾 4 页。
+     * 一瞬间。隐藏过渡页时列表中没有该项，自然不消耗格数。
      *
      * 缓存只放磁盘、不放堆：真机上解码一页就已经吃过整图分配的亏（见 `ReaderImageView`），
      * 再往堆里压几页字节会把 OOM 重新引回来。
@@ -582,6 +608,7 @@ class ReaderViewModel(
         for (chapter in snapshot.chapters?.window.orEmpty()) {
             if (chapter.state != ViewerChapter.LoadState.FAILED) continue
             loadJobs.remove(chapter.chapterId)
+            loaded.remove(chapter.chapterId)
             val record = list.firstOrNull { it.chapterId == chapter.chapterId } ?: continue
             loadOne(record, treeUri)
         }
@@ -684,12 +711,10 @@ class ReaderViewModel(
         const val NO_START_PAGE = -1
 
         /**
-         * 单侧最多预载几章。
-         *
-         * 预算是页数，理论上"每章只有 1 页"的长篇会把整部作品拉进来；这个上限把最坏情况
-         * 钉住。取 3 是因为真机样本里一章 29–106 页，而预算上限 60 页在 3 章内必然用完。
+         * 单侧最多预载几章。最坏情况是一章只有一页且关闭过渡页：N 格需要 N 章。
+         * 用设置上限作为章数上限，既不截断短章预载，也让 3000+ 章的内存窗口保持有界。
          */
-        const val MAX_PRELOAD_CHAPTERS_PER_SIDE = 3
+        const val MAX_PRELOAD_CHAPTERS_PER_SIDE = ReaderSettings.PRELOAD_PAGES_MAX
 
         /**
          * 距窗口端点还有几章时就去补窗口。
@@ -733,6 +758,10 @@ data class ReaderUiState(
     val items: List<ReaderItem> = emptyList(),
     /** 在 [items] 中的绝对下标。 */
     val currentPageIndex: Int = 0,
+    /** 项身份序列发生变化的版本；阅读组件完成按 key 归位前不得上报临时落点。 */
+    val itemsRevision: Long = 0,
+    /** 程序化导航序号；只在点击/按键/滑杆要求阅读组件主动滚动时递增。 */
+    val scrollRequest: Long = 0,
     /**
      * 控制栏是否可见；默认**隐藏**：阅读器一打开就应该是内容
      * （Mihon 的 `ReaderActivity` 同样以隐藏态进入）。

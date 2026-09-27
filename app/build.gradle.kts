@@ -49,4 +49,6 @@ dependencies {
     // 出错时不会崩溃、只会让读者在章末撞墙或跳页，因此必须用单测把结构钉住。
     testImplementation(libs.junit4)
     testImplementation(libs.kotlin.test)
+    testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.mockk)
 }

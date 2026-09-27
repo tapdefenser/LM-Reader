@@ -2,6 +2,7 @@ package com.lmreader.ui.reader
 
 import com.lmreader.core.model.ChapterKind
 import com.lmreader.core.model.ChapterRecord
+import com.lmreader.core.model.ReaderSettings
 import com.lmreader.core.storage.reader.PageGeometry
 import com.lmreader.core.storage.reader.PageSource
 import com.lmreader.core.storage.reader.ReaderPage
@@ -214,15 +215,15 @@ class ReaderChaptersTest {
 
     // ------------------------------------------------------------ 前后双向预载
 
-    /**
-     * 预算拆成"往后一半、往前多于一半"。余数给往前，因为往前读的第一步常常要先跨
-     * 一个过渡页（它占一格）。
-     *
-     * 每章 1 页时跨一章付 2 格，因此 4 格恰好拿到 2 章；往前 5 格在拿到 2 章后还剩
-     * 1 格，于是再收一章（"只够一格也要收"——见 `walk` 里的说明）。
-     */
+    /** 用户确认的设置语义：N 是阅读方向预算，反方向预算为 N/2。 */
     @Test
-    fun `预算拆成往后一半往前多于一半`() {
+    fun `设置九页时往后九页往前四页`() {
+        assertEquals(PrefetchBudget(forward = 9, backward = 4), prefetchBudget(9))
+        assertEquals(PrefetchBudget(forward = 2, backward = 1), prefetchBudget(2))
+    }
+
+    @Test
+    fun `前后预算彼此独立`() {
         val plan = PreloadPlan.compute(
             chapterCount = 20,
             currentIndex = 10,
@@ -234,6 +235,47 @@ class ReaderChaptersTest {
 
         assertEquals(listOf(11, 12), plan.nextIndices)
         assertEquals(listOf(9, 8, 7), plan.previousIndices)
+    }
+
+    @Test
+    fun `隐藏过渡页后它不再消耗预载预算`() {
+        val shown = PreloadPlan.compute(
+            chapterCount = 20,
+            currentIndex = 5,
+            budget = 5,
+            maxChapters = 5,
+            backBudget = 0,
+            transitionCost = 1,
+            pagesOf = { 2 },
+        )
+        val hidden = PreloadPlan.compute(
+            chapterCount = 20,
+            currentIndex = 5,
+            budget = 5,
+            maxChapters = 5,
+            backBudget = 0,
+            transitionCost = 0,
+            pagesOf = { 2 },
+        )
+
+        assertEquals(listOf(6, 7), shown.nextIndices)
+        assertEquals(listOf(6, 7, 8), hidden.nextIndices)
+    }
+
+    @Test
+    fun `单页章节按页预算跨过三章而不会被旧上限截断`() {
+        val plan = PreloadPlan.compute(
+            chapterCount = 100,
+            currentIndex = 10,
+            budget = 9,
+            maxChapters = ReaderSettings.PRELOAD_PAGES_MAX,
+            backBudget = 0,
+            transitionCost = 1,
+            pagesOf = { 1 },
+        )
+
+        // 每章代价 1 张图 + 1 张过渡页；9 格会触及第 5 个短章。
+        assertEquals(listOf(11, 12, 13, 14, 15), plan.nextIndices)
     }
 
     /**
@@ -299,8 +341,7 @@ class ReaderChaptersTest {
     }
 
     @Test
-    fun `下限预算 2 时前后各一`() {
-        // 预载下限 2 → 往后 1、往前 1：保证"往后翻一页"永远不用现读。
+    fun `前后都给一格时各取紧邻章节`() {
         val plan = PreloadPlan.compute(
             chapterCount = 10,
             currentIndex = 5,
@@ -427,23 +468,17 @@ class ReaderChaptersTest {
         assertEquals(1, currentIndex)
     }
 
-    /**
-     * 关键不变量：**已经加载好的章必须留在窗口里**。
-     *
-     * 上一版在换章时把窗口从零重建，丢掉了已经加载好的邻章页清单，于是明明已就绪的
-     * 下一章显示成"正在载入"。真机上表现为每跨一章都要等一次加载。
-     */
+    /** 数千章漫画也只能把当前规划覆盖的页清单放进展示窗口，不能随阅读进度无界增长。 */
     @Test
-    fun `补窗口时不会丢掉已经加载好的章`() {
-        val chapters = (0..5).map { record("c$it") }
+    fun `窗口只保留规划覆盖的已加载章`() {
+        val chapters = (0..3000).map { record("c$it") }
         val existing = mapOf(
             "c0" to chapter("c0", 1),
             "c1" to chapter("c1", 1),
             "c2" to chapter("c2", 1),
-            "c5" to chapter("c5", 1),
+            "c3000" to chapter("c3000", 1),
         )
 
-        // 规划只要求 c0/c1，但 c2 与 c5 已经加载好了 → 必须全部保留。
         val (window, _) = buildWindow(
             chapterList = chapters,
             currentChapterId = "c1",
@@ -451,7 +486,7 @@ class ReaderChaptersTest {
             existing = existing,
         )
 
-        assertEquals(listOf("c0", "c1", "c2", "c5"), window.map { it.chapterId })
+        assertEquals(listOf("c0", "c1", "c2"), window.map { it.chapterId })
     }
 
     @Test

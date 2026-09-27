@@ -215,11 +215,21 @@ internal class MangaRepositoryImpl(
 
     override suspend fun observeTotalCount(): Flow<Int> = mangaDao.observeCount()
 
-    override suspend fun search(query: String, offset: Int, limit: Int): MangaPage {
+    override suspend fun search(
+        query: String,
+        offset: Int,
+        limit: Int,
+        sourceFilter: Set<String>?,
+    ): MangaPage {
         val trimmed = query.trim()
-        if (trimmed.isEmpty()) return pageLibrary(offset, limit)
+        if (trimmed.isEmpty()) return pageLibrary(offset, limit, sourceFilter)
         val pattern = "%" + escapeLike(trimmed.lowercase()) + "%"
-        return pageOf(mangaDao.search(pattern, offset, limit), offset, limit)
+        val rows = when {
+            sourceFilter == null -> mangaDao.search(pattern, offset, limit)
+            sourceFilter.isEmpty() -> emptyList()
+            else -> mangaDao.searchFiltered(sourceFilter.toList(), pattern, offset, limit)
+        }
+        return pageOf(rows, offset, limit)
     }
 
     /**

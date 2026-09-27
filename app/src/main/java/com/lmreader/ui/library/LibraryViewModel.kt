@@ -336,7 +336,12 @@ class LibraryViewModel(
                     sourceFilter = _state.value.effectiveSourceFilter,
                 )
             } else {
-                mangaRepository.search(query, paging.nextOffset, PAGE_SIZE)
+                mangaRepository.search(
+                    query = query,
+                    offset = paging.nextOffset,
+                    limit = PAGE_SIZE,
+                    sourceFilter = _state.value.effectiveSourceFilter,
+                )
             }
             paging.append(
                 PageSlice(items = page.items, nextOffset = page.nextOffset, exhausted = page.exhausted),

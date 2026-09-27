@@ -49,8 +49,8 @@ data class ViewerChapter(
  * "已读完 issue1 / 下一章 issue2"。因此：
  *
  * - **翻页就只是在这条线上前后走一格**，没有"跨章"这个特殊动作；
- * - **窗口（这条线上有哪些章）在阅读过程中固定不变**，只在快走到一端时才向那一端补；
- * - 因此**所有项的下标在阅读过程中不变**，"翻页跳到别的页"在结构上不可能发生。
+ * - **窗口（这条线上有哪些章）只在快走到一端时滑动**，平时不变；
+ * - 滑动窗口时按稳定身份重新锚定当前项，因此前端淘汰旧章、后端接入新章也不会跳页。
  *
  * 这条设计是踩过坑之后收敛出来的。上一版把"读者一碰到过渡页"当成"跨章事件"，去提升章节、
  * 重建整个列表，于是：下标整体变了而分页器还停在旧下标上 → 跳页；重建时丢掉已加载的页
@@ -178,6 +178,14 @@ sealed interface ReaderItem {
     }
 }
 
+/** 两侧各自的预载预算：向阅读方向 N 格，反方向 N/2 格。 */
+internal data class PrefetchBudget(val forward: Int, val backward: Int)
+
+internal fun prefetchBudget(total: Int): PrefetchBudget = PrefetchBudget(
+    forward = total.coerceAtLeast(0),
+    backward = total.coerceAtLeast(0) / 2,
+)
+
 /**
  * 预载窗口：当前章前后各自要拿哪几章。
  *
@@ -208,13 +216,18 @@ internal data class PreloadPlan(
             budget: Int,
             maxChapters: Int,
             backBudget: Int = budget,
+            transitionCost: Int = 1,
             pagesOf: (Int) -> Int? = { null },
         ): PreloadPlan {
             if (maxChapters <= 0 || chapterCount <= 0) return EMPTY
             if (currentIndex !in 0 until chapterCount) return EMPTY
             return PreloadPlan(
-                previousIndices = walk(chapterCount, currentIndex, backBudget, maxChapters, false, pagesOf),
-                nextIndices = walk(chapterCount, currentIndex, budget, maxChapters, true, pagesOf),
+                previousIndices = walk(
+                    chapterCount, currentIndex, backBudget, maxChapters, false, transitionCost, pagesOf,
+                ),
+                nextIndices = walk(
+                    chapterCount, currentIndex, budget, maxChapters, true, transitionCost, pagesOf,
+                ),
             )
         }
 
@@ -224,6 +237,7 @@ internal data class PreloadPlan(
             budget: Int,
             maxChapters: Int,
             forward: Boolean,
+            transitionCost: Int,
             pagesOf: (Int) -> Int?,
         ): List<Int> {
             val collected = ArrayList<Int>(maxChapters)
@@ -240,12 +254,13 @@ internal data class PreloadPlan(
                     collected += index
                     break
                 }
-                // 跨过一章的代价：一个过渡页 + 该章页数。
-                if (remaining < 1 + known) {
+                // 开启过渡页时它与图片一样占一格；关闭时列表中没有这一项，代价为 0。
+                val cost = transitionCost.coerceAtLeast(0) + known
+                if (remaining < cost) {
                     if (remaining > 0) collected += index
                     break
                 }
-                remaining -= 1 + known
+                remaining -= cost
                 collected += index
                 distance++
             }
@@ -257,8 +272,8 @@ internal data class PreloadPlan(
 /**
  * 从当前章向两侧展开窗口，补齐还没在窗口里的章。
  *
- * @param existing 已经有页清单的章；它们的页数用于预算计算，且**必须留在窗口里**——
- *   把已加载的章丢掉再重新加载，正是上一版"明明已就绪却显示正在加载"的原因。
+ * @param existing 已经有页清单的章；只取当前规划覆盖的部分。走远的章不能永久保留，
+ *   否则数千章漫画会让页清单与页源随阅读进度无界增长。
  * @return 新的窗口（按目录顺序）与当前章在其中的下标
  */
 internal fun buildWindow(
@@ -272,10 +287,6 @@ internal fun buildWindow(
     val wanted = sortedSetOf(currentIndex)
     wanted += plan.nextIndices
     wanted += plan.previousIndices
-    // 已在窗口里的章一律保留：丢掉它们的页清单会让已经预载好的内容白费。
-    chapterList.forEachIndexed { index, record ->
-        if (existing.containsKey(record.chapterId)) wanted += index
-    }
     val window = wanted.mapNotNull { index ->
         val record = chapterList.getOrNull(index) ?: return@mapNotNull null
         existing[record.chapterId]
