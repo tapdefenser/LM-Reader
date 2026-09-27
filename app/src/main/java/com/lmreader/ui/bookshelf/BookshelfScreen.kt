@@ -17,10 +17,13 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.FilterList
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
@@ -49,6 +52,7 @@ import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -86,6 +90,8 @@ fun BookshelfScreen(
     var renaming by remember { mutableStateOf<Pair<Long, String>?>(null) }
     var movingManga by remember { mutableStateOf<MangaCard?>(null) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
+    /** 搜索框是否展开；与图库同一套交互（图标切换、退出时清空）。 */
+    var searchActive by remember { mutableStateOf(false) }
 
     /** 右边缘召出手势的累计位移（像素）。 */
     var dragAccumulated by remember { mutableFloatStateOf(0f) }
@@ -126,13 +132,43 @@ fun BookshelfScreen(
     Scaffold(
             topBar = {
                 TopAppBar(
-                    title = { Text("书架 · ${state.selectedCategoryName}") },
+                    title = {
+                        if (searchActive) {
+                            OutlinedTextField(
+                                value = state.query,
+                                onValueChange = viewModel::onQueryChange,
+                                placeholder = { Text("搜索书架", maxLines = 1) },
+                                // 单行 + 不换行：搜索框要"文字在框里左右拖动"，
+                                // 而不是长高了把顶栏撑开。
+                                singleLine = true,
+                                maxLines = 1,
+                                textStyle = MaterialTheme.typography.bodyMedium,
+                                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        } else {
+                            Text("书架 · ${state.selectedCategoryName}")
+                        }
+                    },
                     navigationIcon = {
                         IconButton(onClick = onOpenMenu) {
                             Icon(Icons.Filled.Menu, contentDescription = "主菜单")
                         }
                     },
                     actions = {
+                        IconButton(
+                            onClick = {
+                                searchActive = !searchActive
+                                // 退出搜索时清空关键词，否则列表会停在一个看不见的过滤条件上
+                                // ——用户会以为书架里的书丢了。与图库同一处理。
+                                if (!searchActive) viewModel.onQueryChange("")
+                            },
+                        ) {
+                            Icon(
+                                imageVector = if (searchActive) Icons.Filled.Close else Icons.Filled.Search,
+                                contentDescription = if (searchActive) "退出搜索" else "搜索",
+                            )
+                        }
                         IconButton(onClick = viewModel::onRefresh) {
                             Icon(Icons.Filled.Refresh, contentDescription = "刷新")
                         }
@@ -153,12 +189,22 @@ fun BookshelfScreen(
                 } else if (state.items.isEmpty() && state.loading) {
                     LoadingState()
                 } else if (state.items.isEmpty()) {
-                    MessageState(
-                        message = "书架还是空的。在图库里长按漫画卡片即可加入书架，" +
-                            "收藏不会复制原文件。",
-                        actionLabel = "去图库",
-                        onAction = onOpenLibrary,
-                    )
+                    // 三种"空"要说清是哪一种：搜索无结果时给"去图库"是帮倒忙
+                    // （书确实收藏着，只是没匹配上）。
+                    if (state.appliedQuery.isNotBlank()) {
+                        MessageState(
+                            message = "书架里没有匹配「${state.appliedQuery}」的收藏",
+                            actionLabel = null,
+                            onAction = null,
+                        )
+                    } else {
+                        MessageState(
+                            message = "书架还是空的。在图库里长按漫画卡片即可加入书架，" +
+                                "收藏不会复制原文件。",
+                            actionLabel = "去图库",
+                            onAction = onOpenLibrary,
+                        )
+                    }
                 } else {
                     LazyColumn(
                         state = listState,

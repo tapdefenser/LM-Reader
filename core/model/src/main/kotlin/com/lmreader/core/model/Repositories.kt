@@ -44,7 +44,19 @@ interface MangaRepository {
         sourceFilter: Set<String>? = null,
     ): MangaPage
 
-    suspend fun pageShelf(categoryId: Long?, offset: Int, limit: Int): MangaPage
+    /**
+     * 取书架的一页。
+     *
+     * @param categoryId `null` = 「全部」（未分类 + 所有自建分类）
+     * @param query 关键字；`null` 或空白 = 不搜索。搜索与分类是**正交**的两个条件，
+     *   同时给出时必须都生效——否则用户在某个分类里搜索会看到别的分类的书。
+     */
+    suspend fun pageShelf(
+        categoryId: Long?,
+        offset: Int,
+        limit: Int,
+        query: String? = null,
+    ): MangaPage
 
     /** 订阅「可见集合长度」变化，用于扫描过程中把新条目补进当前额度（开发文档 6.4）。 */
     fun observeVisibleCount(inShelfOnly: Boolean, categoryId: Long?): Flow<Int>

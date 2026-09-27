@@ -18,10 +18,12 @@ import com.lmreader.core.storage.scan.ScanReason
 import com.lmreader.core.storage.settings.AppPreferences
 import com.lmreader.ui.paging.PageSlice
 import com.lmreader.ui.paging.PagingState
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
@@ -44,6 +46,9 @@ class BookshelfViewModel(
 
     private val _state = MutableStateFlow(BookshelfUiState())
     val state: StateFlow<BookshelfUiState> = _state.asStateFlow()
+
+    /** 防抖用的查询流；见 [onQueryChange]。 */
+    private val queryFlow = MutableStateFlow("")
 
     init {
         paging.requestInitial()
@@ -95,6 +100,33 @@ class BookshelfViewModel(
         viewModelScope.launch {
             loadMore()
         }
+        viewModelScope.launch { observeQuery() }
+    }
+
+    /**
+     * 搜索输入：300ms 防抖之后才查数据库。
+     *
+     * 与图库同一个坑，这里刻意照同样的方式分开：**输入框的值只由 [onQueryChange] 同步更新**，
+     * 防抖回调只写 [BookshelfUiState.appliedQuery]。若把防抖之后的文本写回 `query`，
+     * 用户连打几个字符时那次延迟发射会带着旧文本覆盖输入框，并把光标重置到开头
+     * （真机症状："每次只能输入一个字符，光标跑到前面去"）。
+     */
+    @OptIn(FlowPreview::class)
+    private suspend fun observeQuery() {
+        queryFlow
+            .debounce(SEARCH_DEBOUNCE_MS)
+            .distinctUntilChanged()
+            .collect { query ->
+                paging.reset()
+                _state.update { it.copy(appliedQuery = query) }
+                loadMore()
+            }
+    }
+
+    /** 搜索框输入；同步更新输入框的值，防抖查询交给 [queryFlow]。 */
+    fun onQueryChange(query: String) {
+        _state.update { it.copy(query = query) }
+        queryFlow.value = query
     }
 
     fun selectCategory(categoryId: Long?) {
@@ -192,6 +224,7 @@ class BookshelfViewModel(
                 categoryId = _state.value.selectedCategoryId,
                 offset = paging.nextOffset,
                 limit = PAGE_SIZE,
+                query = _state.value.appliedQuery,
             )
             paging.append(
                 PageSlice(page.items, page.nextOffset, page.exhausted),
@@ -209,6 +242,14 @@ class BookshelfViewModel(
 
     companion object {
         const val PAGE_SIZE = 40
+
+        /**
+         * 搜索防抖窗口。
+         *
+         * 与图库取同一个值：300ms 是"用户还在打字"与"感觉即时"之间的常用折中，
+         * 而两处不一致会让用户在两个页面感受到不同的响应速度。
+         */
+        const val SEARCH_DEBOUNCE_MS = 300L
 
         fun factory(container: com.lmreader.di.AppContainer): ViewModelProvider.Factory = viewModelFactory {
             initializer {
@@ -234,7 +275,19 @@ data class BookshelfUiState(
     val loading: Boolean = false,
     val exhausted: Boolean = false,
     val error: String? = null,
+    /**
+     * 搜索框里**当前**的文本；只由 [BookshelfViewModel.onQueryChange] 更新。
+     *
+     * 它是 `OutlinedTextField` 的 `value`，因此**绝不能**被防抖之后的延迟值覆盖
+     * （那样会覆盖用户刚敲的字符并把光标重置到开头）。
+     */
+    val query: String = "",
+    /** 当前结果对应的查询词（防抖之后的）；空状态文案按它说话。 */
+    val appliedQuery: String = "",
 ) {
     val selectedCategoryName: String
         get() = categories.firstOrNull { it.categoryId == selectedCategoryId }?.name ?: "全部"
+
+    /** 是否正在搜索（输入框非空）。 */
+    val searching: Boolean get() = query.isNotBlank()
 }

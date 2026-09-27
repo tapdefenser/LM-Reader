@@ -166,8 +166,15 @@ fun LibraryScreen(
                         OutlinedTextField(
                             value = state.query,
                             onValueChange = viewModel::onQueryChange,
-                            placeholder = { Text("搜索漫画名或简介") },
+                            placeholder = { Text("搜索漫画名或简介", maxLines = 1) },
+                            // 单行 + 不换行：搜索框要"文字在框里左右拖动"，而不是长高了
+                            // 把顶栏撑开。`singleLine` 只约束 IME 回车行为，
+                            // 因此 `maxLines = 1` 也要显式写上。
                             singleLine = true,
+                            maxLines = 1,
+                            // 顶栏里的搜索框要瘦下来：默认高度（56dp）会顶掉标题栏的
+                            // 视觉比重，也让输入区看起来不像一个"条"。
+                            textStyle = MaterialTheme.typography.bodyMedium,
                             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                             keyboardActions = KeyboardActions(onSearch = { viewModel.onSearchOpened() }),
                             modifier = Modifier.fillMaxWidth(),
@@ -250,6 +257,8 @@ fun LibraryScreen(
 
                 is ScreenState.Empty -> MessageState(
                     message = screen.message,
+                    // "去设置图库路径"只在**真的没搜索**时给：搜索无结果时该做的是改关键词，
+                    // 不是去改路径。判据用 query（输入框现状）而不是结果对应的查询。
                     actionLabel = if (state.query.isBlank()) "去设置图库路径" else null,
                     onAction = if (state.query.isBlank()) onOpenSettings else null,
                 )

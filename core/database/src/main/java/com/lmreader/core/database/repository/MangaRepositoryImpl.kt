@@ -53,13 +53,28 @@ internal class MangaRepositoryImpl(
         return pageOf(rows, offset, limit)
     }
 
-    override suspend fun pageShelf(categoryId: Long?, offset: Int, limit: Int): MangaPage {
-        val rows = if (categoryId == null) {
-            // null = 「全部」，包含未分类与所有自建分类；不能用 categoryId = 0 代替，
-            // 那会把自建分类的收藏排除掉（开发文档 8.2 右侧分类栏）。
-            mangaDao.pageShelf(offset, limit)
-        } else {
-            mangaDao.pageShelfInCategory(categoryId, offset, limit)
+    override suspend fun pageShelf(
+        categoryId: Long?,
+        offset: Int,
+        limit: Int,
+        query: String?,
+    ): MangaPage {
+        val pattern = query?.trim()?.takeIf { it.isNotEmpty() }
+            ?.let { "%" + escapeLike(it.lowercase()) + "%" }
+        val rows = when {
+            // 搜索与分类是正交的两个条件，四种组合都要走对应的查询——不能"有搜索就忽略
+            // 分类"，那会让用户在某个分类里搜索时看到别的分类的书（开发文档 8.2）。
+            query.isNullOrBlank() && categoryId == null ->
+                // null = 「全部」，包含未分类与所有自建分类；不能用 categoryId = 0 代替，
+                // 那会把自建分类的收藏排除掉（开发文档 8.2 右侧分类栏）。
+                mangaDao.pageShelf(offset, limit)
+
+            query.isNullOrBlank() ->
+                mangaDao.pageShelfInCategory(categoryId!!, offset, limit)
+
+            categoryId == null -> mangaDao.searchShelf(pattern!!, offset, limit)
+
+            else -> mangaDao.searchShelfInCategory(categoryId, pattern!!, offset, limit)
         }
         return pageOf(rows, offset, limit)
     }

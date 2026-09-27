@@ -301,6 +301,82 @@ interface MangaDao {
     suspend fun search(pattern: String, offset: Int, limit: Int): List<CardQueryRow>
 
     /**
+     * 在**书架范围内**按关键字搜索。
+     *
+     * 与 [search] 的差别只有 `JOIN shelf_entries`：书架是收藏引用，因此搜索必须限定在
+     * 已收藏的那些作品里，否则会搜出图库里没收藏的漫画（开发文档 8.2）。
+     * 判据与 [search] 相同：名称 + `normalized_search_text` 子串匹配。
+     */
+    @Query(
+        """
+        SELECT m.mangaId AS mangaId,
+               m.displayName AS displayName,
+               COALESCE(md.summary, m.summary) AS summaryPreview,
+               m.sourceId AS sourceId,
+               m.coverDocumentId AS coverDocumentId,
+               m.coverChapterId AS coverChapterId,
+               m.sourceKind AS sourceKind,
+               m.layoutMode AS layoutMode,
+               m.chapterCount AS chapterCount,
+               m.chapterCountKnown AS chapterCountKnown,
+               m.availability AS availability,
+               EXISTS(
+                   SELECT 1 FROM chapters AS c
+                   WHERE c.mangaId = m.mangaId AND c.kind = 'ARCHIVE'
+               ) AS hasArchiveChapters,
+               s.categoryId AS shelfCategoryId
+        FROM mangas AS m
+        JOIN shelf_entries AS s ON s.mangaId = m.mangaId
+        LEFT JOIN metadata_records AS md
+               ON md.ownerId = m.mangaId AND md.ownerType = 'MANGA'
+        WHERE (m.displayName LIKE :pattern ESCAPE '\'
+           OR md.normalizedSearchText LIKE :pattern ESCAPE '\')
+          AND m.availability != 'STALE'
+        ORDER BY m.sourceOrderIndex ASC, m.sortKey ASC, m.mangaId ASC
+        LIMIT :limit OFFSET :offset
+        """,
+    )
+    suspend fun searchShelf(pattern: String, offset: Int, limit: Int): List<CardQueryRow>
+
+    /** 同上，但限定在某个分类内。 */
+    @Query(
+        """
+        SELECT m.mangaId AS mangaId,
+               m.displayName AS displayName,
+               COALESCE(md.summary, m.summary) AS summaryPreview,
+               m.sourceId AS sourceId,
+               m.coverDocumentId AS coverDocumentId,
+               m.coverChapterId AS coverChapterId,
+               m.sourceKind AS sourceKind,
+               m.layoutMode AS layoutMode,
+               m.chapterCount AS chapterCount,
+               m.chapterCountKnown AS chapterCountKnown,
+               m.availability AS availability,
+               EXISTS(
+                   SELECT 1 FROM chapters AS c
+                   WHERE c.mangaId = m.mangaId AND c.kind = 'ARCHIVE'
+               ) AS hasArchiveChapters,
+               s.categoryId AS shelfCategoryId
+        FROM mangas AS m
+        JOIN shelf_entries AS s ON s.mangaId = m.mangaId
+        LEFT JOIN metadata_records AS md
+               ON md.ownerId = m.mangaId AND md.ownerType = 'MANGA'
+        WHERE s.categoryId = :categoryId
+          AND (m.displayName LIKE :pattern ESCAPE '\'
+           OR md.normalizedSearchText LIKE :pattern ESCAPE '\')
+          AND m.availability != 'STALE'
+        ORDER BY m.sourceOrderIndex ASC, m.sortKey ASC, m.mangaId ASC
+        LIMIT :limit OFFSET :offset
+        """,
+    )
+    suspend fun searchShelfInCategory(
+        categoryId: Long,
+        pattern: String,
+        offset: Int,
+        limit: Int,
+    ): List<CardQueryRow>
+
+    /**
      * 书架条目数。陈旧卡片不算进去：它们默认不出现在书架上（行本身保留，
      * 卡片被重新发现时会自动回到书架）。
      */

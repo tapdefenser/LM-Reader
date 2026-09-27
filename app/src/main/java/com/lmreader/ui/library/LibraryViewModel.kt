@@ -267,14 +267,30 @@ class LibraryViewModel(
             .collect { query ->
                 paging.reset()
                 _state.update {
-                    // 扫描/补全未完成时不能把零结果说成"没有漫画"（开发文档 6.4）。
-                    it.copy(query = query, indexingHint = query.isNotBlank() && scanCoordinator.overall.value.running)
+                    it.copy(
+                        // ⚠️ 这里**不能**写 `query = query`。
+                        //
+                        // `query` 是搜索框的 `value`，而这是防抖之后的**延迟**值：用户连打
+                        // 三个字符时，300ms 后的这次发射带的是"当时"的旧文本，把它写回
+                        // `value` 会覆盖用户刚输入的内容，光标同时被重置到开头。
+                        // 真机症状正是"每次只能输入一个字符，光标还跑到前面去"。
+                        // 输入框的值只由 [onQueryChange] 同步更新，这里只记"结果对应哪个查询"。
+                        appliedQuery = query,
+                        indexingHint = query.isNotBlank() && scanCoordinator.overall.value.running,
+                    )
                 }
                 loadMore()
             }
     }
 
+    /**
+     * 搜索框输入。
+     *
+     * 同步更新 [LibraryUiState.query]（输入框的 `value`），防抖查询交给 [queryFlow]。
+     * 两者必须分开：输入框需要**立刻**看到用户刚敲的字符，而查询需要防抖。
+     */
     fun onQueryChange(query: String) {
+        _state.update { it.copy(query = query) }
         queryFlow.value = query
     }
 
@@ -368,7 +384,20 @@ data class LibraryUiState(
     val items: List<MangaCard> = emptyList(),
     val loading: Boolean = false,
     val exhausted: Boolean = false,
+    /**
+     * 搜索框里**当前**的文本，只由 [LibraryViewModel.onQueryChange] 同步更新。
+     *
+     * 它是 `OutlinedTextField` 的 `value`，因此**绝不能**被防抖之后的延迟值覆盖——
+     * 那样会覆盖用户刚敲的字符并把光标重置到开头（真机症状：每次只能输入一个字符）。
+     */
     val query: String = "",
+    /**
+     * 当前结果对应的查询词（防抖之后的）。
+     *
+     * 与 [query] 分开的理由：输入框要立刻反映按键，而查询要防抖。空状态文案要按**结果**
+     * 说话，所以用这个而不是 [query]——否则用户刚敲下第一个字符时就会看到"没有找到"。
+     */
+    val appliedQuery: String = "",
     val discoveredCount: Int = 0,
     val displayMode: LibraryDisplayMode = LibraryDisplayMode.LIST,
     val scan: com.lmreader.core.storage.scan.OverallScanState =
@@ -407,7 +436,10 @@ data class LibraryUiState(
             items.isNotEmpty() -> ScreenState.Content(Unit)
             loading -> ScreenState.Loading
             scan.running -> ScreenState.Empty("正在发现漫画，已发现 $discoveredCount 项，请稍候")
-            query.isNotBlank() -> ScreenState.Empty("没有匹配「$query」的漫画")
+            // 用 appliedQuery 而不是 query：空态说的是"这一批结果为空，而它对应的查询是
+            // 什么"。用 query 的话，用户刚敲下第一个字符、查询还没跑（防抖中）时就会
+            // 看到"没有匹配「a」的漫画"，而其实只是还没查。
+            appliedQuery.isNotBlank() -> ScreenState.Empty("没有匹配「$appliedQuery」的漫画")
             else -> ScreenState.Empty(
                 message = "图库里还没有漫画",
                 actionLabel = null,
