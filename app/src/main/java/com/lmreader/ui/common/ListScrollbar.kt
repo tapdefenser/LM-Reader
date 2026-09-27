@@ -150,53 +150,73 @@ private fun ScrollbarLayout(
     val currentOnScrollBy by rememberUpdatedState(onScrollBy)
     val grabSlopPx = with(LocalDensity.current) { GRAB_SLOP.toPx() }
 
-    Box(
-        modifier = modifier
-            .fillMaxHeight()
-            .width(TOUCH_WIDTH)
-            // 手势挂在**这条带子**上（不是里面那条 4dp 的视觉条上——挂在细条上会让
-            // 有效触摸区等于 4dp，"写多少都没用"）。
-            //
-            // 按不到滑块就原样返回、什么都不 consume，于是带子内的滚动与点击照旧。
-            .pointerInput(Unit) {
-                awaitEachGesture {
-                    val down = awaitFirstDown(requireUnconsumed = false)
-                    val thumbHeight = size.height * currentLength
-                    if (thumbHeight <= 0f) return@awaitEachGesture
-                    val top = (size.height - thumbHeight) * currentOffset
-                    val onThumb = down.position.y >= top - grabSlopPx &&
-                        down.position.y <= top + thumbHeight + grabSlopPx
-                    if (!onThumb) return@awaitEachGesture
+    // 外层铺满、内层贴右边：**组件自己保证贴右侧**，不依赖调用方写 align。
+    // 踩过的坑：改窄带时把调用方的 `Modifier.align(Alignment.CenterEnd)` 删了，
+    // 于是它按 Box 的默认对齐跑到了屏幕左边。让组件自对齐就不会再犯。
+    //
+    // 外层没有 pointerInput，因此只是布局包装，不会被加入命中路径、不影响列表的点击；
+    // 只有内层那条窄带有手势（见下面的说明）。
+    Box(modifier = modifier.fillMaxSize()) {
+        Box(
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .fillMaxHeight()
+                .width(TOUCH_WIDTH)
+                // 手势挂在**这条带子**上（不是里面那条 4dp 的视觉条上——挂在细条上会让
+                // 有效触摸区等于 4dp，"写多少都没用"）。
+                //
+                // 按不到滑块就原样返回、什么都不 consume，于是带子内的滚动与点击照旧。
+                .pointerInput(Unit) {
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        val thumbHeight = size.height * currentLength
+                        if (thumbHeight <= 0f) return@awaitEachGesture
+                        val top = (size.height - thumbHeight) * currentOffset
+                        val onThumb = down.position.y >= top - grabSlopPx &&
+                            down.position.y <= top + thumbHeight + grabSlopPx
+                        if (!onThumb) return@awaitEachGesture
 
-                    val pointerId = down.id
-                    while (true) {
-                        val event = awaitPointerEvent()
-                        val change = event.changes.firstOrNull { it.id == pointerId } ?: break
-                        if (!change.pressed) break
-                        val dy = change.positionChange().y
-                        if (dy != 0f) {
-                            change.consume()
-                            // 往下拖 = 看更前面的内容 = 滚动量取负。
-                            currentOnScrollBy(-dy * currentViewport / thumbHeight)
+                        val pointerId = down.id
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull { it.id == pointerId } ?: break
+                            if (!change.pressed) break
+                            val dy = change.positionChange().y
+                            if (dy != 0f) {
+                                change.consume()
+                                // 符号**由读者真机测试定**，不要靠推理改。
+                                //
+                                // 这个映射的含义是：**内容跟着手指走**——手指往下拖，列表
+                                // 内容也往下走（看到更早的内容）。与"手指拖动内容"这个最直觉
+                                // 的手感一致。
+                                //
+                                // 走过一次弯路：我根据 `LazyListState.scrollBy` 的正负号
+                                // 推理，把它改成了相反的符号，结果读者反馈方向反了。
+                                // 还试过用截图测量来"证明"，但那次测量是**无效的**——
+                                // 网格分页在滚动时又加载了一批内容，滑块长度从 436px 变成
+                                // 226px；而"内容变多、位置不变"本身就会让滑块顶端上移，
+                                // 与"反向滚动"产生同样的数字，无法区分。
+                                currentOnScrollBy(dy * currentViewport / thumbHeight)
+                            }
                         }
                     }
-                }
-            },
-    ) {
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            val trackHeight = size.height
-            val barWidth = TRACK_WIDTH.toPx()
-            // 极长的列表算出来的滑块只有一两像素，既看不见也抓不住；给一个下限。
-            val thumbHeight = (trackHeight * length).coerceAtLeast(MIN_THUMB_HEIGHT.toPx())
-            val travel = (trackHeight - thumbHeight).coerceAtLeast(0f)
-            val top = travel * thumb.offsetFraction.coerceIn(0f, 1f)
-            drawRoundRect(
-                color = color,
-                // 视觉条贴带子的右边缘 = 屏幕右边缘。
-                topLeft = Offset(size.width - barWidth, top),
-                size = Size(barWidth, thumbHeight),
-                cornerRadius = CornerRadius(barWidth / 2f, barWidth / 2f),
-            )
+                },
+        ) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val trackHeight = size.height
+                val barWidth = TRACK_WIDTH.toPx()
+                // 极长的列表算出来的滑块只有一两像素，既看不见也抓不住；给一个下限。
+                val thumbHeight = (trackHeight * length).coerceAtLeast(MIN_THUMB_HEIGHT.toPx())
+                val travel = (trackHeight - thumbHeight).coerceAtLeast(0f)
+                val top = travel * thumb.offsetFraction.coerceIn(0f, 1f)
+                drawRoundRect(
+                    color = color,
+                    // 视觉条贴带子的右边缘 = 屏幕右边缘。
+                    topLeft = Offset(size.width - barWidth, top),
+                    size = Size(barWidth, thumbHeight),
+                    cornerRadius = CornerRadius(barWidth / 2f, barWidth / 2f),
+                )
+            }
         }
     }
 }
