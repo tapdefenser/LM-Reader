@@ -8,12 +8,17 @@ import androidx.lifecycle.viewmodel.viewModelFactory
 import com.lmreader.core.index.ChapterOrdering
 import com.lmreader.core.model.Category
 import com.lmreader.core.model.ChapterRecord
+import com.lmreader.core.model.ChapterTranslation
 import com.lmreader.core.model.MangaRecord
 import com.lmreader.core.model.MangaRepository
 import com.lmreader.core.model.ReadingProgress
 import com.lmreader.core.model.ReadingProgressRepository
 import com.lmreader.core.model.ShelfRepository
 import com.lmreader.core.model.SourceRepository
+import com.lmreader.core.model.TranslationRepository
+import com.lmreader.core.model.TranslationRequest
+import com.lmreader.core.model.resolveSourceLanguage
+import com.lmreader.core.model.resolveTargetLanguage
 import com.lmreader.core.storage.cover.CoverMetadataWriter
 import com.lmreader.core.storage.cover.CoverResolver
 import com.lmreader.core.storage.reader.PageSourceFactory
@@ -26,6 +31,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -35,6 +41,7 @@ class MangaDetailViewModel(
     private val mangaRepository: MangaRepository,
     private val sourceRepository: SourceRepository,
     private val shelfRepository: ShelfRepository,
+    private val translationRepository: TranslationRepository,
     private val chapterSyncer: MangaChapterSyncer,
     private val progressRepository: ReadingProgressRepository,
     private val pageSourceFactory: PageSourceFactory,
@@ -366,6 +373,89 @@ class MangaDetailViewModel(
         }
     }
 
+    // ---- 翻译（阶段 2：真的写队列，引擎是 P3） ------------------------------
+
+    /** 把选中章节入队（多选底栏的「翻译所选」）。 */
+    fun translateSelection() = enqueue(_state.value.selection.toList())
+
+    /** 整部作品入队（⋮ 的「全部翻译」）。 */
+    fun translateAll() = enqueue(_state.value.chapters.map { it.chapterId })
+
+    /**
+     * 入队：写入待翻译记录。
+     *
+     * 记录里带**入队那一刻**解析出来的语言与文风快照（见 [TranslationRequest]），
+     * 因此用户随后改设置不会让已排队的任务换一种翻法。
+     */
+    private fun enqueue(chapterIds: List<String>) {
+        if (chapterIds.isEmpty()) {
+            _state.update { it.copy(message = "没有可翻译的章节") }
+            return
+        }
+        viewModelScope.launch {
+            val target = translationTarget()
+            val (source, autoDetect) = resolveSourceLanguage(
+                mangaRepository.translationSettings(mangaId),
+                preferences.translationSourceLanguage.first(),
+            )
+            val queued = runCatching {
+                translationRepository.enqueue(
+                    mangaId = mangaId,
+                    chapterIds = chapterIds,
+                    request = TranslationRequest(
+                        targetLanguage = target,
+                        sourceLanguage = source,
+                        autoDetectSource = autoDetect,
+                        configSnapshot = null,
+                        at = clock(),
+                    ),
+                )
+            }.getOrElse { error ->
+                _state.update { it.copy(message = error.message ?: "入队失败") }
+                return@launch
+            }
+            clearSelection()
+            loadDetail(showLoading = false)
+            _state.update {
+                it.copy(
+                    message = if (queued == 0) {
+                        "这些章节已经排过队或翻完了"
+                    } else {
+                        "已加入待翻译 $queued 章（目标语言：$target）"
+                    },
+                )
+            }
+        }
+    }
+
+    /**
+     * 清除翻译文本：取消排队 + 删掉译文，状态回到「待翻译」（用户口径）。
+     *
+     * 与入队分开是因为它**真的删东西**（译文条数与完成时间），而用户可能只是想重翻。
+     */
+    fun clearSelectionTranslations() {
+        val ids = _state.value.selection.toList()
+        if (ids.isEmpty()) return
+        viewModelScope.launch {
+            val target = translationTarget()
+            val affected = runCatching {
+                translationRepository.clearTranslations(mangaId, ids, target)
+            }.getOrElse { error ->
+                _state.update { it.copy(message = error.message ?: "清除失败") }
+                return@launch
+            }
+            clearSelection()
+            loadDetail(showLoading = false)
+            _state.update { it.copy(message = "已清除 $affected 章的译文，并重新排队") }
+        }
+    }
+
+    /** 这部作品生效的目标语言（漫画覆盖 → 全局默认）。 */
+    private suspend fun translationTarget(): String = resolveTargetLanguage(
+        mangaRepository.translationSettings(mangaId),
+        preferences.translationTargetLanguage.first(),
+    )
+
     private suspend fun loadDetail(showLoading: Boolean) {
         if (showLoading) _state.update { it.copy(loading = true, error = null) }
         try {
@@ -381,6 +471,12 @@ class MangaDetailViewModel(
             // 的自然序：封面与简介要自然序第一章，章节列表要用户排的顺序，两者不同源。
             val chapters = mangaRepository.getChaptersInDisplayOrder(mangaId)
             val readMarks = mangaRepository.chapterReadMarks(mangaId)
+            // 翻译状态按**生效目标语言**取：换语言等于换一套记录，徽标必须跟着换。
+            val targetLanguage = resolveTargetLanguage(
+                mangaRepository.translationSettings(mangaId),
+                preferences.translationTargetLanguage.first(),
+            )
+            val translations = translationRepository.chapterTranslations(mangaId, targetLanguage)
             _state.update {
                 it.copy(
                     loading = false,
@@ -388,6 +484,8 @@ class MangaDetailViewModel(
                     coverDocumentId = target.manga.coverDocumentId,
                     chapters = chapters,
                     readMarks = readMarks,
+                    translations = translations,
+                    translationTargetLanguage = targetLanguage,
                     sourceTreeUri = source.treeUri,
                     sourceDisplayPath = source.displayPath,
                     inShelf = card?.inShelf == true,
@@ -416,6 +514,7 @@ class MangaDetailViewModel(
                     mangaRepository = container.mangaRepository,
                     sourceRepository = container.sourceRepository,
                     shelfRepository = container.shelfRepository,
+                    translationRepository = container.translationRepository,
                     chapterSyncer = container.mangaChapterSyncer,
                     progressRepository = container.readingProgressRepository,
                     pageSourceFactory = container.pageSourceFactory,
@@ -450,6 +549,15 @@ data class MangaDetailUiState(
     val chapters: List<ChapterRecord> = emptyList(),
     /** 按章的已读标记；没有条目的章节 = 未读。 */
     val readMarks: Map<String, Boolean> = emptyMap(),
+    /**
+     * 按章的翻译记录（当前生效目标语言下的）；没有条目的章节 = 未翻译。
+     *
+     * 与 [readMarks] 并排而不是塞进 `ChapterRecord`：它们是**用户状态**，章节行每次扫描
+     * 都会被重写（开发文档 15.3 要求用户状态与索引分表），因此只能从各自的表读进来。
+     */
+    val translations: Map<String, ChapterTranslation> = emptyMap(),
+    /** 这些翻译记录属于哪种目标语言（界面文案要写出来，否则用户不知道在给哪种语言排队）。 */
+    val translationTargetLanguage: String = "",
     /** 用户保存的章节排序方式；抽屉据此显示"当前是哪一种"。 */
     val orderSetting: ChapterOrdering.Setting = ChapterOrdering.Setting.DEFAULT,
     /** 用户是否手动拖过章节顺序（抽屉显示「当前：手动」）。 */

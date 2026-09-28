@@ -32,6 +32,8 @@ import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.DeleteSweep
+import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material.icons.filled.FlipToBack
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
@@ -92,6 +94,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.lmreader.core.index.ChapterOrdering
 import com.lmreader.core.model.ChapterKind
 import com.lmreader.core.model.ChapterRecord
+import com.lmreader.core.model.ChapterTranslation
+import com.lmreader.core.model.TranslationState
 import com.lmreader.di.AppContainer
 import com.lmreader.ui.common.CoverImage
 import com.lmreader.ui.common.CoverRequest
@@ -116,6 +120,10 @@ fun MangaDetailScreen(
     mangaId: String,
     onBack: () -> Unit,
     onReadChapter: (chapterId: String?, startPage: Int?) -> Unit,
+    onOpenTranslationLanguage: () -> Unit,
+    onOpenGlossary: () -> Unit,
+    onOpenTranslationStyle: () -> Unit,
+    onOpenTranslationSettings: () -> Unit,
     viewModel: MangaDetailViewModel = viewModel(
         key = mangaId,
         factory = MangaDetailViewModel.factory(container, mangaId),
@@ -199,7 +207,15 @@ fun MangaDetailScreen(
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
                         }
                     },
-                    actions = { DetailOverflowMenu() },
+                    actions = {
+                        DetailOverflowMenu(
+                            onTranslateAll = viewModel::translateAll,
+                            onOpenGlossary = onOpenGlossary,
+                            onOpenStyle = onOpenTranslationStyle,
+                            onOpenLanguage = onOpenTranslationLanguage,
+                            onOpenSettings = onOpenTranslationSettings,
+                        )
+                    },
                 )
             }
         },
@@ -210,6 +226,8 @@ fun MangaDetailScreen(
                     count = state.selection.size,
                     onMarkRead = { viewModel.markSelectionRead(true) },
                     onMarkUnread = { viewModel.markSelectionRead(false) },
+                    onTranslateSelected = viewModel::translateSelection,
+                    onClearTranslations = viewModel::clearSelectionTranslations,
                 )
             }
         },
@@ -400,6 +418,7 @@ private fun DetailContent(
                     selected = chapter.chapterId in state.selection,
                     selectionMode = state.selectionMode,
                     read = state.readMarks[chapter.chapterId] == true,
+                    translation = state.translations[chapter.chapterId],
                     // 阅读进度只属于"当前正在读的那一章"，其它章节行不该跟着显示页码。
                     isCurrentChapter = state.progress?.chapterId == chapter.chapterId,
                     readPage = state.progress?.pageOrdinal ?: 0,
@@ -521,6 +540,8 @@ private fun ChapterRow(
     selected: Boolean,
     selectionMode: Boolean,
     read: Boolean,
+    /** 这一章的翻译记录；null = 未翻译（界面上不显示翻译状态）。 */
+    translation: ChapterTranslation?,
     isCurrentChapter: Boolean,
     readPage: Int,
     /** 这一行要额外下移/上移多少像素（让位或跟随手指）。 */
@@ -612,7 +633,7 @@ private fun ChapterRow(
             },
             supportingContent = {
                 // 以前这里显示"图片目录"，但那是**物理形式**，用户看章节列表时
-                // 想知道的是"这一章有多长、我读到哪了"。物理形式对阅读没有帮助。
+                // 想知道的是"这一章有多长、我读到哪了、翻译到哪了"。
                 Text(
                     buildString {
                         append(
@@ -624,6 +645,19 @@ private fun ChapterRow(
                         chapter.pageCount?.let { append(" · 共 $it 页") }
                         if (isCurrentChapter && readPage > 0) {
                             append(" · 读到第 ${readPage + 1} 页")
+                        }
+                        // 翻译状态写在副标题里而不是行尾：行尾已经被"已读"与页码占着，
+                        // 而这一行本来就短。
+                        translation?.let { record ->
+                            append(" · ")
+                            append(
+                                when (record.state) {
+                                    TranslationState.PENDING -> "待翻译"
+                                    TranslationState.RUNNING -> "翻译中"
+                                    TranslationState.DONE -> "已翻译 ${record.translatedCount} 段"
+                                    TranslationState.FAILED -> "翻译失败"
+                                },
+                            )
                         }
                     },
                 )
@@ -700,15 +734,17 @@ private fun SelectionTopBar(
  * 贴到屏幕底边的控件会被导航栏压住一半——真机上「标记已读」就正好被吃掉，
  * 看得见点不到。这是与 `SourceFilterDrawer` / 路径表同一套约定。
  *
- * 这一版放的是**已经能真正生效**的动作：标记已读 / 标记未读。
- * 翻译相关的「翻译所选 / 清除翻译文本」要等待翻译数据层落地（阶段 2）才接上来——
- * 开发文档 17 的完成标准是"不存在仅摆放未接线的核心控件"。
+ * 五个动作都**真的会改数据**：标记已读/未读写 `chapter_read_state`；翻译所选/清除翻译文本
+ * 写 `chapter_translation`（侧栏「翻译队列」的计数因此会变）。开发文档 17 的完成标准是
+ * "不存在仅摆放未接线的核心控件"，所以没接上的功能宁可不出现在这里。
  */
 @Composable
 private fun ChapterSelectionBar(
     count: Int,
     onMarkRead: () -> Unit,
     onMarkUnread: () -> Unit,
+    onTranslateSelected: () -> Unit,
+    onClearTranslations: () -> Unit,
 ) {
     Surface(
         color = MaterialTheme.colorScheme.surfaceVariant,
@@ -723,6 +759,18 @@ private fun ChapterSelectionBar(
             horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            SelectionAction(
+                icon = Icons.Filled.Translate,
+                label = "翻译所选",
+                enabled = count > 0,
+                onClick = onTranslateSelected,
+            )
+            SelectionAction(
+                icon = Icons.Filled.DeleteSweep,
+                label = "清除翻译",
+                enabled = count > 0,
+                onClick = onClearTranslations,
+            )
             SelectionAction(
                 icon = Icons.Filled.CheckCircle,
                 label = "标记已读",
@@ -846,9 +894,20 @@ private fun ChapterOrdering.Mode.hint(): String = when (this) {
     ChapterOrdering.Mode.NATURAL -> "认数字大小：第 1、2、10、11、100 章"
 }
 
-/** 详情页右上角的 ⋮。翻译相关的入口在这里，阶段 2 接线。 */
+/**
+ * 详情页右上角的 ⋮。
+ *
+ * 五项（用户口径）：全部翻译 / 译名管理 / 文风设置 / 翻译设置 / 翻译语言。
+ * 前三项与语言设置**跟着每部漫画走**；翻译设置是全局说明页。
+ */
 @Composable
-private fun DetailOverflowMenu() {
+private fun DetailOverflowMenu(
+    onTranslateAll: () -> Unit,
+    onOpenGlossary: () -> Unit,
+    onOpenStyle: () -> Unit,
+    onOpenLanguage: () -> Unit,
+    onOpenSettings: () -> Unit,
+) {
     var open by remember { mutableStateOf(false) }
     IconButton(onClick = { open = true }) {
         Icon(Icons.Filled.MoreVert, contentDescription = "更多")
@@ -856,23 +915,38 @@ private fun DetailOverflowMenu() {
     DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
         DropdownMenuItem(
             text = { Text("全部翻译") },
-            enabled = false,
-            onClick = { open = false },
+            onClick = {
+                open = false
+                onTranslateAll()
+            },
         )
         DropdownMenuItem(
             text = { Text("译名管理") },
-            enabled = false,
-            onClick = { open = false },
+            onClick = {
+                open = false
+                onOpenGlossary()
+            },
         )
         DropdownMenuItem(
             text = { Text("文风设置") },
-            enabled = false,
-            onClick = { open = false },
+            onClick = {
+                open = false
+                onOpenStyle()
+            },
+        )
+        DropdownMenuItem(
+            text = { Text("翻译语言") },
+            onClick = {
+                open = false
+                onOpenLanguage()
+            },
         )
         DropdownMenuItem(
             text = { Text("翻译设置") },
-            enabled = false,
-            onClick = { open = false },
+            onClick = {
+                open = false
+                onOpenSettings()
+            },
         )
     }
 }

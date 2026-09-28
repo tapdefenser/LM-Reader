@@ -54,8 +54,7 @@ internal class ShelfRepositoryImpl(private val database: LmReaderDatabase) : She
 
         val entity = CategoryEntity(
             // 自增但避开内置的 0（它已经被占用）。
-            categoryId = dao.maxCategoryId() + 1,
-            name = trimmed,
+            categoryId = dao.maxCategoryId() + 1,            name = trimmed,
             styleMode = StyleMode.CATEGORY,
             customStyle = null,
             orderIndex = dao.maxCategoryOrder() + 1,
@@ -96,6 +95,8 @@ internal class ShelfRepositoryImpl(private val database: LmReaderDatabase) : She
         val target = if (dao.getCategory(categoryId) == null) ensureUncategorized() else categoryId
         dao.upsertEntry(ShelfEntryEntity(mangaId = mangaId, categoryId = target, addedAt = now()))
     }
+
+    override suspend fun categoryIdOf(mangaId: String): Long? = dao.getEntry(mangaId)?.categoryId
 
     override suspend fun removeFromShelf(mangaId: String) {
         // 只删收藏关系：漫画仍在图库、原文件仍在（开发文档 8.2「移出书架」）。

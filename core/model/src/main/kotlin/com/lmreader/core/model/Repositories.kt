@@ -280,6 +280,14 @@ interface ShelfRepository {
 
     /** 取内置「未分类」的 categoryId（0），首次调用时确保它存在（框架 5.3）。 */
     suspend fun ensureUncategorized(): Long
+
+    /**
+     * 这部漫画所在的分类；null = 不在书架（或来源已失效）。
+     *
+     * 文风覆盖链要从"漫画 → **分类** → 全局"逐层回退，因此详情页必须知道分类是谁。
+     * 不给 `MangaCard` 加这一列：卡片是每批 30 张都要读的投影，而分类只在这一处用到。
+     */
+    suspend fun categoryIdOf(mangaId: String): Long?
     suspend fun createCategory(name: String): Category
     suspend fun renameCategory(categoryId: Long, name: String)
     suspend fun updateCategoryStyle(categoryId: Long, mode: StyleMode, customStyle: String?)

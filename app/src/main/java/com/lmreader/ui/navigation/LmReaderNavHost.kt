@@ -14,6 +14,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavType
 import androidx.navigation.NavHostController
 import androidx.navigation.navArgument
@@ -31,6 +32,10 @@ import com.lmreader.ui.settings.SettingsHomeScreen
 import com.lmreader.ui.settings.reader.ReaderSettingsScreen
 import com.lmreader.ui.settings.paths.GalleryPathsScreen
 import com.lmreader.ui.settings.paths.GalleryPathsSettingsScreen
+import com.lmreader.ui.translation.GlossaryScreen
+import com.lmreader.ui.translation.TranslationLanguageScreen
+import com.lmreader.ui.translation.TranslationSettingsScreen
+import com.lmreader.ui.translation.TranslationStyleScreen
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
@@ -47,7 +52,21 @@ object Routes {
     const val TRANSLATION_QUEUE = "queue/translation"
     const val EXPORT_QUEUE = "queue/export"
 
+    // 翻译相关的页面全部挂在详情页下（"跟着每部漫画走"，用户口径）。
+    const val TRANSLATION_LANGUAGE = "manga/{mangaId}/translation/language"
+    const val TRANSLATION_GLOSSARY = "manga/{mangaId}/translation/glossary"
+    const val TRANSLATION_STYLE = "manga/{mangaId}/translation/style"
+
+    /** 翻译设置是全局说明页，不挂在某部漫画下。 */
+    const val TRANSLATION_SETTINGS = "settings/translation"
+
     fun mangaDetail(mangaId: String) = "manga/$mangaId"
+
+    fun translationLanguage(mangaId: String) = "manga/$mangaId/translation/language"
+
+    fun translationGlossary(mangaId: String) = "manga/$mangaId/translation/glossary"
+
+    fun translationStyle(mangaId: String) = "manga/$mangaId/translation/style"
 
     /**
      * 阅读器路由。
@@ -103,11 +122,18 @@ fun LmReaderNavHost(
 
     val destination = startDestination ?: return
 
+    // 侧栏「翻译队列」的角标接真实计数：入队真的会写待翻译记录，数字必须跟着动
+    // （开发文档 8.1「队列入口显示活动任务数」；写死 0 就是在骗用户）。
+    val pendingTranslations by container.translationRepository
+        .observePendingCount()
+        .collectAsStateWithLifecycle(initialValue = 0)
+
     ModalNavigationDrawer(
         drawerState = drawerState,
         gesturesEnabled = true,
         drawerContent = {
             MainMenuSheet(
+                activeTranslationTasks = pendingTranslations,
                 onNavigate = { target ->
                     when (target) {
                         MainDestination.LIBRARY -> navController.navigateSingleTop(Routes.LIBRARY)
@@ -213,7 +239,47 @@ fun LmReaderNavHost(
                         onReadChapter = { chapterId, startPage ->
                             navController.navigate(Routes.reader(mangaId, chapterId, startPage))
                         },
+                        onOpenTranslationLanguage = {
+                            navController.navigate(Routes.translationLanguage(mangaId))
+                        },
+                        onOpenGlossary = {
+                            navController.navigate(Routes.translationGlossary(mangaId))
+                        },
+                        onOpenTranslationStyle = {
+                            navController.navigate(Routes.translationStyle(mangaId))
+                        },
+                        onOpenTranslationSettings = {
+                            navController.navigate(Routes.TRANSLATION_SETTINGS)
+                        },
                     )
+                }
+
+                composable(Routes.TRANSLATION_LANGUAGE) { entry ->
+                    TranslationLanguageScreen(
+                        container = container,
+                        mangaId = entry.arguments?.getString("mangaId").orEmpty(),
+                        onBack = { navController.popBackStack() },
+                    )
+                }
+
+                composable(Routes.TRANSLATION_GLOSSARY) { entry ->
+                    GlossaryScreen(
+                        container = container,
+                        mangaId = entry.arguments?.getString("mangaId").orEmpty(),
+                        onBack = { navController.popBackStack() },
+                    )
+                }
+
+                composable(Routes.TRANSLATION_STYLE) { entry ->
+                    TranslationStyleScreen(
+                        container = container,
+                        mangaId = entry.arguments?.getString("mangaId").orEmpty(),
+                        onBack = { navController.popBackStack() },
+                    )
+                }
+
+                composable(Routes.TRANSLATION_SETTINGS) {
+                    TranslationSettingsScreen(onBack = { navController.popBackStack() })
                 }
 
 
