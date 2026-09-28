@@ -36,6 +36,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -276,13 +277,19 @@ private fun ReaderContent(
             // 旧模型（分页器只覆盖当前章）确实需要换章重建；现在分页器覆盖**整条直线**、
             // 项按 `pageId` 做 key，因此它自己能正确处理跨章，不需要重建。
             key(state.readingMode) {
+                // 阅读器销毁（退出 / 换模式）时强制解除"滚动中"，让挂起的窗口能被应用。
+                DisposableEffect(Unit) {
+                    onDispose { viewModel.onScrollingChanged(false) }
+                }
                 if (state.isContinuous) {
                     StripReader(
                         items = state.items,
                         mode = state.readingMode,
                         settings = state.settings,
                         currentIndex = state.currentPageIndex,
+                        positionKey = state.positionKey,
                         onItemSettled = viewModel::onItemSettled,
+                        onScrollingChanged = viewModel::onScrollingChanged,
                         onPageHeightMeasured = viewModel::onPageHeightMeasured,
                         measureHeightDp = measureHeightDp,
                         onTap = viewModel::onTap,
@@ -303,7 +310,9 @@ private fun ReaderContent(
                         items = state.items,
                         settings = state.settings,
                         currentIndex = state.currentPageIndex,
+                        positionKey = state.positionKey,
                         onItemSettled = viewModel::onItemSettled,
+                        onScrollingChanged = viewModel::onScrollingChanged,
                         onTap = viewModel::onTap,
                         onTransitionAction = { viewModel.retryFailedChapters() },
                         prefetcher = prefetcher,

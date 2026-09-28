@@ -90,6 +90,12 @@ class ReaderViewModel(
     /** 已经加载出页清单的章，按 ID 索引。窗口由它与规划共同决定。 */
     private val loaded = LinkedHashMap<String, ViewerChapter>()
 
+    /** 阅读器（分页器 / 条带）是否正在滚动。滚动中不替换项列表，见 [writeItems]。 */
+    private var scrolling = false
+
+    /** 滚动期间算出来、但还没应用的窗口；落定后由 [onScrollingChanged] 冲刷。 */
+    private var pendingWindow: ViewerChapters? = null
+
     init {
         viewModelScope.launch {
             readerPreferences.settings.collect { global ->
@@ -330,10 +336,18 @@ class ReaderViewModel(
      * 项列表就一定等价，没有任何理由让分页器重排。
      */
     private fun writeItems(chapters: ViewerChapters) {
+        val current = _state.value.chapters
+        val sameWindow = current?.window?.map { it.chapterId } == chapters.window.map { it.chapterId }
+        // 闸①：**滚动中不替换项列表**（Mihon 的 `awaitingIdleViewerChapters`）。
+        //
+        // 换列表会让所有下标重新编号，而分页器还在滑——它记的数字立刻失去意义。
+        // 挂起来等落定再应用，代价只是"少看一帧新章"，换来的是位置不会错。
+        if (scrolling && !sameWindow) {
+            pendingWindow = chapters
+            return
+        }
         var identityLost = false
         _state.update { state ->
-            val sameWindow = state.chapters?.window?.map { it.chapterId } ==
-                chapters.window.map { it.chapterId }
             if (sameWindow) {
                 // 只同步"当前章在窗口里的下标"，`items` 原样保留（保持同一个实例）。
                 if (state.chapters?.currentIndex == chapters.currentIndex) {
@@ -350,13 +364,18 @@ class ReaderViewModel(
                 // （平移量 = 那一章的页数 + 1 个过渡页）。按下标"重锚"迟早会漏——分页器与
                 // 状态机各自持有一份数字，任何一次没对上就是"偏一整章"。身份则不受平移影响。
                 val byIdentity = items.indexOfKey(state.positionKey)
-                val newIndex = if (byIdentity >= 0) {
-                    byIdentity
-                } else {
-                    // 身份不在新列表里：理论上不该发生（窗口永远含当前章及其相邻章）。
-                    // 落回按下标重锚，并让调用方记一条日志——走到这里意味着窗口策略被破坏了。
-                    identityLost = true
-                    reanchorIndex(state.items, state.currentPageIndex, items)
+                val newIndex = when {
+                    byIdentity >= 0 -> byIdentity
+                    // 还没有位置可言（`openAt` 是"先建窗口、后落页"）：沿用当前下标即可，
+                    // **不是**异常情况，不能记成"窗口策略被破坏"。
+                    state.positionKey.isEmpty() ->
+                        state.currentPageIndex.coerceIn(0, (items.size - 1).coerceAtLeast(0))
+                    else -> {
+                        // 身份不在新列表里：理论上不该发生（窗口永远含当前章及其相邻章）。
+                        // 落回按下标重锚，并让调用方记一条日志——走到这里意味着窗口策略被破坏了。
+                        identityLost = true
+                        reanchorIndex(state.items, state.currentPageIndex, items)
+                    }
                 }
                 state.copy(
                     chapters = chapters,
@@ -538,6 +557,21 @@ class ReaderViewModel(
     /** 分页器或条带落到了第 [absoluteIndex] 项。 */
     fun onItemSettled(absoluteIndex: Int) {
         settleAt(absoluteIndex)
+    }
+
+    /**
+     * 阅读器报告滚动状态（Mihon 的 `isIdle`）。
+     *
+     * 滚动中**不替换项列表**：换列表会把所有下标重新编号，而分页器还在滑，它记的数字
+     * 立刻失去意义——这正是"偏一整章"那类 bug 的入口。滚动期间算好的窗口先挂起，落定后应用。
+     */
+    fun onScrollingChanged(value: Boolean) {
+        if (scrolling == value) return
+        scrolling = value
+        if (value) return
+        val pending = pendingWindow ?: return
+        pendingWindow = null
+        writeItems(pending)
     }
 
     /** 记录一页在条带里的布局高度，供滚动定位使用。 */
@@ -771,6 +805,9 @@ class ReaderViewModel(
         super.onCleared()
         loadJobs.values.forEach { it.cancel() }
         loadJobs.clear()
+        // 阅读器销毁时强制解除"滚动中"：否则挂起的窗口永远不会被应用。
+        scrolling = false
+        pendingWindow = null
         prefetcher?.cancelAll()
     }
 

@@ -59,7 +59,11 @@ internal fun StripReader(
     mode: ReadingMode,
     settings: ReaderSettings,
     currentIndex: Int,
+    /** 当前项的**身份**；见 `ReaderUiState.positionKey`。 */
+    positionKey: String,
     onItemSettled: (Int) -> Unit,
+    /** 滚动状态上报：滚动中状态机不替换项列表（见 [ReaderViewModel.onScrollingChanged]）。 */
+    onScrollingChanged: (Boolean) -> Unit,
     onPageHeightMeasured: (pageId: String, heightDp: Int) -> Unit,
     measureHeightDp: suspend (ReaderItem.PageItem, Float) -> Int?,
     onTap: (x: Float, y: Float) -> Unit,
@@ -74,6 +78,8 @@ internal fun StripReader(
     val listState = rememberLazyListState(
         initialFirstVisibleItemIndex = currentIndex.coerceIn(items.indices),
     )
+    /** 是否正在做程序化归位；期间不接受"读者位置"上报（闸②）。 */
+    val syncing = remember { mutableStateOf(false) }
     val configuration = LocalConfiguration.current
 
     // 侧边距把条带内容缩窄（Mihon `webtoon_side_padding`，0..25%）。
@@ -92,10 +98,18 @@ internal fun StripReader(
      * 用 `visibleItemsInfo` 而不是 `firstVisibleItemIndex`：后者是"顶边进入视口"，
      * 会让进度在页面刚露头时就前移，与 Mihon 的"读完再记"不同。
      * 若没有任何一项的底边越过视口底（例如刚打开、第一页比视口还高），退回到第一项。
+     *
+     * ⚠️ key **只有** `listState`。曾经把 `items.size` 也放进来，于是列表一变这个 effect
+     * 就重启、并立刻按当前 `layoutInfo` 重新上报一次——那一刻布局信息还是**重排之前**的，
+     * 而下标恰好因为窗口前滚平移了一整章，位置就偏了（与分页器同一个坑）。
+     *
+     * 条带比这个更啰嗦：它的布局信息在滚动中**持续**变化，因此上报会连续触发。滚动中
+     * 状态机不替换项列表（[ReaderViewModel.onScrollingChanged]）正是为了兜住这一点。
      */
-    LaunchedEffect(listState, items.size) {
+    LaunchedEffect(listState) {
         snapshotFlow { listState.layoutInfo }
             .collect { info ->
+                if (syncing.value) return@collect
                 val viewportEnd = info.viewportEndOffset
                 val candidate = info.visibleItemsInfo
                     .lastOrNull { item -> item.offset + item.size <= viewportEnd }
@@ -106,11 +120,25 @@ internal fun StripReader(
             }
     }
 
+    // 滚动状态上报（闸①）：条带在滚动中会连续上报当前位置，若此时换列表就会错位。
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.isScrollInProgress }.collect(onScrollingChanged)
+    }
+
     // 外部位置变化驱动滚动；只在该项不在视口内时滚动，避免读者正在阅读时被"纠正"到页顶。
-    LaunchedEffect(currentIndex, items.size) {
+    //
+    // 程序化滚动期间屏蔽上报：滚动过程中布局信息会经过一串中间项，把它们当成"读者位置"
+    // 会让状态机跟着中间值跑（闸②的条带版本）。
+    LaunchedEffect(positionKey, currentIndex, items.size) {
         val target = currentIndex.coerceIn(items.indices)
         val visible = listState.layoutInfo.visibleItemsInfo.any { it.index == target }
-        if (!visible) listState.scrollToItem(target)
+        if (visible) return@LaunchedEffect
+        syncing.value = true
+        try {
+            listState.scrollToItem(target)
+        } finally {
+            syncing.value = false
+        }
     }
 
     /**

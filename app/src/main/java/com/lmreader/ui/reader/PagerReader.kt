@@ -17,6 +17,7 @@ import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
 import com.lmreader.core.model.ReaderSettings
 import com.lmreader.core.model.ReadingDirection
+import kotlinx.coroutines.flow.first
 
 /**
  * 分页阅读器：承载 Mihon 的三种 Pager 模式
@@ -44,7 +45,16 @@ internal fun PagerReader(
     items: List<ReaderItem>,
     settings: ReaderSettings,
     currentIndex: Int,
+    /**
+     * 当前项的**身份**（见 `ReaderUiState.positionKey`）。
+     *
+     * 下标会随窗口前滚整体平移，身份不会。归位必须是"把分页器挪到 [positionKey] 所在的下标"，
+     * 而不是"挪到某个记住的数字"。
+     */
+    positionKey: String,
     onItemSettled: (Int) -> Unit,
+    /** 滚动状态上报：滚动中状态机不替换项列表（见 [ReaderViewModel.onScrollingChanged]）。 */
+    onScrollingChanged: (Boolean) -> Unit,
     onTap: (x: Float, y: Float) -> Unit,
     onTransitionAction: (ReaderItem.Transition) -> Unit,
     /** 页面字节的预取缓存；命中时不必再过一次 SAF。 */
@@ -79,43 +89,60 @@ internal fun PagerReader(
      * 把上一章又提升回来，于是永远进不了下一章）。
      *
      * 因此每次程序化滚动都记下目标位置：只有当分页器**落到别的位置**之后，同一个位置
-     * 再次出现才算读者翻页。这比"记住上一次处理过的下标"精确：后者会把读者**恰好翻到**
-     * 一个我们曾经挪到过的位置也一并丢掉。
+     * 再次出现才算读者翻页。
      */
     var suppressSettleFrom by remember { mutableIntStateOf(-1) }
-    var cameFromScrollIntoView by remember { mutableStateOf(false) }
+
+    /**
+     * 是否正在做程序化归位。
+     *
+     * 这段时间里分页器的 `settledPage` **不作为**"读者翻页"上报——因为我们正要把它挪走。
+     * 这与 Mihon 在 `setChaptersInternal` 里"先摘掉 page change 监听器、改完数据再挂回来"
+     * 是同一件事：**换数据/归位本身不该产生"页变了"的事件**。
+     */
+    val syncing = remember { mutableStateOf(false) }
+
+    // 滚动状态上报（闸①：滚动中状态机不替换项列表）。
+    LaunchedEffect(pagerState) {
+        snapshotFlow { pagerState.isScrollInProgress }.collect(onScrollingChanged)
+    }
 
     // 落页：回报给状态机——跨章判定与进度落库都只有那一处。
-    LaunchedEffect(pagerState, items.size) {
+    //
+    // ⚠️ key **只有** `pagerState`。曾经把 `items.size` 也放进来，于是列表一变这个 effect
+    // 就重启，而 `snapshotFlow` 会立刻把当前值重发一次——那一刻分页器记的往往还是**重排
+    // 之前**的数字，而下标恰好因为窗口前滚平移了一整章，于是状态机把"另一个项的下标"
+    // 当成了读者位置。真机症状：偏 3 / 偏 4 / 跳回上一章首页 / 过渡页重复 / 1 页章被漏。
+    LaunchedEffect(pagerState) {
         snapshotFlow { pagerState.settledPage }.collect { page ->
+            if (syncing.value) return@collect
             if (page == suppressSettleFrom) {
                 // 这是我们自己挪过去造成的回放：消费掉，并解除抑制，
                 // 让读者之后再翻回同一页时仍能正常上报。
                 suppressSettleFrom = -1
-                cameFromScrollIntoView = false
                 return@collect
             }
             suppressSettleFrom = -1
-            // 归位引起的滚动不算读者翻页：那是"这一页本来就在原处，界面把它挪回来了"。
-            if (cameFromScrollIntoView) {
-                cameFromScrollIntoView = false
-                return@collect
-            }
             onItemSettled(page)
         }
     }
-    // 外部位置变化（点按翻页、滑杆、恢复进度、换章落点）驱动分页器滚动。
+    // 外部位置变化（点按翻页、滑杆、恢复进度、换章落点、窗口重排）驱动分页器滚动。
     //
-    // key 用**当前位置的项身份**，而不是"下标 + 项数"。窗口重排会让某一项的下标变而
-    // 项数不变（提升章节后当前章页面从下标 9 变到 1 就是这种），只盯项数的话不会触发
-    // 归位，分页器就停在旧下标上——那个下标现在指向另一页，于是"往回翻"跳到不相干的
-    // 位置，而状态机仍认为自己在原处。真机上表现为往回翻时乱跳。
-    val positionKey = items.getOrNull(currentIndex.coerceIn(items.indices))?.key
-    LaunchedEffect(positionKey) {
+    // key 里必须有 `currentIndex` 与 `items.size`：**位置或列表一变就要重新核对**。
+    // 只盯"项身份"（旧写法）在"项没变、下标变了"时不会触发——而窗口前滚恰恰只改下标。
+    LaunchedEffect(positionKey, currentIndex, items.size) {
         val target = currentIndex.coerceIn(items.indices)
-        if (!pagerState.isScrollInProgress && pagerState.currentPage != target) {
-            suppressSettleFrom = target
-            pagerState.scrollToPage(target)
+        if (pagerState.currentPage == target && !pagerState.isScrollInProgress) return@LaunchedEffect
+        syncing.value = true
+        try {
+            // 等滚动落定（闸①已经让"滚动中重排"极少见，这里是兜底），再把它挪到位。
+            snapshotFlow { pagerState.isScrollInProgress }.first { !it }
+            if (pagerState.currentPage != target) {
+                suppressSettleFrom = target
+                pagerState.scrollToPage(target)
+            }
+        } finally {
+            syncing.value = false
         }
     }
 
