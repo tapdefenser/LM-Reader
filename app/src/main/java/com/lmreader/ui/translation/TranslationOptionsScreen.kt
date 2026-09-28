@@ -47,30 +47,34 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.lmreader.di.AppContainer
 
 /**
- * 翻译设置（**一个页面**：语言 + 文风 + 译名入口 + 进度说明；用户口径）。
+ * **翻译选项**（漫画级，**一个页面**：语言 + 文风 + 译名入口；用户口径）。
+ *
+ * 与应用级「翻译设置」分开叫（用户口径）：这一页回答"这部作品要怎么翻"，在详情页 ⋮ 里；
+ * 设置里的那一套是"用哪个模型、什么模式"。
  *
  * 形状上的三个刻意选择：
- * 1. **语言不给缺省值**："用户没有设置过的时候你要设置成缺省，这样相当于首次启动就是
- *    要求用户填入了"——所以没设过时显示「未设置」，而不是替他填一个"简体中文"；
- * 2. **文风就是一个输入框**："点开就是一个输入框类似于 input()，如果留空就是自动应用
+ * 1. **原文语言必填、没有全局默认**："翻译的原文语言没有全局默认这一说，每个新的漫画
+ *    都必须得手动选"——所以没选过时显示「未选」，由详情页拦住翻译，而不是替他猜一个；
+ * 2. **目标语言不必填**：全局默认就是"应用现在使用的语言"，这一层只是覆盖；
+ * 3. **文风就是一个输入框**："点开就是一个输入框类似于 input()，如果留空就是自动应用
  *    分类"——因此没有单选、没有各层现值表，只在下面用一行说明当前生效的是哪一层；
- * 3. **译名管理在这里**（一行入口），不再挂在详情页 ⋮ 上。
+ *    译名管理也收在这一页（一行入口）。
  *
- * @param showSetupPrompt 用户是"想翻译但设置不全"被带进来的。此时弹一句提示——**这条提示
- *   必须在这里弹**：详情页那句 snackbar 会随导航把详情页移出组合而立刻消失，用户看不到。
- *   提示里明确写"填好后返回重新发起"，因为按用户口径**不自动续跑**。
+ * @param showSetupPrompt 用户是"想翻译但原文语言还没选"被带进来的。此时弹一句提示——
+ *   **这条提示必须在这里弹**：详情页那句 snackbar 会随导航把详情页移出组合而立刻消失，
+ *   用户看不到。提示里明确写"填好后返回重新发起"，因为按用户口径**不自动续跑**。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun TranslationSettingsScreen(
+fun TranslationOptionsScreen(
     container: AppContainer,
     mangaId: String,
     onBack: () -> Unit,
     onOpenGlossary: () -> Unit,
     showSetupPrompt: Boolean = false,
-    viewModel: TranslationSettingsViewModel = viewModel(
-        key = "translation-settings-$mangaId",
-        factory = TranslationSettingsViewModel.factory(container, mangaId),
+    viewModel: TranslationOptionsViewModel = viewModel(
+        key = "translation-options-$mangaId",
+        factory = TranslationOptionsViewModel.factory(container, mangaId),
     ),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -86,7 +90,7 @@ fun TranslationSettingsScreen(
     LaunchedEffect(showSetupPrompt) {
         if (showSetupPrompt && !promptShown) {
             promptShown = true
-            snackbarHostState.showSnackbar("请先完成翻译设置，填好后返回章节列表重新发起翻译")
+            snackbarHostState.showSnackbar("请先为这部作品选好原文语言，填好后返回章节列表重新发起翻译")
         }
     }
 
@@ -94,7 +98,9 @@ fun TranslationSettingsScreen(
         LanguagePickerSheet(
             field = field,
             state = state,
-            onPickGlobal = {
+            onPickAppLanguage = {
+                // 原文语言没有"应用默认"可退——清掉就是回到「未选」，等用户自己选。
+                // 目标语言的"用应用当前语言"就是这个动作。
                 when (field) {
                     LanguageField.SOURCE -> viewModel.setSourceLanguage("")
                     LanguageField.TARGET -> viewModel.setTargetLanguage("")
@@ -119,7 +125,7 @@ fun TranslationSettingsScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("翻译设置") },
+                title = { Text("翻译选项") },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
@@ -135,9 +141,9 @@ fun TranslationSettingsScreen(
                 .padding(padding)
                 .verticalScroll(rememberScrollState()),
         ) {
-            if (!state.languageConfigured) {
+            if (!state.sourceConfigured) {
                 Text(
-                    text = "翻译语言还没设置：开始翻译之前请先选好源语言与目标语言。",
+                    text = "还没选原文语言：开始翻译之前必须为这部作品选好它的正文语言。",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.error,
                     modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
@@ -151,9 +157,9 @@ fun TranslationSettingsScreen(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 LanguageBox(
-                    label = "源语言",
+                    label = "原文语言",
                     value = state.sourceLabel,
-                    hint = "正文是什么语言",
+                    hint = "这部作品的正文是什么语言",
                     modifier = Modifier.weight(1f),
                     onClick = { editing = LanguageField.SOURCE },
                 )
@@ -167,7 +173,18 @@ fun TranslationSettingsScreen(
                 )
             }
             Text(
-                text = "留空 = 跟随全局默认；全局也没设过时这里是「未设置」。",
+                text = buildString {
+                    append("原文语言每部作品都要自己选（没有全局默认，猜错会让整章译文跑偏）。")
+                    append("目标语言不用填：")
+                    append(
+                        if (state.targetFromAppLanguage) {
+                            "现在用的是应用当前语言，"
+                        } else {
+                            "现在用的是这部作品的覆盖，"
+                        },
+                    )
+                    append("想改就点它。")
+                },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp),
@@ -255,6 +272,9 @@ private fun LanguageBox(
 /**
  * 语言选择面板：预设列表 + 表尾自定义输入（用户口径："表尾增加输入框"）。
  *
+ * 两个字段的"第一项"不同，因为语言的规则本来就不同（见 `MangaTranslationSettings`）：
+ * 原文语言第一项是「未选」（它必填、没有上层可退）；目标语言第一项是「用应用当前语言」。
+ *
  * 自定义输入存的是用户敲的那串文字本身，不做规范化：它将来直接进翻译请求，
  * 而"乌克兰语"这类语言名不可能在预设表里穷举。
  */
@@ -262,15 +282,14 @@ private fun LanguageBox(
 @Composable
 private fun LanguagePickerSheet(
     field: LanguageField,
-    state: TranslationSettingsUiState,
-    onPickGlobal: () -> Unit,
+    state: TranslationOptionsUiState,
+    onPickAppLanguage: () -> Unit,
     onPickAutoDetect: () -> Unit,
     onPick: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState()
     val presets = if (field == LanguageField.SOURCE) SOURCE_LANGUAGE_PRESETS else TARGET_LANGUAGE_PRESETS
-    val globalValue = if (field == LanguageField.SOURCE) state.globalSource else state.globalTarget
     val current = when (field) {
         LanguageField.SOURCE -> state.settings.sourceLanguage
         LanguageField.TARGET -> state.settings.targetLanguage
@@ -285,24 +304,31 @@ private fun LanguagePickerSheet(
                 .padding(bottom = 24.dp),
         ) {
             Text(
-                text = if (field == LanguageField.SOURCE) "源语言" else "目标语言",
+                text = if (field == LanguageField.SOURCE) "原文语言" else "目标语言",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.padding(start = 24.dp, top = 4.dp, bottom = 4.dp),
             )
 
-            LanguageOption(
-                label = globalValue?.let { "跟随全局默认（现在：$it）" } ?: "跟随全局默认（全局还没设置）",
-                selected = current == null && !(field == LanguageField.SOURCE && state.autoDetectSource),
-                onClick = onPickGlobal,
-            )
-
             if (field == LanguageField.SOURCE) {
                 LanguageOption(
+                    label = "未选",
+                    hint = "必须为这部作品选一个；没有全局默认可用",
+                    selected = current == null && !state.autoDetectSource,
+                    onClick = onPickAppLanguage,
+                )
+                LanguageOption(
                     label = AUTO_DETECT_LABEL,
-                    hint = "不使用固定源语言，由识别器判断（更贵；识别错一次会连累整章）",
+                    hint = "不使用固定原文语言，由识别器判断（更贵；识别错一次会连累整章）",
                     selected = state.autoDetectSource,
                     onClick = onPickAutoDetect,
+                )
+            } else {
+                LanguageOption(
+                    label = "用应用当前语言（现在：${state.appTargetLanguage}）",
+                    hint = "应用语言变了，这里跟着变",
+                    selected = current == null,
+                    onClick = onPickAppLanguage,
                 )
             }
 
@@ -385,7 +411,7 @@ private fun Bullet(text: String) {
 /**
  * 语言预设。
  *
- * 只放常见项：源语言按开发文档 TR04 的枚举，目标语言按 TR05。**其余语言靠面板表尾的
+ * 只放常见项：原文语言按开发文档 TR04 的枚举，目标语言按 TR05。**其余语言靠面板表尾的
  * 自定义输入**——用户要的是"甚至支持任意语言的翻译"，因此预设表短一点更好维护，
  * 也不会让人以为"只能在这些里选"。
  */

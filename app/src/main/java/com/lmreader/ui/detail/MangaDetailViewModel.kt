@@ -20,6 +20,7 @@ import com.lmreader.core.model.TranslationRequest
 import com.lmreader.core.model.resolveSourceLanguage
 import com.lmreader.core.model.resolveTargetLanguage
 import com.lmreader.core.model.translationSetupComplete
+import com.lmreader.core.model.translationTargetForLanguageTag
 import com.lmreader.core.storage.cover.CoverMetadataWriter
 import com.lmreader.core.storage.cover.CoverResolver
 import com.lmreader.core.storage.reader.PageSourceFactory
@@ -385,10 +386,13 @@ class MangaDetailViewModel(
     /**
      * 入队：写入待翻译记录。
      *
-     * **先检查翻译设置是否完整**（用户口径）：语言没配好就把用户带到翻译设置页，由设置页弹
-     * 提示（详情页弹的话会随导航立刻消失），而不是先排上队、等真要翻的时候才发现语言是空的。
+     * **先检查原文语言选没选**（用户口径：每部作品都得手动选，没有全局默认）：没选就把用户
+     * 带到「翻译选项」页，由那一页弹提示（详情页弹的话会随导航立刻消失），而不是先排上队、
+     * 等真要翻的时候才发现原文语言是空的。
      * 填完之后由用户**自己再点一次**翻译——不自动续跑（用户明确要求"手动重新启动翻译"）：
      * 自动续跑会造出"我刚点了一下，回来发现已经在翻了"这种不可预期的行为。
+     *
+     * 目标语言不检查：它总有值（漫画覆盖 → 应用当前语言）。
      *
      * 记录里带**入队那一刻**解析出来的语言与文风快照（见 `TranslationRequest`），
      * 因此用户随后改设置不会让已排队的任务换一种翻法。
@@ -400,18 +404,13 @@ class MangaDetailViewModel(
         }
         viewModelScope.launch {
             val settings = mangaRepository.translationSettings(mangaId)
-            val (source, autoDetect) = resolveSourceLanguage(
-                settings,
-                preferences.translationSourceLanguage.first(),
-            )
-            val target = resolveTargetLanguage(
-                settings,
-                preferences.translationTargetLanguage.first(),
-            )
-            if (!translationSetupComplete(target, source, autoDetect)) {
-                // 提示语不在这里给：由翻译设置页弹自己的 snackbar（见 showSetupPrompt）。
+            val (source, autoDetect) = resolveSourceLanguage(settings)
+            // 目标语言总有值：漫画没设就是应用当前语言（用户口径）。
+            val target = resolveTargetLanguage(settings, appTargetLanguage())
+            if (!translationSetupComplete(source, autoDetect)) {
+                // 提示语不在这里给：由「翻译选项」页弹自己的 snackbar（见 showSetupPrompt）。
                 // 详情页的 snackbar 会随导航把本页移出组合而立刻消失，用户看不到。
-                _state.update { it.copy(openTranslationSettings = true) }
+                _state.update { it.copy(openTranslationOptions = true) }
                 return@launch
             }
             val queued = runCatching {
@@ -419,7 +418,7 @@ class MangaDetailViewModel(
                     mangaId = mangaId,
                     chapterIds = chapterIds,
                     request = TranslationRequest(
-                        targetLanguage = target!!,
+                        targetLanguage = target,
                         sourceLanguage = source,
                         autoDetectSource = autoDetect,
                         configSnapshot = null,
@@ -444,10 +443,14 @@ class MangaDetailViewModel(
         }
     }
 
-    /** 界面消费完"请去翻译设置"这个事件之后调用。 */
-    fun consumeOpenTranslationSettings() {
-        _state.update { it.copy(openTranslationSettings = false) }
+    /** 界面消费完"请去翻译选项"这个事件之后调用。 */
+    fun consumeOpenTranslationOptions() {
+        _state.update { it.copy(openTranslationOptions = false) }
     }
+
+    /** 应用当前语言映射出来的翻译目标语言（用户口径：目标语言的全局默认就是它）。 */
+    private fun appTargetLanguage(): String =
+        translationTargetForLanguageTag(preferences.appLanguageTag)
 
     /**
      * 清除翻译文本：取消排队 + 删掉译文，状态回到「待翻译」（用户口径）。
@@ -460,13 +463,7 @@ class MangaDetailViewModel(
         if (ids.isEmpty()) return
         viewModelScope.launch {
             val settings = mangaRepository.translationSettings(mangaId)
-            val target = resolveTargetLanguage(settings, preferences.translationTargetLanguage.first())
-                ?: _state.value.translationTargetLanguage.ifBlank { null }
-            if (target == null) {
-                clearSelection()
-                _state.update { it.copy(message = "还没有可清除的译文") }
-                return@launch
-            }
+            val target = resolveTargetLanguage(settings, appTargetLanguage())
             val affected = runCatching {
                 translationRepository.clearTranslations(mangaId, ids, target)
             }.getOrElse { error ->
@@ -495,17 +492,12 @@ class MangaDetailViewModel(
             val chapters = mangaRepository.getChaptersInDisplayOrder(mangaId)
             val readMarks = mangaRepository.chapterReadMarks(mangaId)
             // 翻译状态按**生效目标语言**取：换语言等于换一套记录，徽标必须跟着换。
-            // 语言还没设置时（用户口径：不给缺省值）没有记录可读——空 map 就是正确结果，
-            // 不是"读失败"，因此不报错也不显示任何翻译徽标。
+            // 目标语言总有值（漫画覆盖 → 应用当前语言），所以这里不再有"未设置"的分支。
             val targetLanguage = resolveTargetLanguage(
                 mangaRepository.translationSettings(mangaId),
-                preferences.translationTargetLanguage.first(),
+                appTargetLanguage(),
             )
-            val translations = if (targetLanguage == null) {
-                emptyMap()
-            } else {
-                translationRepository.chapterTranslations(mangaId, targetLanguage)
-            }
+            val translations = translationRepository.chapterTranslations(mangaId, targetLanguage)
             _state.update {
                 it.copy(
                     loading = false,
@@ -514,7 +506,7 @@ class MangaDetailViewModel(
                     chapters = chapters,
                     readMarks = readMarks,
                     translations = translations,
-                    translationTargetLanguage = targetLanguage.orEmpty(),
+                    translationTargetLanguage = targetLanguage,
                     sourceTreeUri = source.treeUri,
                     sourceDisplayPath = source.displayPath,
                     inShelf = card?.inShelf == true,
@@ -588,13 +580,13 @@ data class MangaDetailUiState(
     /** 这些翻译记录属于哪种目标语言（界面文案要写出来，否则用户不知道在给哪种语言排队）。 */
     val translationTargetLanguage: String = "",
     /**
-     * "请去翻译设置"的一次性事件。
+     * "请去翻译选项"的一次性事件。
      *
      * ViewModel 不认识导航，因此只置一个标记，由界面消费后调
-     * [consumeOpenTranslationSettings] 清掉——用事件而不是持续状态，避免用户从设置页
+     * [consumeOpenTranslationOptions] 清掉——用事件而不是持续状态，避免用户从翻译选项页
      * 返回详情页时又被弹一次。
      */
-    val openTranslationSettings: Boolean = false,
+    val openTranslationOptions: Boolean = false,
     /** 用户保存的章节排序方式；抽屉据此显示"当前是哪一种"。 */
     val orderSetting: ChapterOrdering.Setting = ChapterOrdering.Setting.DEFAULT,
     /** 用户是否手动拖过章节顺序（抽屉显示「当前：手动」）。 */

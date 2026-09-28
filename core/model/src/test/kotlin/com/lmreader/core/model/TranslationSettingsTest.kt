@@ -48,39 +48,54 @@ class TranslationSettingsTest {
     }
 
     @Test
-    fun `目标语言漫画优先否则回退全局没有就是未设置`() {
+    fun `目标语言漫画优先否则用应用语言`() {
         assertEquals("英语", resolveTargetLanguage(MangaTranslationSettings(targetLanguage = "英语"), "简体中文"))
         assertEquals("简体中文", resolveTargetLanguage(MangaTranslationSettings(), "简体中文"))
-        // 两层都没有 = 未设置（用户口径：不给缺省值，首次必须自己填）。
-        assertEquals(null, resolveTargetLanguage(MangaTranslationSettings(), null))
-        assertEquals(null, resolveTargetLanguage(MangaTranslationSettings(), "  "))
-        assertEquals(
-            null,
-            resolveTargetLanguage(MangaTranslationSettings(targetLanguage = "  "), null),
-        )
+        // 空串与空白都算"没设"，回退应用语言。
+        assertEquals("日语", resolveTargetLanguage(MangaTranslationSettings(targetLanguage = "  "), "日语"))
+        // 即使两边都给不出东西，也不会返回空：目标语言永远有值（用户口径）。
+        assertEquals(DEFAULT_TRANSLATION_TARGET, resolveTargetLanguage(MangaTranslationSettings(), "  "))
     }
 
     @Test
     fun `源语言的自动识别优先于手工指定`() {
         val settings = MangaTranslationSettings(sourceLanguage = "英语", autoDetectSource = true)
-        assertEquals(null to true, resolveSourceLanguage(settings, "日语"))
+        assertEquals(null to true, resolveSourceLanguage(settings))
     }
 
     @Test
-    fun `源语言漫画优先否则回退全局没有就是未设置`() {
-        assertEquals("韩语" to false, resolveSourceLanguage(MangaTranslationSettings(sourceLanguage = "韩语"), "日语"))
-        assertEquals("日语" to false, resolveSourceLanguage(MangaTranslationSettings(), "日语"))
-        assertEquals(null to false, resolveSourceLanguage(MangaTranslationSettings(), null))
+    fun `源语言只认漫画这一层`() {
+        assertEquals("韩语" to false, resolveSourceLanguage(MangaTranslationSettings(sourceLanguage = "韩语")))
+        // 没有全局回退：不设就是没定，由调用方拦在翻译之前（用户口径：每部漫画都得手动选）。
+        assertEquals(null to false, resolveSourceLanguage(MangaTranslationSettings()))
+        assertEquals(null to false, resolveSourceLanguage(MangaTranslationSettings(sourceLanguage = "  ")))
     }
 
     @Test
-    fun `翻译设置完整性的判据`() {
-        // 目标语言必须有：译成什么语言不能猜。
-        assertFalse(translationSetupComplete(targetLanguage = null, sourceLanguage = "日语", autoDetectSource = false))
-        assertFalse(translationSetupComplete(targetLanguage = "  ", sourceLanguage = "日语", autoDetectSource = false))
+    fun `翻译选项完整性的判据只看原文语言`() {
         // 源语言要么填了、要么显式选了自动识别。
-        assertTrue(translationSetupComplete("简体中文", "日语", autoDetectSource = false))
-        assertTrue(translationSetupComplete("简体中文", null, autoDetectSource = true))
-        assertFalse(translationSetupComplete("简体中文", null, autoDetectSource = false))
+        assertTrue(translationSetupComplete(sourceLanguage = "日语", autoDetectSource = false))
+        assertTrue(translationSetupComplete(sourceLanguage = null, autoDetectSource = true))
+        assertFalse(translationSetupComplete(sourceLanguage = null, autoDetectSource = false))
+        assertFalse(translationSetupComplete(sourceLanguage = "  ", autoDetectSource = false))
+    }
+
+    @Test
+    fun `应用语言标签映射到目标语言名`() {
+        assertEquals("简体中文", translationTargetForLanguageTag("zh-Hans-CN"))
+        assertEquals("简体中文", translationTargetForLanguageTag("zh-CN"))
+        assertEquals("简体中文", translationTargetForLanguageTag("zh"))
+        assertEquals("繁体中文", translationTargetForLanguageTag("zh-Hant-TW"))
+        assertEquals("繁体中文", translationTargetForLanguageTag("zh-HK"))
+        assertEquals("日语", translationTargetForLanguageTag("ja-JP"))
+        assertEquals("英语", translationTargetForLanguageTag("en-US"))
+        assertEquals("韩语", translationTargetForLanguageTag("ko"))
+        assertEquals("俄语", translationTargetForLanguageTag("ru-RU"))
+        assertEquals("巴西葡语", translationTargetForLanguageTag("pt-BR"))
+        // 下划线形式（部分 ROM 会给 `zh_CN`）也要认。
+        assertEquals("简体中文", translationTargetForLanguageTag("zh_CN"))
+        // 认不出来就回退到界面语言（应用文案目前只有中文）。
+        assertEquals(DEFAULT_TRANSLATION_TARGET, translationTargetForLanguageTag("ar-EG"))
+        assertEquals(DEFAULT_TRANSLATION_TARGET, translationTargetForLanguageTag(""))
     }
 }

@@ -120,7 +120,7 @@ fun MangaDetailScreen(
     mangaId: String,
     onBack: () -> Unit,
     onReadChapter: (chapterId: String?, startPage: Int?) -> Unit,
-    onOpenTranslationSettings: (prompt: Boolean) -> Unit,
+    onOpenTranslationOptions: (prompt: Boolean) -> Unit,
     viewModel: MangaDetailViewModel = viewModel(
         key = mangaId,
         factory = MangaDetailViewModel.factory(container, mangaId),
@@ -147,17 +147,17 @@ fun MangaDetailScreen(
         }
     }
 
-    // 翻译设置不完整时（用户口径）：把用户带到翻译设置页，提示语由**设置页自己**弹
-    // （见 TranslationSettingsScreen.showSetupPrompt）——详情页的 snackbar 会随导航
+    // 原文语言还没选时（用户口径）：把用户带到「翻译选项」页，提示语由**那一页自己**弹
+    // （见 TranslationOptionsScreen.showSetupPrompt）——详情页的 snackbar 会随导航
     // 立刻消失。填完之后**不自动续跑**，让他自己再点一次翻译——见
     // MangaDetailViewModel.enqueue 的说明。
     //
-    // 用一次性事件（openTranslationSettings）而不是持续状态：否则从设置页返回时
+    // 用一次性事件（openTranslationOptions）而不是持续状态：否则从那一页返回时
     // LaunchedEffect 会因为状态仍为 true 再弹一次，用户会觉得"怎么又跳走了"。
-    LaunchedEffect(state.openTranslationSettings) {
-        if (state.openTranslationSettings) {
-            viewModel.consumeOpenTranslationSettings()
-            onOpenTranslationSettings(true)
+    LaunchedEffect(state.openTranslationOptions) {
+        if (state.openTranslationOptions) {
+            viewModel.consumeOpenTranslationOptions()
+            onOpenTranslationOptions(true)
         }
     }
 
@@ -221,7 +221,7 @@ fun MangaDetailScreen(
                     actions = {
                         DetailOverflowMenu(
                             onTranslateAll = viewModel::translateAll,
-                            onOpenSettings = { onOpenTranslationSettings(false) },
+                            onOpenSettings = { onOpenTranslationOptions(false) },
                         )
                     },
                 )
@@ -905,8 +905,11 @@ private fun ChapterOrdering.Mode.hint(): String = when (this) {
 /**
  * 详情页右上角的 ⋮。
  *
- * 只有两项（用户口径）：把语言 / 文风 / 译名三个入口**全部收进「翻译设置」**之后，
+ * 只有两项（用户口径）：把语言 / 文风 / 译名三个入口**全部收进「翻译选项」**之后，
  * ⋮ 上不该再重复摆它们——同一个东西有两个入口，用户会以为它们是不同的设置。
+ *
+ * 入口叫「翻译选项」而不是「翻译设置」（用户口径）：后者已经被应用级的翻译配置
+ * （设置里的那一套）占用了，同名会让人分不清改的是这部作品还是全局。
  */
 @Composable
 private fun DetailOverflowMenu(
@@ -926,7 +929,7 @@ private fun DetailOverflowMenu(
             },
         )
         DropdownMenuItem(
-            text = { Text("翻译设置") },
+            text = { Text("翻译选项") },
             onClick = {
                 open = false
                 onOpenSettings()

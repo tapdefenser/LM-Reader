@@ -12,6 +12,8 @@ import com.lmreader.core.model.StyleMode
 import com.lmreader.core.model.resolveSourceLanguage
 import com.lmreader.core.model.resolveTargetLanguage
 import com.lmreader.core.model.resolveTranslationStyle
+import com.lmreader.core.model.translationSetupComplete
+import com.lmreader.core.model.translationTargetForLanguageTag
 import com.lmreader.core.storage.settings.AppPreferences
 import com.lmreader.di.AppContainer
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -22,7 +24,10 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 /**
- * 翻译设置（**一个页面装下语言、文风与译名入口**；用户口径）。
+ * **翻译选项**（漫画级：一个页面装下语言、文风与译名入口；用户口径）。
+ *
+ * 名字里刻意不带"设置"：应用级的那一套（主 AI、OCR、模式、全局文风）在**设置**里，
+ * 用户要求两者分开叫，免得"翻译设置"到底指哪一层要靠上下文猜。
  *
  * ## 为什么合成一页
  *
@@ -30,22 +35,21 @@ import kotlinx.coroutines.launch
  * "这部作品要怎么翻"。合成一页之后，用户从"翻译所选"被拦进来时能一次把三样都填完，
  * 而不是在三个页面之间来回找。
  *
- * ## 语言为什么不给缺省值
+ * ## 两维语言的规则不同
  *
- * 用户口径：翻译语言没设置过就是**空的**，首次进来必须自己填。给一个默认的
- * "日语 → 简体中文"看着友好，实际会让用户跳过这一步，直到发现整章译文都不对。
- * 因此 [TranslationSettingsUiState.languageConfigured] 为 false 时详情页会拦住翻译并
- * 把他带到这一页。
+ * - **原文语言必填、且没有全局默认**（用户口径："每个新的漫画都必须得手动选"）。
+ *   因此 [TranslationOptionsUiState.sourceConfigured] 为 false 时详情页会拦住翻译。
+ * - **目标语言不必填**：全局默认就是应用现在使用的语言，漫画这一层只是覆盖。
  */
-class TranslationSettingsViewModel(
+class TranslationOptionsViewModel(
     private val mangaId: String,
     private val mangaRepository: MangaRepository,
     private val shelfRepository: ShelfRepository,
     private val preferences: AppPreferences,
 ) : ViewModel() {
 
-    private val _state = MutableStateFlow(TranslationSettingsUiState())
-    val state: StateFlow<TranslationSettingsUiState> = _state.asStateFlow()
+    private val _state = MutableStateFlow(TranslationOptionsUiState())
+    val state: StateFlow<TranslationOptionsUiState> = _state.asStateFlow()
 
     init {
         viewModelScope.launch { reload() }
@@ -54,16 +58,15 @@ class TranslationSettingsViewModel(
     /**
      * 重新读一遍设置。
      *
-     * 每次回到这一页都要重读：用户可以只填全局默认（不改漫画覆盖），那时生效值变了
-     * 但漫画设置没变，只观察 [MangaTranslationSettings] 是看不出来的。
+     * 每次回到这一页都要重读：用户可以改应用语言（目标语言的默认因此变了）或改分类文风，
+     * 那时这张页面上显示的生效值会变，而漫画设置本身没变——只观察
+     * [MangaTranslationSettings] 是看不出来的。
      */
     fun reload() {
         viewModelScope.launch {
             val settings = mangaRepository.translationSettings(mangaId)
-            val globalSource = preferences.translationSourceLanguage.first()
-            val globalAutoDetect = preferences.translationAutoDetectSource.first()
-            val globalTarget = preferences.translationTargetLanguage.first()
             val globalStyle = preferences.translationGlobalStyle.first()
+            val appTarget = translationTargetForLanguageTag(preferences.appLanguageTag)
             val categoryId = shelfRepository.categoryIdOf(mangaId)
             val category = categoryId?.let { id ->
                 shelfRepository.observeCategories().first().firstOrNull { it.categoryId == id }
@@ -72,9 +75,7 @@ class TranslationSettingsViewModel(
                 it.copy(
                     loading = false,
                     settings = settings,
-                    globalSource = globalSource,
-                    globalAutoDetect = globalAutoDetect,
-                    globalTarget = globalTarget,
+                    appTargetLanguage = appTarget,
                     globalStyle = globalStyle,
                     categoryName = category?.name,
                     categoryStyle = category?.customStyle?.takeIf { text -> text.isNotBlank() },
@@ -83,7 +84,11 @@ class TranslationSettingsViewModel(
         }
     }
 
-    /** 源语言：空串 = 清除覆盖、跟随全局。 */
+    /**
+     * 原文语言。
+     *
+     * 空串 = 清除（回到"还没选"，而不是回退到某个全局默认——没有全局默认这回事）。
+     */
     fun setSourceLanguage(language: String) {
         val trimmed = language.trim()
         update { current ->
@@ -100,6 +105,7 @@ class TranslationSettingsViewModel(
         update { it.copy(autoDetectSource = enabled) }
     }
 
+    /** 目标语言；空串 = 用应用当前语言（这是默认，不是"未设置"）。 */
     fun setTargetLanguage(language: String) {
         val trimmed = language.trim()
         update { it.copy(targetLanguage = trimmed.takeIf { it.isNotEmpty() }) }
@@ -134,7 +140,7 @@ class TranslationSettingsViewModel(
         fun factory(container: AppContainer, mangaId: String): ViewModelProvider.Factory =
             viewModelFactory {
                 initializer {
-                    TranslationSettingsViewModel(
+                    TranslationOptionsViewModel(
                         mangaId = mangaId,
                         mangaRepository = container.mangaRepository,
                         shelfRepository = container.shelfRepository,
@@ -145,13 +151,11 @@ class TranslationSettingsViewModel(
     }
 }
 
-data class TranslationSettingsUiState(
+data class TranslationOptionsUiState(
     val loading: Boolean = true,
     val settings: MangaTranslationSettings = MangaTranslationSettings(),
-    /** null = 全局还没设过（用户口径：不给缺省值）。 */
-    val globalSource: String? = null,
-    val globalAutoDetect: Boolean = false,
-    val globalTarget: String? = null,
+    /** 应用当前语言映射出来的目标语言；漫画没设时生效的就是它。 */
+    val appTargetLanguage: String = "",
     val globalStyle: String = "",
     /** 这部作品所在分类的名字；null = 不在书架，没有分类这一层。 */
     val categoryName: String? = null,
@@ -159,24 +163,23 @@ data class TranslationSettingsUiState(
     val categoryStyle: String? = null,
     val message: String? = null,
 ) {
-    /** 生效的源语言：null = 还没定（且没开自动识别）。 */
+    /** 生效的原文语言：null = 还没选（且没开自动识别）。 */
     val effectiveSource: String?
-        get() = resolveSourceLanguage(settings, globalSource).let { (language, auto) ->
+        get() = resolveSourceLanguage(settings).let { (language, auto) ->
             if (auto) AUTO_DETECT_LABEL else language
         }
 
     val autoDetectSource: Boolean
-        get() = resolveSourceLanguage(settings, globalSource).second
+        get() = resolveSourceLanguage(settings).second
 
-    /** 生效的目标语言；null = 未设置。 */
-    val effectiveTarget: String?
-        get() = resolveTargetLanguage(settings, globalTarget)
+    /** 生效的目标语言；**总有值**（漫画覆盖 → 应用语言）。 */
+    val effectiveTarget: String
+        get() = resolveTargetLanguage(settings, appTargetLanguage)
 
-    /** 语言是否已经配到"可以开始翻译"的程度，决定详情页是否要拦住翻译。 */
-    val languageConfigured: Boolean
-        get() = com.lmreader.core.model.translationSetupComplete(
-            targetLanguage = effectiveTarget,
-            sourceLanguage = settings.sourceLanguage ?: globalSource,
+    /** 原文语言是否已经选到"可以开始翻译"的程度，决定详情页是否要拦住翻译。 */
+    val sourceConfigured: Boolean
+        get() = translationSetupComplete(
+            sourceLanguage = settings.sourceLanguage,
             autoDetectSource = autoDetectSource,
         )
 
@@ -192,11 +195,16 @@ data class TranslationSettingsUiState(
             else -> "留空，正在使用全局默认文风"
         }
 
+    /** 原文语言显示名；没选就是「未选」。 */
     val sourceLabel: String
-        get() = effectiveSource ?: "未设置"
+        get() = effectiveSource ?: "未选"
 
     val targetLabel: String
-        get() = effectiveTarget ?: "未设置"
+        get() = effectiveTarget
+
+    /** 目标语言是否来自应用语言（而不是这部作品的覆盖）。 */
+    val targetFromAppLanguage: Boolean
+        get() = settings.targetLanguage.isNullOrBlank()
 }
 
 /** 自动识别在界面上的显示名（它不是一种语言，因此不能和语言名混在一列里）。 */

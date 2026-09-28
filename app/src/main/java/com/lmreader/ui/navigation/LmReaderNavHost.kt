@@ -33,7 +33,7 @@ import com.lmreader.ui.settings.reader.ReaderSettingsScreen
 import com.lmreader.ui.settings.paths.GalleryPathsScreen
 import com.lmreader.ui.settings.paths.GalleryPathsSettingsScreen
 import com.lmreader.ui.translation.GlossaryScreen
-import com.lmreader.ui.translation.TranslationSettingsScreen
+import com.lmreader.ui.translation.TranslationOptionsScreen
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
@@ -51,18 +51,21 @@ object Routes {
     const val EXPORT_QUEUE = "queue/export"
 
     // 翻译相关的页面全部挂在详情页下（"跟着每部漫画走"，用户口径）。
-    const val TRANSLATION_SETTINGS = "manga/{mangaId}/translation?prompt={prompt}"
+    //
+    // 注意名字：这里是**「翻译选项」**（漫画级：这部作品怎么翻），与应用级的「翻译设置」
+    // （设置里：主 AI、OCR、模式、全局文风）是两回事，用户要求两者分开叫。
+    const val TRANSLATION_OPTIONS = "manga/{mangaId}/translation?prompt={prompt}"
     const val TRANSLATION_GLOSSARY = "manga/{mangaId}/translation/glossary"
 
     fun mangaDetail(mangaId: String) = "manga/$mangaId"
 
     /**
-     * @param prompt 是否由"用户想翻译但设置不全"这一路径进来的。
-     *   是的话设置页会弹一句"请先完成翻译设置"。**提示必须由设置页自己弹**：
+     * @param prompt 是否由"用户想翻译但原文语言还没选"这一路径进来的。
+     *   是的话页面会弹一句"请先为这部作品选好原文语言"。**提示必须由该页自己弹**：
      *   详情页那句 snackbar 会随着导航把详情页移出组合而立刻消失，用户根本看不到。
      *   用查询参数而不是新路由，是因为这仍**是同一个页面**，只是进来的原因不同。
      */
-    fun translationSettings(mangaId: String, prompt: Boolean = false) =
+    fun translationOptions(mangaId: String, prompt: Boolean = false) =
         "manga/$mangaId/translation?prompt=$prompt"
 
     fun translationGlossary(mangaId: String) = "manga/$mangaId/translation/glossary"
@@ -238,14 +241,14 @@ fun LmReaderNavHost(
                         onReadChapter = { chapterId, startPage ->
                             navController.navigate(Routes.reader(mangaId, chapterId, startPage))
                         },
-                        onOpenTranslationSettings = { prompt ->
-                            navController.navigate(Routes.translationSettings(mangaId, prompt))
+                        onOpenTranslationOptions = { prompt ->
+                            navController.navigate(Routes.translationOptions(mangaId, prompt))
                         },
                     )
                 }
 
                 composable(
-                    route = Routes.TRANSLATION_SETTINGS,
+                    route = Routes.TRANSLATION_OPTIONS,
                     arguments = listOf(
                         // 与 READER 的 page 同理：查询参数必须显式声明类型与默认值，
                         // 否则解析出来的类型不确定、"从 ⋮ 进来"与"被带进来"就分不开。
@@ -256,7 +259,7 @@ fun LmReaderNavHost(
                     ),
                 ) { entry ->
                     val mangaId = entry.arguments?.getString("mangaId").orEmpty()
-                    TranslationSettingsScreen(
+                    TranslationOptionsScreen(
                         container = container,
                         mangaId = mangaId,
                         showSetupPrompt = entry.arguments?.getBoolean("prompt") == true,

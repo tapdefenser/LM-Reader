@@ -1,5 +1,7 @@
 package com.lmreader.core.model
 
+import java.util.Locale
+
 /**
  * 翻译相关的领域模型（阶段 2 的数据层；引擎本身是 P3）。
  *
@@ -85,16 +87,24 @@ data class TranslationRequest(
 )
 
 /**
- * 漫画级翻译设置（跟着漫画走，见用户口径）。
+ * 漫画级翻译设置（**「翻译选项」页面上的东西**，跟着漫画走）。
  *
- * 每一维都可以"留空"：留空 = 用上一层（分类 → 全局）。见 [resolveTranslationStyle]。
+ * 与**应用级**的翻译设置（设置里的那一套：主 AI、OCR、模式、全局文风；P3）区分开：
+ * 这一层只回答"这部作品要怎么翻"。
+ *
+ * 两维语言的规则不同，别把它们写成同一个形状：
+ *
+ * - **原文语言：没有全局默认这一说**（用户口径："每个新的漫画都必须得手动选"）。
+ *   它是这部作品的属性，替用户猜一个默认值等于让整章译文悄悄跑偏。
+ * - **目标语言：全局默认就是应用现在使用的语言**（用户口径）。因此它总有值，
+ *   漫画这一层只是"我这部想翻成别的"的覆盖。
  */
 data class MangaTranslationSettings(
-    /** null = 跟随全局默认源语言。 */
+    /** null = 还没为这部作品选过原文语言。**必填**，不继承任何上层。 */
     val sourceLanguage: String? = null,
-    /** true = 自动识别源语言（优先于 [sourceLanguage]）。 */
+    /** true = 自动识别原文语言（优先于 [sourceLanguage]，两者互斥）。 */
     val autoDetectSource: Boolean = false,
-    /** null = 跟随全局默认目标语言。 */
+    /** null = 用应用当前语言（见 [translationTargetForLanguageTag]）。 */
     val targetLanguage: String? = null,
     /** null 或非 [StyleMode.CUSTOM] = 不用漫画自己的文风，往下走分类与全局。 */
     val styleMode: StyleMode? = null,
@@ -125,38 +135,82 @@ fun resolveTranslationStyle(
 }
 
 /**
- * 有效目标语言：漫画没设就用全局默认；两层都没有 = **未设置**（null）。
+ * 有效目标语言：漫画没设就用**应用现在使用的语言**（用户口径："目标语言全局默认
+ * 直接是应用现在使用的语言"）。
  *
- * "未设置"必须是可表达的：用户口径是翻译语言**不给缺省值**，用户没填过就要在
- * 真正翻译前把他拦到设置页，而不是替他猜一个"简体中文"然后翻出他不想要的东西。
+ * 因此它**不会返回 null**：目标语言永远有个可用的值，用户不需要为它做任何设置。
+ * （这与原文语言相反——那个必填，见 [resolveSourceLanguage]。）
  */
-fun resolveTargetLanguage(manga: MangaTranslationSettings, globalTarget: String?): String? =
+fun resolveTargetLanguage(manga: MangaTranslationSettings, appLanguage: String): String =
     manga.targetLanguage?.takeIf { it.isNotBlank() }?.trim()
-        ?: globalTarget?.takeIf { it.isNotBlank() }?.trim()
+        ?: appLanguage.takeIf { it.isNotBlank() }?.trim()
+        ?: DEFAULT_TRANSLATION_TARGET
 
-/** 有效源语言：自动识别优先；否则漫画设置优先，最后回退全局；都没有 = null（未设置）。 */
-fun resolveSourceLanguage(
-    manga: MangaTranslationSettings,
-    globalSource: String?,
-): Pair<String?, Boolean> = when {
+/**
+ * 有效原文语言：自动识别优先；否则只认漫画这一层。
+ *
+ * **没有全局回退**（用户口径："翻译的原文语言没有全局默认这一说，每个新的漫画都必须得
+ * 手动选"）。都没设时返回 `null to false` = 还没定，由调用方拦在翻译之前。
+ */
+fun resolveSourceLanguage(manga: MangaTranslationSettings): Pair<String?, Boolean> = when {
     manga.autoDetectSource -> null to true
     !manga.sourceLanguage.isNullOrBlank() -> manga.sourceLanguage.trim() to false
-    else -> globalSource?.takeIf { it.isNotBlank() }?.trim() to false
+    else -> null to false
 }
 
 /**
- * 翻译设置是否完整到可以排队。
+ * 翻译选项是否完整到可以排队（**只看原文语言**）。
  *
- * 用户口径："翻译设置选项有缺省的时候……如果用户要进行翻译，自动弹出翻译设置，
- * 然后给一个消息提示请进行翻译设置，然后手动重新启动翻译。"因此这里回答的是
- * **能不能开始**，而不是"缺哪一项"：
- *
- * - 目标语言必须有（译成什么语言不能靠猜）；
- * - 源语言要么填了、要么显式选了自动识别（"正文是什么语言"同样不能猜：
- *   猜错会让整章译文都跑偏，而代价由用户付）。
+ * 目标语言总有值（[resolveTargetLanguage]），所以这里不再检查它。用户口径是
+ * "如果用户要进行翻译，自动弹出翻译选项，然后给一个消息提示，然后手动重新启动翻译"，
+ * 因此这里回答的是**能不能开始**：原文语言要么填了、要么显式选了自动识别。
  */
 fun translationSetupComplete(
-    targetLanguage: String?,
     sourceLanguage: String?,
     autoDetectSource: Boolean,
-): Boolean = !targetLanguage.isNullOrBlank() && (autoDetectSource || !sourceLanguage.isNullOrBlank())
+): Boolean = autoDetectSource || !sourceLanguage.isNullOrBlank()
+
+/** 目标语言的兜底值：应用语言无法识别时用它（界面语言是中文，见下）。 */
+const val DEFAULT_TRANSLATION_TARGET = "简体中文"
+
+/**
+ * 应用界面语言的 BCP-47 标签 → 翻译目标语言名。
+ *
+ * 用户口径："目标语言全局默认直接是应用现在使用的语言"。所以这里是一张**小映射表**，
+ * 而不是让用户再填一次"我要翻成什么语言"。
+ *
+ * 两个刻意的选择：
+ *
+ * 1. 认不出来的标签回退到 [DEFAULT_TRANSLATION_TARGET]（简体中文）：应用的界面文案
+ *    目前只有中文，用户看到的就是中文；将来 P5 加了"应用语言"并且真的做了多语言
+ *    界面之后，这里改成跟随那个设置，才能名副其实。
+ * 2. 只在语言名上与界面预设保持一致（"巴西葡语"而不是"葡萄牙语"），因为这个名字
+ *    会直接进翻译请求。
+ */
+fun translationTargetForLanguageTag(languageTag: String): String {
+    val normalized = languageTag.replace('_', '-').lowercase(Locale.ROOT)
+    val language = normalized.substringBefore('-')
+    return when (language) {
+        "zh" -> if (
+            normalized.contains("hant") ||
+            normalized.contains("-tw") ||
+            normalized.contains("-hk") ||
+            normalized.contains("-mo")
+        ) {
+            "繁体中文"
+        } else {
+            "简体中文"
+        }
+
+        "ja" -> "日语"
+        "en" -> "英语"
+        "ko" -> "韩语"
+        "ru" -> "俄语"
+        "pt" -> "巴西葡语"
+        "fr" -> "法语"
+        "de" -> "德语"
+        "es" -> "西班牙语"
+        "it" -> "意大利语"
+        else -> DEFAULT_TRANSLATION_TARGET
+    }
+}

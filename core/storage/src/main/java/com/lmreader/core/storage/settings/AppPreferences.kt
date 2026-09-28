@@ -146,22 +146,23 @@ class AppPreferences(private val context: Context) {
     // ---- 翻译的全局默认（漫画级留空时用它，见 MangaTranslationSettings） ----------
 
     /**
-     * 全局默认源语言；**null = 用户还没设过**。
+     * 应用**当前界面语言**的 BCP-47 标签，用来定翻译目标语言的全局默认。
      *
-     * 刻意不给缺省值（用户口径："翻译设置选项有缺省的时候……用户没有设置过的时候你要
-     * 设置成缺省，这样相当于首次启动就是要求用户填入了"）。给一个"日语"看起来友好，
-     * 实际会让用户跳过这一步，直到某天发现整章译文都不对——而那是他付的代价。
+     * 用户口径："目标语言全局默认直接是应用现在使用的语言"，所以目标语言没有"未设置"
+     * 这个状态，也不需要用户单独填一个全局目标语言——它就是这里。
+     *
+     * 取 `resources.configuration.locales[0]` 而不是 `Locale.getDefault()`：前者是
+     * **这个应用实际被配置成**的语言（P5 的"应用语言"将来改的也是它），后者是系统语言，
+     * 两者的差别在"系统是英文但应用被设成中文"时会显出来。
+     *
+     * **原文语言没有对应的全局偏好**：它是每部作品的属性，必须逐部手动选（用户口径）。
      */
-    val translationSourceLanguage: Flow<String?> = context.preferenceStore.data
-        .map { it[KEY_TRANSLATION_SOURCE_LANGUAGE]?.takeIf { text -> text.isNotBlank() } }
-
-    /** 全局是否默认自动识别源语言；默认关（自动识别更贵，且日漫占多数）。 */
-    val translationAutoDetectSource: Flow<Boolean> = context.preferenceStore.data
-        .map { it[KEY_TRANSLATION_AUTO_DETECT] ?: false }
-
-    /** 全局默认目标语言；**null = 用户还没设过**（理由同源语言）。 */
-    val translationTargetLanguage: Flow<String?> = context.preferenceStore.data
-        .map { it[KEY_TRANSLATION_TARGET_LANGUAGE]?.takeIf { text -> text.isNotBlank() } }
+    val appLanguageTag: String
+        get() {
+            val locales = context.resources.configuration.locales
+            val tag = if (locales.size() > 0) locales[0]?.toLanguageTag() else null
+            return tag?.takeIf { it.isNotBlank() } ?: "zh-Hans-CN"
+        }
 
     /**
      * 全局默认文风（覆盖链的最后一层）。
@@ -171,17 +172,6 @@ class AppPreferences(private val context: Context) {
      */
     val translationGlobalStyle: Flow<String> = context.preferenceStore.data
         .map { it[KEY_TRANSLATION_GLOBAL_STYLE]?.takeIf { text -> text.isNotBlank() } ?: DEFAULT_STYLE }
-
-    suspend fun setTranslationSourceLanguage(language: String, autoDetect: Boolean) {
-        context.preferenceStore.edit {
-            it[KEY_TRANSLATION_SOURCE_LANGUAGE] = language
-            it[KEY_TRANSLATION_AUTO_DETECT] = autoDetect
-        }
-    }
-
-    suspend fun setTranslationTargetLanguage(language: String) {
-        context.preferenceStore.edit { it[KEY_TRANSLATION_TARGET_LANGUAGE] = language }
-    }
 
     suspend fun setTranslationGlobalStyle(style: String) {
         context.preferenceStore.edit { it[KEY_TRANSLATION_GLOBAL_STYLE] = style }
@@ -207,6 +197,13 @@ class AppPreferences(private val context: Context) {
         val KEY_BOOKSHELF_SORT_MODE = stringPreferencesKey("bookshelf_sort_mode")
         val KEY_BOOKSHELF_SORT_DESC = booleanPreferencesKey("bookshelf_sort_desc")
 
+        /**
+         * 旧的全局源语言 / 自动识别 / 目标语言偏好。
+         *
+         * v8 之后不再被读写（用户口径：原文语言每部漫画手动选，没有全局默认；目标语言的
+         * 全局默认就是应用当前语言）。保留常量以免以后清理时漏掉用户设备上的历史值，
+         * 但**不要**再用它们做任何解析。
+         */
         val KEY_TRANSLATION_SOURCE_LANGUAGE = stringPreferencesKey("translation_source_language")
         val KEY_TRANSLATION_AUTO_DETECT = booleanPreferencesKey("translation_auto_detect_source")
         val KEY_TRANSLATION_TARGET_LANGUAGE = stringPreferencesKey("translation_target_language")
@@ -215,8 +212,8 @@ class AppPreferences(private val context: Context) {
         /**
          * 全局默认文风（覆盖链的最后一层）。
          *
-         * 与语言不同，**这里给缺省值是刻意的**：文风留空本来就有明确的退化路径
-         * （分类文风 → 这句默认），用户不填也不会出错；语言留空则无法开始翻译。
+         * 与原文语言不同，**这里给缺省值是刻意的**：文风留空本来就有明确的退化路径
+         * （分类文风 → 这句默认），用户不填也不会出错；原文语言留空则无法开始翻译。
          */
         const val DEFAULT_STYLE =
             "忠实原意，译文自然流畅，保持人物语气、称谓和前后文一致，不添加解释。"

@@ -77,8 +77,10 @@ fun SettingsHomeScreen(
                 onClick = onOpenReader,
             )
             SettingsEntry(
-                title = "翻译配置",
-                subtitle = "主 AI、OCR、三种翻译模式、语言与文风、遮罩与字体（P3）",
+                // 应用级叫「翻译设置」，漫画级叫「翻译选项」（详情页 ⋮）——用户要求两者分开叫，
+                // 这样"翻译设置"就不会在两层之间来回指代。
+                title = "翻译设置",
+                subtitle = "主 AI、OCR、三种翻译模式、全局文风、遮罩与字体（P3）",
                 enabled = false,
                 onClick = {},
             )

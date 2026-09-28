@@ -516,7 +516,7 @@ private fun CategoryRow(
     }
 }
 
-/** 文风来源说明；具体文风文本在翻译设置页编辑（P3）。 */
+/** 文风来源说明；具体文风文本在漫画的「翻译选项」页（或应用级翻译设置）里编辑。 */
 private fun styleDescription(mode: StyleMode): String = when (mode) {
     StyleMode.GLOBAL -> "文风：跟随全局默认"
     StyleMode.CATEGORY -> "文风：跟随类别（未设置时回退全局）"
