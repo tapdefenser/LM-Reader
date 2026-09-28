@@ -166,6 +166,71 @@ object Migrations {
         }
     }
 
+    /**
+     * v6 → v7：翻译数据（阶段 2）。三块，都是**加东西**，不动既有数据：
+     *
+     * 1. `mangas` 加五列：漫画级源/目标语言、自动识别开关、漫画自己的文风。
+     *    全部可空或带默认 —— "没设置"必须与"设置成默认值"区分开，否则漫画这一层
+     *    会把分类与全局挡住（文风是**覆盖**关系，见 `MangaTranslationSettings`）；
+     * 2. `chapter_translation`：一章 × 一种目标语言的翻译记录，主键
+     *    `(chapterId, targetLanguage)`。**不回填**：升级前没有任何翻译记录，
+     *    凭空写一堆"未翻译"行只会让表变大；
+     * 3. `manga_glossary`：漫画译名字典（TR09），主键 `(mangaId, targetLanguage, source)`。
+     */
+    val MIGRATION_6_7 = object : Migration(6, 7) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("ALTER TABLE mangas ADD COLUMN translationSourceLanguage TEXT")
+            db.execSQL("ALTER TABLE mangas ADD COLUMN translationAutoDetectSource INTEGER NOT NULL DEFAULT 0")
+            db.execSQL("ALTER TABLE mangas ADD COLUMN translationTargetLanguage TEXT")
+            db.execSQL("ALTER TABLE mangas ADD COLUMN translationStyleMode TEXT")
+            db.execSQL("ALTER TABLE mangas ADD COLUMN translationCustomStyle TEXT")
+
+            db.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS chapter_translation (
+                    chapterId TEXT NOT NULL,
+                    mangaId TEXT NOT NULL,
+                    targetLanguage TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    sourceLanguage TEXT,
+                    autoDetectSource INTEGER NOT NULL,
+                    configSnapshot TEXT,
+                    queuedAt INTEGER,
+                    translatedAt INTEGER,
+                    translatedCount INTEGER NOT NULL,
+                    failure TEXT,
+                    updatedAt INTEGER NOT NULL,
+                    PRIMARY KEY(chapterId, targetLanguage),
+                    FOREIGN KEY(chapterId) REFERENCES chapters(chapterId) ON DELETE CASCADE
+                )
+                """.trimIndent(),
+            )
+            db.execSQL(
+                "CREATE INDEX IF NOT EXISTS index_chapter_translation_mangaId_state " +
+                    "ON chapter_translation (mangaId, state)",
+            )
+
+            db.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS manga_glossary (
+                    mangaId TEXT NOT NULL,
+                    targetLanguage TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    target TEXT NOT NULL,
+                    manual INTEGER NOT NULL,
+                    updatedAt INTEGER NOT NULL,
+                    PRIMARY KEY(mangaId, targetLanguage, source),
+                    FOREIGN KEY(mangaId) REFERENCES mangas(mangaId) ON DELETE CASCADE
+                )
+                """.trimIndent(),
+            )
+            db.execSQL(
+                "CREATE INDEX IF NOT EXISTS index_manga_glossary_mangaId " +
+                    "ON manga_glossary (mangaId)",
+            )
+        }
+    }
+
     val ALL: Array<Migration> =
-        arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
+        arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
 }

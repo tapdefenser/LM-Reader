@@ -90,6 +90,9 @@ class AppContainer(private val application: Application) {
     val database get() = databaseComponents.database
     val sourceRepository: SourceRepository get() = databaseComponents.sources
     val mangaRepository: MangaRepository get() = databaseComponents.mangas
+    /** 待翻译队列与漫画译名字典（阶段 2；翻译引擎在 P3）。 */
+    val translationRepository: com.lmreader.core.model.TranslationRepository
+        get() = databaseComponents.translations
     val shelfRepository: ShelfRepository get() = databaseComponents.shelf
     val readingProgressRepository get() = databaseComponents.readingProgress
 

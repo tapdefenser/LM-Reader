@@ -16,6 +16,7 @@ import com.lmreader.core.model.MangaCard
 import com.lmreader.core.model.MangaMetadataUpdate
 import com.lmreader.core.model.MangaPage
 import com.lmreader.core.model.MangaRepository
+import com.lmreader.core.model.MangaTranslationSettings
 import com.lmreader.core.model.MetadataOwnerType
 import com.lmreader.core.model.MetadataRecord
 import com.lmreader.core.model.ReaderOrientation
@@ -486,6 +487,23 @@ internal class MangaRepositoryImpl(
                     updatedAt = at,
                 )
             },
+        )
+    }
+
+    override suspend fun translationSettings(mangaId: String): MangaTranslationSettings =
+        mangaDao.getById(mangaId)?.toDomain()?.translationSettings ?: MangaTranslationSettings()
+
+    override suspend fun updateTranslationSettings(
+        mangaId: String,
+        settings: MangaTranslationSettings,
+    ) {
+        mangaDao.updateTranslationSettings(
+            mangaId = mangaId,
+            sourceLanguage = settings.sourceLanguage?.trim()?.takeIf { it.isNotEmpty() },
+            autoDetectSource = settings.autoDetectSource,
+            targetLanguage = settings.targetLanguage?.trim()?.takeIf { it.isNotEmpty() },
+            styleMode = settings.styleMode?.name,
+            customStyle = settings.customStyle,
         )
     }
 

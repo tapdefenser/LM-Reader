@@ -116,6 +116,44 @@ class AppPreferences(private val context: Context) {
         context.preferenceStore.edit { it[KEY_CHAPTER_ORDER_MANUAL] = manual }
     }
 
+    // ---- 翻译的全局默认（漫画级留空时用它，见 MangaTranslationSettings） ----------
+
+    /** 全局默认源语言；默认日语（开发文档 TR04）。 */
+    val translationSourceLanguage: Flow<String> = context.preferenceStore.data
+        .map { it[KEY_TRANSLATION_SOURCE_LANGUAGE] ?: DEFAULT_SOURCE_LANGUAGE }
+
+    /** 全局是否默认自动识别源语言；默认关（自动识别更贵，且日漫占多数）。 */
+    val translationAutoDetectSource: Flow<Boolean> = context.preferenceStore.data
+        .map { it[KEY_TRANSLATION_AUTO_DETECT] ?: false }
+
+    /** 全局默认目标语言；默认简体中文（开发文档 TR05，独立于界面语言）。 */
+    val translationTargetLanguage: Flow<String> = context.preferenceStore.data
+        .map { it[KEY_TRANSLATION_TARGET_LANGUAGE] ?: DEFAULT_TARGET_LANGUAGE }
+
+    /**
+     * 全局默认文风（覆盖链的最后一层）。
+     *
+     * 默认值就是开发文档 TR06 的内置日漫文风。用户把它清空时回退到这个默认值：
+     * 空文风会让模型收到一条空指令，比给一句通用文风更糟。
+     */
+    val translationGlobalStyle: Flow<String> = context.preferenceStore.data
+        .map { it[KEY_TRANSLATION_GLOBAL_STYLE]?.takeIf { text -> text.isNotBlank() } ?: DEFAULT_STYLE }
+
+    suspend fun setTranslationSourceLanguage(language: String, autoDetect: Boolean) {
+        context.preferenceStore.edit {
+            it[KEY_TRANSLATION_SOURCE_LANGUAGE] = language
+            it[KEY_TRANSLATION_AUTO_DETECT] = autoDetect
+        }
+    }
+
+    suspend fun setTranslationTargetLanguage(language: String) {
+        context.preferenceStore.edit { it[KEY_TRANSLATION_TARGET_LANGUAGE] = language }
+    }
+
+    suspend fun setTranslationGlobalStyle(style: String) {
+        context.preferenceStore.edit { it[KEY_TRANSLATION_GLOBAL_STYLE] = style }
+    }
+
     private companion object {
         val KEY_ONBOARDING_COMPLETED = booleanPreferencesKey("onboarding_completed")
         val KEY_LIBRARY_DISPLAY_MODE = stringPreferencesKey("library_display_mode")
@@ -132,6 +170,18 @@ class AppPreferences(private val context: Context) {
         val KEY_CHAPTER_ORDER_MODE = stringPreferencesKey("chapter_order_mode")
         val KEY_CHAPTER_ORDER_DESC = booleanPreferencesKey("chapter_order_desc")
         val KEY_CHAPTER_ORDER_MANUAL = booleanPreferencesKey("chapter_order_manual")
+
+        val KEY_TRANSLATION_SOURCE_LANGUAGE = stringPreferencesKey("translation_source_language")
+        val KEY_TRANSLATION_AUTO_DETECT = booleanPreferencesKey("translation_auto_detect_source")
+        val KEY_TRANSLATION_TARGET_LANGUAGE = stringPreferencesKey("translation_target_language")
+        val KEY_TRANSLATION_GLOBAL_STYLE = stringPreferencesKey("translation_global_style")
+
+        const val DEFAULT_SOURCE_LANGUAGE = "日语"
+        const val DEFAULT_TARGET_LANGUAGE = "简体中文"
+
+        /** 开发文档 TR06 的内置文风。 */
+        const val DEFAULT_STYLE =
+            "忠实原意，译文自然流畅，保持人物语气、称谓和前后文一致，不添加解释。"
 
         /** 来源 ID 是 `s_` + 十六进制，不含逗号，因此逗号分隔是安全的。 */
         const val SEPARATOR = ","

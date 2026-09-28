@@ -14,12 +14,15 @@ import com.lmreader.core.database.dao.ReadingProgressDao
 import com.lmreader.core.database.dao.ScanDao
 import com.lmreader.core.database.dao.ShelfDao
 import com.lmreader.core.database.dao.SourceDao
+import com.lmreader.core.database.dao.TranslationDao
 import com.lmreader.core.database.entity.CategoryEntity
 import com.lmreader.core.database.entity.ChapterEntity
 import com.lmreader.core.database.entity.ChapterReadStateEntity
+import com.lmreader.core.database.entity.ChapterTranslationEntity
 import com.lmreader.core.database.entity.DirectorySnapshotEntity
 import com.lmreader.core.database.entity.LibrarySourceEntity
 import com.lmreader.core.database.entity.MangaEntity
+import com.lmreader.core.database.entity.MangaGlossaryEntity
 import com.lmreader.core.database.entity.MetadataEntity
 import com.lmreader.core.database.entity.ReadingProgressEntity
 import com.lmreader.core.database.entity.ScanRunEntity
@@ -40,6 +43,8 @@ import com.lmreader.core.model.StyleMode
         MangaEntity::class,
         ChapterEntity::class,
         ChapterReadStateEntity::class,
+        ChapterTranslationEntity::class,
+        MangaGlossaryEntity::class,
         MetadataEntity::class,
         CategoryEntity::class,
         ShelfEntryEntity::class,
@@ -47,7 +52,7 @@ import com.lmreader.core.model.StyleMode
         DirectorySnapshotEntity::class,
         ScanRunEntity::class,
     ],
-    version = 6,
+    version = 7,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -57,6 +62,7 @@ abstract class LmReaderDatabase : RoomDatabase() {
     abstract fun mangaDao(): MangaDao
     abstract fun chapterDao(): ChapterDao
     abstract fun chapterReadStateDao(): ChapterReadStateDao
+    abstract fun translationDao(): TranslationDao
     abstract fun metadataDao(): MetadataDao
     abstract fun readingProgressDao(): ReadingProgressDao
     abstract fun shelfDao(): ShelfDao

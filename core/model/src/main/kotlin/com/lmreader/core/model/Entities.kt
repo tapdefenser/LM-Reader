@@ -96,6 +96,13 @@ data class MangaRecord(
     val readerModeOverride: ReadingMode? = null,
     /** 漫画级屏幕方向覆盖；null 表示使用全局默认。 */
     val readerOrientationOverride: ReaderOrientation? = null,
+    /**
+     * 漫画级翻译设置（源/目标语言、自动识别、漫画自己的文风）。
+     *
+     * 放这里而不是塞进 `MangaCard`：卡片是每批 30 张都要读的投影，而这几项只在
+     * 详情页与翻译入队时用得到。
+     */
+    val translationSettings: MangaTranslationSettings = MangaTranslationSettings(),
 )
 
 /**

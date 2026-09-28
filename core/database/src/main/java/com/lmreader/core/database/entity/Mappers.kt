@@ -7,11 +7,13 @@ import com.lmreader.core.model.ChapterRecord
 import com.lmreader.core.model.LibrarySource
 import com.lmreader.core.model.MangaCard
 import com.lmreader.core.model.MangaRecord
+import com.lmreader.core.model.MangaTranslationSettings
 import com.lmreader.core.model.MetadataRecord
 import com.lmreader.core.model.ReaderOrientation
 import com.lmreader.core.model.ReadingMode
 import com.lmreader.core.model.ReadingProgress
 import com.lmreader.core.model.ShelfEntry
+import com.lmreader.core.model.StyleMode
 
 /**
  * 领域类型 ↔ Room 实体。
@@ -82,6 +84,17 @@ internal fun MangaEntity.toDomain(): MangaRecord = MangaRecord(
     readerOrientationOverride = readerOrientationOverride?.let { stored ->
         ReaderOrientation.entries.firstOrNull { it.name == stored }
     },
+    translationSettings = MangaTranslationSettings(
+        sourceLanguage = translationSourceLanguage,
+        autoDetectSource = translationAutoDetectSource,
+        targetLanguage = translationTargetLanguage,
+        // 存名称；失配（旧版本写过、枚举改名）时当成"没设置"，继续往分类/全局回退，
+        // 而不是让详情页打不开。
+        styleMode = translationStyleMode?.let { stored ->
+            StyleMode.entries.firstOrNull { it.name == stored }
+        },
+        customStyle = translationCustomStyle,
+    ),
 )
 
 internal fun MangaRecord.toEntity(sourceOrderIndex: Int): MangaEntity = MangaEntity(
@@ -108,6 +121,11 @@ internal fun MangaRecord.toEntity(sourceOrderIndex: Int): MangaEntity = MangaEnt
     updatedAt = updatedAt,
     readerModeOverride = readerModeOverride?.name,
     readerOrientationOverride = readerOrientationOverride?.name,
+    translationSourceLanguage = translationSettings.sourceLanguage,
+    translationAutoDetectSource = translationSettings.autoDetectSource,
+    translationTargetLanguage = translationSettings.targetLanguage,
+    translationStyleMode = translationSettings.styleMode?.name,
+    translationCustomStyle = translationSettings.customStyle,
 )
 
 internal fun ChapterEntity.toDomain(): ChapterRecord = ChapterRecord(

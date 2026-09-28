@@ -53,3 +53,26 @@ enum class MetadataOwnerType { MANGA, CHAPTER }
 
 /** 文风模式：全局 / 跟随分类 / 自定义（开发文档 15.3、翻译配置对照文档）。 */
 enum class StyleMode { GLOBAL, CATEGORY, CUSTOM }
+
+/**
+ * 一章（某一种目标语言）的翻译状态。
+ *
+ * **"未翻译"不是一个状态值，而是"没有记录"**：一部 500 章的作品里用户只翻了 3 章，
+ * 为其余 497 章各写一行只会让表无意义地变大（与 `chapter_read_state` 同一个取舍）。
+ *
+ * [PENDING] 的语义是"没有译文、且在队列里"——「翻译所选」与「清除翻译文本」都会落到
+ * 这个状态（用户口径：都没译文了不得待翻译）。
+ */
+enum class TranslationState {
+    /** 已入队，等待翻译。 */
+    PENDING,
+
+    /** 翻译中（P3 的调度器接上后才会出现）。 */
+    RUNNING,
+
+    /** 有译文。 */
+    DONE,
+
+    /** 上次失败，[ChapterTranslation.failure] 里有原因。 */
+    FAILED,
+}

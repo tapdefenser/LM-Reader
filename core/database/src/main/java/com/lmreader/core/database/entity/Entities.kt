@@ -127,6 +127,20 @@ data class MangaEntity(
      * `hasMetadata = 0` 的有 5408 部，也就是整个队列从来不前进）。
      */
     val metadataProbedAt: Long? = null,
+    /**
+     * 漫画级翻译设置（语言与文风；见 `MangaTranslationSettings`）。
+     *
+     * 全部可空/带默认：**留空 = 用上一层**（文风走 漫画→分类→全局 的覆盖链，
+     * 语言回退全局默认）。用可空而不是哨兵值，是因为"没设置"与"设置成默认值"在
+     * 覆盖链里是两件事——后者会挡住分类与全局。
+     */
+    val translationSourceLanguage: String? = null,
+    /** 自动识别源语言；true 时优先于 [translationSourceLanguage]。 */
+    val translationAutoDetectSource: Boolean = false,
+    val translationTargetLanguage: String? = null,
+    /** 漫画自己的文风模式；只有 CUSTOM + 非空文本才会覆盖分类与全局。 */
+    val translationStyleMode: String? = null,
+    val translationCustomStyle: String? = null,
 )
 
 /** 章节行；物理定位键是 `(documentId, kind)`（开发文档 15.3）。 */
@@ -272,6 +286,78 @@ data class ChapterReadStateEntity(
     @PrimaryKey val chapterId: String,
     val mangaId: String,
     val read: Boolean,
+    val updatedAt: Long,
+)
+
+/**
+ * 一章 × 一种目标语言的翻译记录（阶段 2 的待翻译队列）。
+ *
+ * 主键 `(chapterId, targetLanguage)`：同一章可以同时存在"翻成简中"与"翻成英文"两份
+ * 任务与译文，而它们的状态互不代表（一种语言翻完了另一种可能还没开始）。
+ *
+ * 没有行 = 未翻译（不为未翻译写行，理由同 [ChapterReadStateEntity]）。
+ * 外键指向 `chapters.chapterId` 并级联删除：章节消失时任务跟着走。
+ */
+@Entity(
+    tableName = "chapter_translation",
+    primaryKeys = ["chapterId", "targetLanguage"],
+    foreignKeys = [
+        ForeignKey(
+            entity = ChapterEntity::class,
+            parentColumns = ["chapterId"],
+            childColumns = ["chapterId"],
+            onDelete = ForeignKey.CASCADE,
+        ),
+    ],
+    indices = [Index(value = ["mangaId", "state"])],
+)
+data class ChapterTranslationEntity(
+    val chapterId: String,
+    val mangaId: String,
+    val targetLanguage: String,
+    /** `TranslationState` 的名字；存名字而不是序数，枚举增删不会悄悄换含义。 */
+    val state: String,
+    val sourceLanguage: String?,
+    val autoDetectSource: Boolean,
+    /**
+     * 入队时的有效配置快照（JSON）。
+     *
+     * 队列**带着快照走**：用户随后改语言或文风时，已经排队的任务不会换一种翻法
+     * （开发文档"队列包含有效配置快照"；也是"每部漫画一套独立翻译方式"的前提）。
+     */
+    val configSnapshot: String?,
+    val queuedAt: Long?,
+    val translatedAt: Long?,
+    /** 已保存的译文条数；「清除翻译文本」把它与 [translatedAt] 一起抹掉。 */
+    val translatedCount: Int,
+    val failure: String?,
+    val updatedAt: Long,
+)
+
+/**
+ * 漫画译名字典（开发文档 TR09）：`mangaId + 目标语言 + 原词 → 译名`。
+ *
+ * 跨章节共享；[manual] 为 true 的人工值不被自动流程覆盖。
+ */
+@Entity(
+    tableName = "manga_glossary",
+    primaryKeys = ["mangaId", "targetLanguage", "source"],
+    foreignKeys = [
+        ForeignKey(
+            entity = MangaEntity::class,
+            parentColumns = ["mangaId"],
+            childColumns = ["mangaId"],
+            onDelete = ForeignKey.CASCADE,
+        ),
+    ],
+    indices = [Index(value = ["mangaId"])],
+)
+data class MangaGlossaryEntity(
+    val mangaId: String,
+    val targetLanguage: String,
+    val source: String,
+    val target: String,
+    val manual: Boolean,
     val updatedAt: Long,
 )
 

@@ -628,6 +628,33 @@ interface MangaDao {
     suspend fun updateReaderOverrides(mangaId: String, mode: String?, orientation: String?)
 
     /**
+     * 写入漫画级翻译设置（语言与文风覆盖）。
+     *
+     * 与阅读覆盖同样用**独立 UPDATE** 而不是整行 upsert：这几项是用户的设置，
+     * 整行 upsert 会让任何一次重扫都有机会把它们抹掉。null 是**有意义的结论**
+     * （"这一层没设置、往下回退"），所以直接赋值，不用 COALESCE。
+     */
+    @Query(
+        """
+        UPDATE mangas
+        SET translationSourceLanguage = :sourceLanguage,
+            translationAutoDetectSource = :autoDetectSource,
+            translationTargetLanguage = :targetLanguage,
+            translationStyleMode = :styleMode,
+            translationCustomStyle = :customStyle
+        WHERE mangaId = :mangaId
+        """,
+    )
+    suspend fun updateTranslationSettings(
+        mangaId: String,
+        sourceLanguage: String?,
+        autoDetectSource: Boolean,
+        targetLanguage: String?,
+        styleMode: String?,
+        customStyle: String?,
+    )
+
+    /**
      * 把该来源里"不是本轮发现的"卡片标成陈旧（[MangaAvailability.STALE]）。
      *
      * 只在来源扫描**完整跑完**之后调用（调用点见

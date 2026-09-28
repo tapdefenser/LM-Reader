@@ -117,6 +117,68 @@ class MigrationsTest {
         db.close()
     }
 
+    @Test
+    fun `v6到v7加翻译列与两张新表且不动既有数据`() {
+        helper.createDatabase(TEST_DB, 6).use { db ->
+            db.execSQL(
+                "INSERT INTO mangas (mangaId, anchorDocumentId, sourceId, sourceKind, layoutMode, " +
+                    "displayName, sortKey, sourceOrderIndex, author, hasMetadata, summary, " +
+                    "coverDocumentId, coverChapterId, chapterCount, chapterCountKnown, availability, " +
+                    "discoveryGeneration, discoveredAt, updatedAt, coverProbedAt, metadataProbedAt) " +
+                    "VALUES ('m1', '/lib/A', 's1', 'IMAGE_DIRECTORY', 'MULTI_CHAPTER', 'A', 'a', 0, " +
+                    "'旧作者', 1, '旧简介', NULL, NULL, 1, 1, 'AVAILABLE', 1, 0, 0, 5, 7)",
+            )
+            db.execSQL(
+                "INSERT INTO chapters (chapterId, mangaId, documentId, kind, title, sortKey, " +
+                    "position, modifiedAt, pageCount, coverDocumentId, contentRevision, discoveredAt) " +
+                    "VALUES ('c1', 'm1', '/lib/A/第1话', 'IMAGE_DIRECTORY', '第1话', 'k', 0, NULL, NULL, NULL, 1, 0)",
+            )
+        }
+
+        val db = helper.runMigrationsAndValidate(TEST_DB, 7, true, Migrations.MIGRATION_6_7)
+
+        // 既有数据一个都不能变：升级只加东西。
+        db.query("SELECT displayName, author, summary, metadataProbedAt FROM mangas WHERE mangaId = 'm1'")
+            .use { cursor ->
+                cursor.moveToFirst()
+                assertEquals("A", cursor.getString(0))
+                assertEquals("旧作者", cursor.getString(1))
+                assertEquals("旧简介", cursor.getString(2))
+                assertEquals(7L, cursor.getLong(3))
+            }
+        db.query("SELECT COUNT(*) FROM chapters WHERE mangaId = 'm1'").use { cursor ->
+            cursor.moveToFirst()
+            assertEquals(1, cursor.getInt(0))
+        }
+
+        // 翻译设置默认全部"没设置"：自动识别关、语言与文风为空（覆盖链要靠这个区分
+        // "没设置"与"设置成默认值"）。
+        db.query(
+            "SELECT translationSourceLanguage, translationAutoDetectSource, " +
+                "translationTargetLanguage, translationStyleMode, translationCustomStyle " +
+                "FROM mangas WHERE mangaId = 'm1'",
+        ).use { cursor ->
+            cursor.moveToFirst()
+            assertEquals(null, cursor.getString(0))
+            assertEquals(0, cursor.getInt(1))
+            assertEquals(null, cursor.getString(2))
+            assertEquals(null, cursor.getString(3))
+            assertEquals(null, cursor.getString(4))
+        }
+
+        // 两张新表建好了，且**不回填**：升级前没有翻译记录，凭空写"未翻译"行只会让表变大。
+        db.query("SELECT COUNT(*) FROM chapter_translation").use { cursor ->
+            cursor.moveToFirst()
+            assertEquals(0, cursor.getInt(0))
+        }
+        db.query("SELECT COUNT(*) FROM manga_glossary").use { cursor ->
+            cursor.moveToFirst()
+            assertEquals(0, cursor.getInt(0))
+        }
+
+        db.close()
+    }
+
     private fun insertChapter(
         db: androidx.sqlite.db.SupportSQLiteDatabase,
         chapterId: String,

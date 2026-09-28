@@ -5,11 +5,13 @@ import com.lmreader.core.database.repository.MangaRepositoryImpl
 import com.lmreader.core.database.repository.ReadingProgressRepositoryImpl
 import com.lmreader.core.database.repository.ShelfRepositoryImpl
 import com.lmreader.core.database.repository.SourceRepositoryImpl
+import com.lmreader.core.database.repository.TranslationRepositoryImpl
 import com.lmreader.core.index.ChapterOrdering
 import com.lmreader.core.model.MangaRepository
 import com.lmreader.core.model.ReadingProgressRepository
 import com.lmreader.core.model.ShelfRepository
 import com.lmreader.core.model.SourceRepository
+import com.lmreader.core.model.TranslationRepository
 
 /**
  * 数据库模块的对外入口。
@@ -42,6 +44,7 @@ object DatabaseProvider {
         database = database,
         sources = SourceRepositoryImpl(database, database.sourceDao()),
         mangas = MangaRepositoryImpl(database, database.mangaDao(), chapterOrder),
+        translations = TranslationRepositoryImpl(database.translationDao()),
         shelf = ShelfRepositoryImpl(database),
         readingProgress = ReadingProgressRepositoryImpl(database.readingProgressDao()),
     )
@@ -50,6 +53,8 @@ object DatabaseProvider {
         val database: LmReaderDatabase,
         val sources: SourceRepository,
         val mangas: MangaRepository,
+        /** 待翻译队列与漫画译名字典（阶段 2）。 */
+        val translations: TranslationRepository,
         val shelf: ShelfRepository,
         val readingProgress: ReadingProgressRepository,
     )

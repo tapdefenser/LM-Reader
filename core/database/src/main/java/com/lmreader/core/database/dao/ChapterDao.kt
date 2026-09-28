@@ -4,6 +4,7 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Upsert
 import com.lmreader.core.database.entity.ChapterEntity
 
 /** 章节 → 所属漫画 的投影（见 [ChapterDao.mangaIdsOf]）。 */
@@ -21,7 +22,20 @@ data class ChapterOwnerRow(
 @Dao
 interface ChapterDao {
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    /**
+     * 写入章节行。
+     *
+     * **必须是 `@Upsert`，不能是 `@Insert(onConflict = REPLACE)`。** SQLite 的 REPLACE
+     * 冲突解决是"**先删掉冲突行再插入**"，并且在外键约束启用时会触发 `ON DELETE CASCADE`。
+     * `chapter_read_state` 与 `chapter_translation` 都以外键指向 `chapters.chapterId`，
+     * 于是每一次重扫或「更新章节」（进详情页就自动跑一次）都会把这两张表里对应的行
+     * **静默删掉**：用户的已读标记与待翻译/译文记录在详情页里自己就没了。
+     * 这不是理论风险——真机上标了 10 章已读、再进一次详情页就归零。
+     *
+     * `@Upsert` 生成的是 `INSERT ... ON CONFLICT DO UPDATE`，冲突时**原地更新**，
+     * 不删除父行，因此级联不会触发（`mangaDao.upsert` 早就用这个理由写了同一句话）。
+     */
+    @Upsert
     suspend fun upsertAll(entities: List<ChapterEntity>)
 
     /**

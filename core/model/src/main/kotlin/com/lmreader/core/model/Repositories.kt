@@ -196,6 +196,16 @@ interface MangaRepository {
     /** 批量设置已读/未读（章节多选底栏）。 */
     suspend fun setChapterRead(chapterIds: List<String>, read: Boolean)
 
+    /**
+     * 漫画级翻译设置（语言与文风覆盖）。
+     *
+     * 放在这里而不是翻译仓储里：它们是 `mangas` 表的列，与"语言/文风跟着漫画走"
+     * （用户口径）一致；翻译仓储只管两张新表（章节翻译状态、译名字典）。
+     */
+    suspend fun translationSettings(mangaId: String): MangaTranslationSettings
+
+    suspend fun updateTranslationSettings(mangaId: String, settings: MangaTranslationSettings)
+
     /** 页源完整枚举后回填页数和首页；不改变章节身份。 */
     suspend fun updateChapterPageInfo(chapterId: String, pageCount: Int, coverDocumentId: String?)
 
@@ -285,4 +295,65 @@ interface ShelfRepository {
 interface ReadingProgressRepository {
     suspend fun get(mangaId: String): ReadingProgress?
     suspend fun save(progress: ReadingProgress)
+}
+
+/**
+ * 翻译数据（阶段 2：待翻译记录与漫画译名字典；引擎是 P3）。
+ *
+ * ## 为什么"入队"必须是真的
+ *
+ * 详情页多选底栏的「翻译所选」如果只弹个提示，就成了开发文档 17 明令禁止的
+ * "仅摆放未接线的核心控件"。因此这一层真的写记录：侧栏「翻译队列」的计数因此会变，
+ * 章节行会显示「待翻译」徽标，P3 的引擎接上来时直接读这批记录就能开工。
+ *
+ * ## 状态与译文分开
+ *
+ * [enqueue] 只写"要翻"这件事，[clearTranslations] 才动"译文"（条数与时间戳）。
+ * 这样用户只想取消排队时不会连译文一起丢——即使现在还没有译文可丢。
+ */
+interface TranslationRepository {
+
+    /** 该漫画在某个目标语言下**已有记录**的章节（没有记录的章节 = 未翻译）。 */
+    suspend fun chapterTranslations(
+        mangaId: String,
+        targetLanguage: String,
+    ): Map<String, ChapterTranslation>
+
+    /**
+     * 入队：把选中章节置为待翻译（幂等，已经是 PENDING 的不重复写）。
+     *
+     * 已经在翻译中或已完成的章节**不动**——「翻译所选」不该把已完成的作品退回去重翻。
+     *
+     * @return 真正新入队的章节数
+     */
+    suspend fun enqueue(
+        mangaId: String,
+        chapterIds: List<String>,
+        request: TranslationRequest,
+    ): Int
+
+    /**
+     * 清除翻译文本：取消排队 + 删掉译文，状态回到「待翻译」（用户口径）。
+     *
+     * "都没译文了不得待翻译"——所以清除之后不是"未翻译"（那会丢掉"这一章还需要翻"
+     * 的意图），而是重新排上队等着被翻。
+     *
+     * @return 受影响的章节数
+     */
+    suspend fun clearTranslations(
+        mangaId: String,
+        chapterIds: List<String>,
+        targetLanguage: String,
+    ): Int
+
+    /** 全库待翻译（含翻译中）章节数；侧栏「翻译队列」的角标。 */
+    fun observePendingCount(): Flow<Int>
+
+    /** 某部漫画在某目标语言下的译名字典（按原词排序，供列表展示）。 */
+    suspend fun glossary(mangaId: String, targetLanguage: String): List<GlossaryEntry>
+
+    /** 新增或更新一条译名；`manual = true` 的人工值不会被自动流程覆盖（TR09）。 */
+    suspend fun upsertGlossary(entry: GlossaryEntry)
+
+    suspend fun deleteGlossary(mangaId: String, targetLanguage: String, source: String)
 }
