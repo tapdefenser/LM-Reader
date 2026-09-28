@@ -6,6 +6,7 @@ android {
     defaultConfig {
         // 资源前缀，避免与依赖库资源冲突。
         resourcePrefix = "lmreader_"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     lint {
@@ -51,4 +52,7 @@ dependencies {
     testImplementation(libs.kotlin.test)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.mockk)
+    androidTestImplementation(libs.androidx.test.core)
+    androidTestImplementation(libs.androidx.test.junit)
+    androidTestImplementation(libs.androidx.test.runner)
 }

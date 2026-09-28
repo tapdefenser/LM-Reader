@@ -10,7 +10,6 @@ import androidx.compose.foundation.background
 import androidx.compose.material3.Button
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -125,6 +124,15 @@ internal fun EnginePageView(
             created.setBackgroundColor(settings.theme.engineBackgroundColor())
             view = created
         },
+        onRelease = { released ->
+            // factory 在 Compose apply 阶段才写入 view。用 DisposableEffect(view) 清理时，
+            // 初次 null-key effect 会读到新视图；下一次重组便会把仍在显示的视图回收。
+            // 解码器的所有权必须跟随 AndroidView 的实际释放，而不是可变 holder 的键。
+            released.setOnImageEventListener(null)
+            released.setTag(IMAGE_LOADED_TAG, null)
+            released.recycle()
+            if (view === released) view = null
+        },
     ) }
         if (decodeFailed) {
             Column(
@@ -139,10 +147,12 @@ internal fun EnginePageView(
         }
     }
 
-    LaunchedEffect(view, settings.imageScaleType, settings.effectiveCropBorders,
+    // 固定本次组合的实例快照；不要让 null-key effect 在 apply 后读到刚写入的新实例。
+    val targetView = view
+    LaunchedEffect(targetView, settings.imageScaleType, settings.effectiveCropBorders,
         settings.doubleTapAnimMillis, settings.zoomStart, settings.readingMode,
         settings.webtoonDisableZoomOut) {
-        view?.let { target ->
+        targetView?.let { target ->
             target.setMinimumScaleType(settings.imageScaleType.toLibraryScaleType())
             if (target.isReady) applyWebtoonMinimumScale(target, settings)
             target.setCropBorders(settings.effectiveCropBorders)
@@ -151,9 +161,9 @@ internal fun EnginePageView(
         }
     }
 
-    LaunchedEffect(view, imageReady, settings.landscapeZoom, settings.imageScaleType,
+    LaunchedEffect(targetView, imageReady, settings.landscapeZoom, settings.imageScaleType,
         settings.readingMode, settings.zoomStart) {
-        val target = view ?: return@LaunchedEffect
+        val target = targetView ?: return@LaunchedEffect
         if (!imageReady || !settings.landscapeZoom || settings.readingMode.continuous ||
             settings.imageScaleType != ImageScaleType.FIT_SCREEN || target.sWidth <= target.sHeight
         ) return@LaunchedEffect
@@ -187,8 +197,8 @@ internal fun EnginePageView(
     // 2. **同一页只 setImage 一次**：见下面关于"整图解码"的说明。
     //
     // 流在协程里先准备好，布局回调只负责 `setImage`。
-    LaunchedEffect(page.pageId, source, prefetcher, retryAttempt, view) {
-        val target = view ?: return@LaunchedEffect
+    LaunchedEffect(page.pageId, source, prefetcher, retryAttempt, targetView) {
+        val target = targetView ?: return@LaunchedEffect
         decodeFailed = false
         val imageSource = withContext(Dispatchers.IO) {
             runCatching { buildImageSource(source, page, prefetcher) }.getOrNull()
@@ -205,21 +215,6 @@ internal fun EnginePageView(
         }
     }
 
-    DisposableEffect(view) {
-        val target = view
-        onDispose {
-            // 清理顺序有讲究：先摘监听器，再 recycle。
-            //
-            // `recycle()` 只释放解码器持有的瓦片与位图；正在跑的 `TilesInitTask` 是
-            // 库内部的 AsyncTask，它完成时仍会回调监听器。先摘掉监听器可以避免
-            // 已经离开屏幕的页面再触发一次状态更新（那会让 Compose 重新组合一个
-            // 已经销毁的节点）。
-            target?.setOnImageEventListener(null)
-            target?.setTag(IMAGE_LOADED_TAG, null)
-            target?.recycle()
-            if (view === target) view = null
-        }
-    }
 }
 
 private fun ReaderTheme.engineBackgroundColor(): Int = when (this) {
