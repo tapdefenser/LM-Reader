@@ -231,6 +231,56 @@ object Migrations {
         }
     }
 
+    /**
+     * v7 → v8：译名字典去掉"目标语言"这一维（用户口径：译名只和漫画有关）。
+     *
+     * SQLite 改主键只能重建表，所以这里建新表 → 搬数据 → 删旧表 → 改名 → 建索引。
+     *
+     * 搬数据时同 `(mangaId, source)` 可能有多行（v7 里按语言分区，同一原词在两种语言下
+     * 各有一条）。保留 `updatedAt` 最新的那条：它最可能是用户最后手工确认过的。
+     * 丢掉的另一条**无法自动合并**（那是两种语言的不同译名），因此不尝试合并，只保留
+     * 最新的那条并在日志/文档里说明——静默把两条揉成一条会得到两个语言都不对的译名。
+     */
+    val MIGRATION_7_8 = object : Migration(7, 8) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS manga_glossary_new (
+                    mangaId TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    target TEXT NOT NULL,
+                    manual INTEGER NOT NULL,
+                    updatedAt INTEGER NOT NULL,
+                    PRIMARY KEY(mangaId, source),
+                    FOREIGN KEY(mangaId) REFERENCES mangas(mangaId) ON DELETE CASCADE
+                )
+                """.trimIndent(),
+            )
+            db.execSQL(
+                """
+                INSERT OR REPLACE INTO manga_glossary_new (mangaId, source, target, manual, updatedAt)
+                SELECT mangaId, source, target, manual, MAX(updatedAt)
+                FROM manga_glossary
+                GROUP BY mangaId, source
+                """.trimIndent(),
+            )
+            db.execSQL("DROP TABLE manga_glossary")
+            db.execSQL("ALTER TABLE manga_glossary_new RENAME TO manga_glossary")
+            db.execSQL(
+                "CREATE INDEX IF NOT EXISTS index_manga_glossary_mangaId " +
+                    "ON manga_glossary (mangaId)",
+            )
+        }
+    }
+
     val ALL: Array<Migration> =
-        arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
+        arrayOf(
+            MIGRATION_1_2,
+            MIGRATION_2_3,
+            MIGRATION_3_4,
+            MIGRATION_4_5,
+            MIGRATION_5_6,
+            MIGRATION_6_7,
+            MIGRATION_7_8,
+        )
 }

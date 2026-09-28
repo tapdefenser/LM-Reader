@@ -124,14 +124,14 @@ fun GlossaryScreen(
     ) { padding ->
         Column(modifier = Modifier.fillMaxSize().padding(padding)) {
             Text(
-                text = "正在编辑：目标语言「${state.targetLanguage}」的字典（${state.entries.size} 条）",
+                text = "这部作品的原词 → 译名对照表（${state.entries.size} 条）",
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
             )
             Text(
                 text = "这些译名会要求模型优先采用；人工录入的条目不会被自动抽取覆盖。" +
-                    "换目标语言等于换一套字典（在「翻译语言」里改）。",
+                    "字典只跟这部作品有关，不随目标语言变化。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 20.dp),

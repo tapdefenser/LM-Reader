@@ -19,6 +19,7 @@ import com.lmreader.core.model.TranslationRepository
 import com.lmreader.core.model.TranslationRequest
 import com.lmreader.core.model.resolveSourceLanguage
 import com.lmreader.core.model.resolveTargetLanguage
+import com.lmreader.core.model.translationSetupComplete
 import com.lmreader.core.storage.cover.CoverMetadataWriter
 import com.lmreader.core.storage.cover.CoverResolver
 import com.lmreader.core.storage.reader.PageSourceFactory
@@ -384,7 +385,12 @@ class MangaDetailViewModel(
     /**
      * 入队：写入待翻译记录。
      *
-     * 记录里带**入队那一刻**解析出来的语言与文风快照（见 [TranslationRequest]），
+     * **先检查翻译设置是否完整**（用户口径）：语言没配好就把用户带到翻译设置页，由设置页弹
+     * 提示（详情页弹的话会随导航立刻消失），而不是先排上队、等真要翻的时候才发现语言是空的。
+     * 填完之后由用户**自己再点一次**翻译——不自动续跑（用户明确要求"手动重新启动翻译"）：
+     * 自动续跑会造出"我刚点了一下，回来发现已经在翻了"这种不可预期的行为。
+     *
+     * 记录里带**入队那一刻**解析出来的语言与文风快照（见 `TranslationRequest`），
      * 因此用户随后改设置不会让已排队的任务换一种翻法。
      */
     private fun enqueue(chapterIds: List<String>) {
@@ -393,17 +399,27 @@ class MangaDetailViewModel(
             return
         }
         viewModelScope.launch {
-            val target = translationTarget()
+            val settings = mangaRepository.translationSettings(mangaId)
             val (source, autoDetect) = resolveSourceLanguage(
-                mangaRepository.translationSettings(mangaId),
+                settings,
                 preferences.translationSourceLanguage.first(),
             )
+            val target = resolveTargetLanguage(
+                settings,
+                preferences.translationTargetLanguage.first(),
+            )
+            if (!translationSetupComplete(target, source, autoDetect)) {
+                // 提示语不在这里给：由翻译设置页弹自己的 snackbar（见 showSetupPrompt）。
+                // 详情页的 snackbar 会随导航把本页移出组合而立刻消失，用户看不到。
+                _state.update { it.copy(openTranslationSettings = true) }
+                return@launch
+            }
             val queued = runCatching {
                 translationRepository.enqueue(
                     mangaId = mangaId,
                     chapterIds = chapterIds,
                     request = TranslationRequest(
-                        targetLanguage = target,
+                        targetLanguage = target!!,
                         sourceLanguage = source,
                         autoDetectSource = autoDetect,
                         configSnapshot = null,
@@ -428,16 +444,29 @@ class MangaDetailViewModel(
         }
     }
 
+    /** 界面消费完"请去翻译设置"这个事件之后调用。 */
+    fun consumeOpenTranslationSettings() {
+        _state.update { it.copy(openTranslationSettings = false) }
+    }
+
     /**
      * 清除翻译文本：取消排队 + 删掉译文，状态回到「待翻译」（用户口径）。
      *
      * 与入队分开是因为它**真的删东西**（译文条数与完成时间），而用户可能只是想重翻。
+     * 它**不检查语言设置**：清除是把已有记录退回去，语言没配时本来就没有记录可清。
      */
     fun clearSelectionTranslations() {
         val ids = _state.value.selection.toList()
         if (ids.isEmpty()) return
         viewModelScope.launch {
-            val target = translationTarget()
+            val settings = mangaRepository.translationSettings(mangaId)
+            val target = resolveTargetLanguage(settings, preferences.translationTargetLanguage.first())
+                ?: _state.value.translationTargetLanguage.ifBlank { null }
+            if (target == null) {
+                clearSelection()
+                _state.update { it.copy(message = "还没有可清除的译文") }
+                return@launch
+            }
             val affected = runCatching {
                 translationRepository.clearTranslations(mangaId, ids, target)
             }.getOrElse { error ->
@@ -449,12 +478,6 @@ class MangaDetailViewModel(
             _state.update { it.copy(message = "已清除 $affected 章的译文，并重新排队") }
         }
     }
-
-    /** 这部作品生效的目标语言（漫画覆盖 → 全局默认）。 */
-    private suspend fun translationTarget(): String = resolveTargetLanguage(
-        mangaRepository.translationSettings(mangaId),
-        preferences.translationTargetLanguage.first(),
-    )
 
     private suspend fun loadDetail(showLoading: Boolean) {
         if (showLoading) _state.update { it.copy(loading = true, error = null) }
@@ -472,11 +495,17 @@ class MangaDetailViewModel(
             val chapters = mangaRepository.getChaptersInDisplayOrder(mangaId)
             val readMarks = mangaRepository.chapterReadMarks(mangaId)
             // 翻译状态按**生效目标语言**取：换语言等于换一套记录，徽标必须跟着换。
+            // 语言还没设置时（用户口径：不给缺省值）没有记录可读——空 map 就是正确结果，
+            // 不是"读失败"，因此不报错也不显示任何翻译徽标。
             val targetLanguage = resolveTargetLanguage(
                 mangaRepository.translationSettings(mangaId),
                 preferences.translationTargetLanguage.first(),
             )
-            val translations = translationRepository.chapterTranslations(mangaId, targetLanguage)
+            val translations = if (targetLanguage == null) {
+                emptyMap()
+            } else {
+                translationRepository.chapterTranslations(mangaId, targetLanguage)
+            }
             _state.update {
                 it.copy(
                     loading = false,
@@ -485,7 +514,7 @@ class MangaDetailViewModel(
                     chapters = chapters,
                     readMarks = readMarks,
                     translations = translations,
-                    translationTargetLanguage = targetLanguage,
+                    translationTargetLanguage = targetLanguage.orEmpty(),
                     sourceTreeUri = source.treeUri,
                     sourceDisplayPath = source.displayPath,
                     inShelf = card?.inShelf == true,
@@ -558,6 +587,14 @@ data class MangaDetailUiState(
     val translations: Map<String, ChapterTranslation> = emptyMap(),
     /** 这些翻译记录属于哪种目标语言（界面文案要写出来，否则用户不知道在给哪种语言排队）。 */
     val translationTargetLanguage: String = "",
+    /**
+     * "请去翻译设置"的一次性事件。
+     *
+     * ViewModel 不认识导航，因此只置一个标记，由界面消费后调
+     * [consumeOpenTranslationSettings] 清掉——用事件而不是持续状态，避免用户从设置页
+     * 返回详情页时又被弹一次。
+     */
+    val openTranslationSettings: Boolean = false,
     /** 用户保存的章节排序方式；抽屉据此显示"当前是哪一种"。 */
     val orderSetting: ChapterOrdering.Setting = ChapterOrdering.Setting.DEFAULT,
     /** 用户是否手动拖过章节顺序（抽屉显示「当前：手动」）。 */

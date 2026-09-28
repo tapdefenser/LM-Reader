@@ -33,9 +33,7 @@ import com.lmreader.ui.settings.reader.ReaderSettingsScreen
 import com.lmreader.ui.settings.paths.GalleryPathsScreen
 import com.lmreader.ui.settings.paths.GalleryPathsSettingsScreen
 import com.lmreader.ui.translation.GlossaryScreen
-import com.lmreader.ui.translation.TranslationLanguageScreen
 import com.lmreader.ui.translation.TranslationSettingsScreen
-import com.lmreader.ui.translation.TranslationStyleScreen
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
@@ -53,20 +51,21 @@ object Routes {
     const val EXPORT_QUEUE = "queue/export"
 
     // 翻译相关的页面全部挂在详情页下（"跟着每部漫画走"，用户口径）。
-    const val TRANSLATION_LANGUAGE = "manga/{mangaId}/translation/language"
+    const val TRANSLATION_SETTINGS = "manga/{mangaId}/translation?prompt={prompt}"
     const val TRANSLATION_GLOSSARY = "manga/{mangaId}/translation/glossary"
-    const val TRANSLATION_STYLE = "manga/{mangaId}/translation/style"
-
-    /** 翻译设置是全局说明页，不挂在某部漫画下。 */
-    const val TRANSLATION_SETTINGS = "settings/translation"
 
     fun mangaDetail(mangaId: String) = "manga/$mangaId"
 
-    fun translationLanguage(mangaId: String) = "manga/$mangaId/translation/language"
+    /**
+     * @param prompt 是否由"用户想翻译但设置不全"这一路径进来的。
+     *   是的话设置页会弹一句"请先完成翻译设置"。**提示必须由设置页自己弹**：
+     *   详情页那句 snackbar 会随着导航把详情页移出组合而立刻消失，用户根本看不到。
+     *   用查询参数而不是新路由，是因为这仍**是同一个页面**，只是进来的原因不同。
+     */
+    fun translationSettings(mangaId: String, prompt: Boolean = false) =
+        "manga/$mangaId/translation?prompt=$prompt"
 
     fun translationGlossary(mangaId: String) = "manga/$mangaId/translation/glossary"
-
-    fun translationStyle(mangaId: String) = "manga/$mangaId/translation/style"
 
     /**
      * 阅读器路由。
@@ -239,26 +238,32 @@ fun LmReaderNavHost(
                         onReadChapter = { chapterId, startPage ->
                             navController.navigate(Routes.reader(mangaId, chapterId, startPage))
                         },
-                        onOpenTranslationLanguage = {
-                            navController.navigate(Routes.translationLanguage(mangaId))
-                        },
-                        onOpenGlossary = {
-                            navController.navigate(Routes.translationGlossary(mangaId))
-                        },
-                        onOpenTranslationStyle = {
-                            navController.navigate(Routes.translationStyle(mangaId))
-                        },
-                        onOpenTranslationSettings = {
-                            navController.navigate(Routes.TRANSLATION_SETTINGS)
+                        onOpenTranslationSettings = { prompt ->
+                            navController.navigate(Routes.translationSettings(mangaId, prompt))
                         },
                     )
                 }
 
-                composable(Routes.TRANSLATION_LANGUAGE) { entry ->
-                    TranslationLanguageScreen(
+                composable(
+                    route = Routes.TRANSLATION_SETTINGS,
+                    arguments = listOf(
+                        // 与 READER 的 page 同理：查询参数必须显式声明类型与默认值，
+                        // 否则解析出来的类型不确定、"从 ⋮ 进来"与"被带进来"就分不开。
+                        navArgument("prompt") {
+                            type = NavType.BoolType
+                            defaultValue = false
+                        },
+                    ),
+                ) { entry ->
+                    val mangaId = entry.arguments?.getString("mangaId").orEmpty()
+                    TranslationSettingsScreen(
                         container = container,
-                        mangaId = entry.arguments?.getString("mangaId").orEmpty(),
+                        mangaId = mangaId,
+                        showSetupPrompt = entry.arguments?.getBoolean("prompt") == true,
                         onBack = { navController.popBackStack() },
+                        onOpenGlossary = {
+                            navController.navigate(Routes.translationGlossary(mangaId))
+                        },
                     )
                 }
 
@@ -268,18 +273,6 @@ fun LmReaderNavHost(
                         mangaId = entry.arguments?.getString("mangaId").orEmpty(),
                         onBack = { navController.popBackStack() },
                     )
-                }
-
-                composable(Routes.TRANSLATION_STYLE) { entry ->
-                    TranslationStyleScreen(
-                        container = container,
-                        mangaId = entry.arguments?.getString("mangaId").orEmpty(),
-                        onBack = { navController.popBackStack() },
-                    )
-                }
-
-                composable(Routes.TRANSLATION_SETTINGS) {
-                    TranslationSettingsScreen(onBack = { navController.popBackStack() })
                 }
 
 

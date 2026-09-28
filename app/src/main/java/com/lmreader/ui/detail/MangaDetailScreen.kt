@@ -120,10 +120,7 @@ fun MangaDetailScreen(
     mangaId: String,
     onBack: () -> Unit,
     onReadChapter: (chapterId: String?, startPage: Int?) -> Unit,
-    onOpenTranslationLanguage: () -> Unit,
-    onOpenGlossary: () -> Unit,
-    onOpenTranslationStyle: () -> Unit,
-    onOpenTranslationSettings: () -> Unit,
+    onOpenTranslationSettings: (prompt: Boolean) -> Unit,
     viewModel: MangaDetailViewModel = viewModel(
         key = mangaId,
         factory = MangaDetailViewModel.factory(container, mangaId),
@@ -147,6 +144,20 @@ fun MangaDetailScreen(
         state.message?.let {
             snackbarHostState.showSnackbar(it)
             viewModel.consumeMessage()
+        }
+    }
+
+    // 翻译设置不完整时（用户口径）：把用户带到翻译设置页，提示语由**设置页自己**弹
+    // （见 TranslationSettingsScreen.showSetupPrompt）——详情页的 snackbar 会随导航
+    // 立刻消失。填完之后**不自动续跑**，让他自己再点一次翻译——见
+    // MangaDetailViewModel.enqueue 的说明。
+    //
+    // 用一次性事件（openTranslationSettings）而不是持续状态：否则从设置页返回时
+    // LaunchedEffect 会因为状态仍为 true 再弹一次，用户会觉得"怎么又跳走了"。
+    LaunchedEffect(state.openTranslationSettings) {
+        if (state.openTranslationSettings) {
+            viewModel.consumeOpenTranslationSettings()
+            onOpenTranslationSettings(true)
         }
     }
 
@@ -210,10 +221,7 @@ fun MangaDetailScreen(
                     actions = {
                         DetailOverflowMenu(
                             onTranslateAll = viewModel::translateAll,
-                            onOpenGlossary = onOpenGlossary,
-                            onOpenStyle = onOpenTranslationStyle,
-                            onOpenLanguage = onOpenTranslationLanguage,
-                            onOpenSettings = onOpenTranslationSettings,
+                            onOpenSettings = { onOpenTranslationSettings(false) },
                         )
                     },
                 )
@@ -897,15 +905,12 @@ private fun ChapterOrdering.Mode.hint(): String = when (this) {
 /**
  * 详情页右上角的 ⋮。
  *
- * 五项（用户口径）：全部翻译 / 译名管理 / 文风设置 / 翻译设置 / 翻译语言。
- * 前三项与语言设置**跟着每部漫画走**；翻译设置是全局说明页。
+ * 只有两项（用户口径）：把语言 / 文风 / 译名三个入口**全部收进「翻译设置」**之后，
+ * ⋮ 上不该再重复摆它们——同一个东西有两个入口，用户会以为它们是不同的设置。
  */
 @Composable
 private fun DetailOverflowMenu(
     onTranslateAll: () -> Unit,
-    onOpenGlossary: () -> Unit,
-    onOpenStyle: () -> Unit,
-    onOpenLanguage: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
     var open by remember { mutableStateOf(false) }
@@ -918,27 +923,6 @@ private fun DetailOverflowMenu(
             onClick = {
                 open = false
                 onTranslateAll()
-            },
-        )
-        DropdownMenuItem(
-            text = { Text("译名管理") },
-            onClick = {
-                open = false
-                onOpenGlossary()
-            },
-        )
-        DropdownMenuItem(
-            text = { Text("文风设置") },
-            onClick = {
-                open = false
-                onOpenStyle()
-            },
-        )
-        DropdownMenuItem(
-            text = { Text("翻译语言") },
-            onClick = {
-                open = false
-                onOpenLanguage()
             },
         )
         DropdownMenuItem(

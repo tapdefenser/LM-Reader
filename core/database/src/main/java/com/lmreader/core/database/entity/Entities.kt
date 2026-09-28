@@ -335,13 +335,15 @@ data class ChapterTranslationEntity(
 )
 
 /**
- * 漫画译名字典（开发文档 TR09）：`mangaId + 目标语言 + 原词 → 译名`。
+ * 漫画译名字典：`原词 → 译名`，**只和漫画有关，与语言无关**（用户口径）。
  *
- * 跨章节共享；[manual] 为 true 的人工值不被自动流程覆盖。
+ * 主键 `(mangaId, source)`：同一部作品里一个原词只有一条译名。上游规格（TR09）原本
+ * 按"漫画 + 目标语言"分区，用户明确否掉了那一维——他只翻一种语言，多出来的
+ * "正在编辑：简体中文"只是噪音。代价见 `GlossaryEntry` 的说明。
  */
 @Entity(
     tableName = "manga_glossary",
-    primaryKeys = ["mangaId", "targetLanguage", "source"],
+    primaryKeys = ["mangaId", "source"],
     foreignKeys = [
         ForeignKey(
             entity = MangaEntity::class,
@@ -354,7 +356,6 @@ data class ChapterTranslationEntity(
 )
 data class MangaGlossaryEntity(
     val mangaId: String,
-    val targetLanguage: String,
     val source: String,
     val target: String,
     val manual: Boolean,

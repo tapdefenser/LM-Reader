@@ -179,6 +179,70 @@ class MigrationsTest {
         db.close()
     }
 
+    @Test
+    fun `v7到v8译名字典去掉目标语言并保留最新的一条`() {
+        helper.createDatabase(TEST_DB, 7).use { db ->
+            db.execSQL(
+                "INSERT INTO mangas (mangaId, anchorDocumentId, sourceId, sourceKind, layoutMode, " +
+                    "displayName, sortKey, sourceOrderIndex, author, hasMetadata, summary, " +
+                    "coverDocumentId, coverChapterId, chapterCount, chapterCountKnown, availability, " +
+                    "discoveryGeneration, discoveredAt, updatedAt, translationAutoDetectSource) " +
+                    "VALUES ('m1', '/lib/A', 's1', 'IMAGE_DIRECTORY', 'MULTI_CHAPTER', 'A', 'a', 0, " +
+                    "NULL, 0, NULL, NULL, NULL, 1, 1, 'AVAILABLE', 1, 0, 0, 0)",
+            )
+            // v7 的字典按 (mangaId, targetLanguage, source) 存：同一个原词在两种语言下各一条，
+            // 另有一个只在简中下的原词。升级后：
+            // - 两种语言都有的那个原词只能留一条（保留 updatedAt 最新的）；
+            // - 只出现过一次的原词照常保留。
+            insertGlossary(db, source = "Yuu-kun", targetLanguage = "简体中文", target = "小优", updatedAt = 100L)
+            insertGlossary(db, source = "Yuu-kun", targetLanguage = "英语", target = "Yuu", updatedAt = 300L)
+            insertGlossary(db, source = "Kana-chan", targetLanguage = "简体中文", target = "小佳奈", updatedAt = 200L)
+        }
+
+        val db = helper.runMigrationsAndValidate(TEST_DB, 8, true, Migrations.MIGRATION_7_8)
+
+        val rows = mutableListOf<Triple<String, String, Boolean>>()
+        db.query("SELECT source, target, manual FROM manga_glossary ORDER BY source").use { cursor ->
+            while (cursor.moveToNext()) {
+                rows += Triple(cursor.getString(0), cursor.getString(1), cursor.getInt(2) == 1)
+            }
+        }
+        assertEquals(
+            "同原词只保留 updatedAt 最新的那条，另一个原词不动",
+            listOf(
+                Triple("Kana-chan", "小佳奈", true),
+                Triple("Yuu-kun", "Yuu", true),
+            ),
+            rows,
+        )
+
+        // 新的主键是 (mangaId, source)：同原词再写一次是**更新**而不是新增。
+        db.execSQL(
+            "INSERT OR REPLACE INTO manga_glossary (mangaId, source, target, manual, updatedAt) " +
+                "VALUES ('m1', 'Yuu-kun', '小优', 1, 400)",
+        )
+        db.query("SELECT COUNT(*) FROM manga_glossary WHERE source = 'Yuu-kun'").use { cursor ->
+            cursor.moveToFirst()
+            assertEquals(1, cursor.getInt(0))
+        }
+
+        db.close()
+    }
+
+    private fun insertGlossary(
+        db: androidx.sqlite.db.SupportSQLiteDatabase,
+        source: String,
+        targetLanguage: String,
+        target: String,
+        updatedAt: Long,
+    ) {
+        db.execSQL(
+            "INSERT INTO manga_glossary (mangaId, targetLanguage, source, target, manual, updatedAt) " +
+                "VALUES ('m1', ?, ?, ?, 1, ?)",
+            arrayOf<Any?>(targetLanguage, source, target, updatedAt),
+        )
+    }
+
     private fun insertChapter(
         db: androidx.sqlite.db.SupportSQLiteDatabase,
         chapterId: String,

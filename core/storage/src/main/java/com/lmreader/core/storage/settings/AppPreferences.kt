@@ -145,17 +145,23 @@ class AppPreferences(private val context: Context) {
 
     // ---- 翻译的全局默认（漫画级留空时用它，见 MangaTranslationSettings） ----------
 
-    /** 全局默认源语言；默认日语（开发文档 TR04）。 */
-    val translationSourceLanguage: Flow<String> = context.preferenceStore.data
-        .map { it[KEY_TRANSLATION_SOURCE_LANGUAGE] ?: DEFAULT_SOURCE_LANGUAGE }
+    /**
+     * 全局默认源语言；**null = 用户还没设过**。
+     *
+     * 刻意不给缺省值（用户口径："翻译设置选项有缺省的时候……用户没有设置过的时候你要
+     * 设置成缺省，这样相当于首次启动就是要求用户填入了"）。给一个"日语"看起来友好，
+     * 实际会让用户跳过这一步，直到某天发现整章译文都不对——而那是他付的代价。
+     */
+    val translationSourceLanguage: Flow<String?> = context.preferenceStore.data
+        .map { it[KEY_TRANSLATION_SOURCE_LANGUAGE]?.takeIf { text -> text.isNotBlank() } }
 
     /** 全局是否默认自动识别源语言；默认关（自动识别更贵，且日漫占多数）。 */
     val translationAutoDetectSource: Flow<Boolean> = context.preferenceStore.data
         .map { it[KEY_TRANSLATION_AUTO_DETECT] ?: false }
 
-    /** 全局默认目标语言；默认简体中文（开发文档 TR05，独立于界面语言）。 */
-    val translationTargetLanguage: Flow<String> = context.preferenceStore.data
-        .map { it[KEY_TRANSLATION_TARGET_LANGUAGE] ?: DEFAULT_TARGET_LANGUAGE }
+    /** 全局默认目标语言；**null = 用户还没设过**（理由同源语言）。 */
+    val translationTargetLanguage: Flow<String?> = context.preferenceStore.data
+        .map { it[KEY_TRANSLATION_TARGET_LANGUAGE]?.takeIf { text -> text.isNotBlank() } }
 
     /**
      * 全局默认文风（覆盖链的最后一层）。
@@ -206,10 +212,12 @@ class AppPreferences(private val context: Context) {
         val KEY_TRANSLATION_TARGET_LANGUAGE = stringPreferencesKey("translation_target_language")
         val KEY_TRANSLATION_GLOBAL_STYLE = stringPreferencesKey("translation_global_style")
 
-        const val DEFAULT_SOURCE_LANGUAGE = "日语"
-        const val DEFAULT_TARGET_LANGUAGE = "简体中文"
-
-        /** 开发文档 TR06 的内置文风。 */
+        /**
+         * 全局默认文风（覆盖链的最后一层）。
+         *
+         * 与语言不同，**这里给缺省值是刻意的**：文风留空本来就有明确的退化路径
+         * （分类文风 → 这句默认），用户不填也不会出错；语言留空则无法开始翻译。
+         */
         const val DEFAULT_STYLE =
             "忠实原意，译文自然流畅，保持人物语气、称谓和前后文一致，不添加解释。"
 

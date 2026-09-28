@@ -55,23 +55,12 @@ interface TranslationDao {
     @Query("SELECT COUNT(*) FROM chapter_translation WHERE state IN ('PENDING', 'RUNNING')")
     suspend fun pendingCount(): Int
 
-    @Query(
-        """
-        SELECT * FROM manga_glossary
-        WHERE mangaId = :mangaId AND targetLanguage = :targetLanguage
-        ORDER BY source ASC
-        """,
-    )
-    suspend fun glossary(mangaId: String, targetLanguage: String): List<MangaGlossaryEntity>
+    @Query("SELECT * FROM manga_glossary WHERE mangaId = :mangaId ORDER BY source ASC")
+    suspend fun glossary(mangaId: String): List<MangaGlossaryEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertGlossary(entities: List<MangaGlossaryEntity>)
 
-    @Query(
-        """
-        DELETE FROM manga_glossary
-        WHERE mangaId = :mangaId AND targetLanguage = :targetLanguage AND source = :source
-        """,
-    )
-    suspend fun deleteGlossary(mangaId: String, targetLanguage: String, source: String)
+    @Query("DELETE FROM manga_glossary WHERE mangaId = :mangaId AND source = :source")
+    suspend fun deleteGlossary(mangaId: String, source: String)
 }

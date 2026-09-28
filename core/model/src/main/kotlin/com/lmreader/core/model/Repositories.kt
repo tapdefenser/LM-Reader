@@ -365,11 +365,11 @@ interface TranslationRepository {
     /** 全库待翻译（含翻译中）章节数；侧栏「翻译队列」的角标。 */
     fun observePendingCount(): Flow<Int>
 
-    /** 某部漫画在某目标语言下的译名字典（按原词排序，供列表展示）。 */
-    suspend fun glossary(mangaId: String, targetLanguage: String): List<GlossaryEntry>
+    /** 该漫画的译名字典（按原词排序，供列表展示）；**只和漫画有关，与语言无关**。 */
+    suspend fun glossary(mangaId: String): List<GlossaryEntry>
 
     /** 新增或更新一条译名；`manual = true` 的人工值不会被自动流程覆盖（TR09）。 */
     suspend fun upsertGlossary(entry: GlossaryEntry)
 
-    suspend fun deleteGlossary(mangaId: String, targetLanguage: String, source: String)
+    suspend fun deleteGlossary(mangaId: String, source: String)
 }

@@ -121,8 +121,8 @@ internal class TranslationRepositoryImpl(
 
     override fun observePendingCount(): Flow<Int> = dao.observePending().map { it.size }
 
-    override suspend fun glossary(mangaId: String, targetLanguage: String): List<GlossaryEntry> =
-        dao.glossary(mangaId, targetLanguage).map { it.toDomain() }
+    override suspend fun glossary(mangaId: String): List<GlossaryEntry> =
+        dao.glossary(mangaId).map { it.toDomain() }
 
     /**
      * 写一条译名。
@@ -135,15 +135,13 @@ internal class TranslationRepositoryImpl(
         val target = entry.target.trim()
         if (source.isEmpty() || target.isEmpty()) return
         if (!entry.manual) {
-            val existing = dao.glossary(entry.mangaId, entry.targetLanguage)
-                .firstOrNull { it.source == source }
+            val existing = dao.glossary(entry.mangaId).firstOrNull { it.source == source }
             if (existing?.manual == true) return
         }
         dao.upsertGlossary(
             listOf(
                 MangaGlossaryEntity(
                     mangaId = entry.mangaId,
-                    targetLanguage = entry.targetLanguage,
                     source = source,
                     target = target,
                     manual = entry.manual,
@@ -153,8 +151,8 @@ internal class TranslationRepositoryImpl(
         )
     }
 
-    override suspend fun deleteGlossary(mangaId: String, targetLanguage: String, source: String) {
-        dao.deleteGlossary(mangaId, targetLanguage, source)
+    override suspend fun deleteGlossary(mangaId: String, source: String) {
+        dao.deleteGlossary(mangaId, source)
     }
 }
 
@@ -177,7 +175,6 @@ private fun ChapterTranslationEntity.toDomain(): ChapterTranslation = ChapterTra
 
 private fun MangaGlossaryEntity.toDomain(): GlossaryEntry = GlossaryEntry(
     mangaId = mangaId,
-    targetLanguage = targetLanguage,
     source = source,
     target = target,
     manual = manual,
