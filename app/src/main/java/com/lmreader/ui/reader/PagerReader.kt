@@ -73,11 +73,20 @@ internal fun PagerReader(
     val horizontal = settings.readingMode.direction == ReadingDirection.HORIZONTAL
 
     /**
-     * 视口外保留几页。
+     * 视口外保留几页（横向与竖向分页共用）。
      *
      * 与「预载页数」挂钩：那个设置表达的是"我读多少页之内不想等"，因此它同时决定
      * 预读多少**字节**（[com.lmreader.ui.reader.PagePrefetcher]）与保留多少**已解码的
      * 页**。上限 2 是内存考量——每页解码后是整张位图，保留太多会把真机的 256MB 堆吃满。
+     *
+     * ## 为什么不能是 0
+     *
+     * `0` 会在滑动过程中把相邻页的组合销毁。落页时 Compose 新建一个引擎视图，而它的解码
+     * 是异步的——于是有一帧什么都没有，看起来就是"闪一下"。保留页之后，相邻页在滑动期间
+     * 就已经解码完成，落页直接是成品。
+     *
+     * 内存上界 = 存活视图数（可见 1 + 两侧各 [adjacentPagesAlive]）× 每页整图，与"预载
+     * 页数"那个**格数预算**是两件事：后者只管磁盘预取与"加载哪几章"（见 [buildWindow]）。
      */
     val adjacentPagesAlive = (settings.preloadPages / 4).coerceIn(0, 2)
 
@@ -175,16 +184,6 @@ internal fun PagerReader(
                 modifier = modifier,
                 // 右到左：索引更大的项排在左侧，与 Mihon 反转适配器列表等价。
                 reverseLayout = settings.readingMode.isRightToLeft,
-                // 相邻页保持存活，否则会在"滑动结束的那一刻"闪一下。
-                //
-                // 成因：`0` 会在滑动过程中把相邻页的组合销毁。落页时 Compose 新建一个
-                // 引擎视图，而它的解码是异步的——于是有一帧什么都没有，看起来就是闪一下。
-                // 保留一页之后，相邻页在滑动期间就已经解码完成，落页直接是成品。
-                //
-                // 代价是同时最多解码 3 页。真机曾经因为同时存活两页 OOM 过，但那时是
-                // **整图 ARGB_8888 且没有降采样**；现在超过长边 3000 的页会先降采样
-                // （见 `ReaderImageView.buildImageSource`），因此这个数量是可承受的。
-                // 页数由「预载页数」控制，读者可以把内存换回速度。
                 beyondViewportPageCount = adjacentPagesAlive,
                 key = { items[it].key },
             ) { index -> renderItem(index) }
@@ -192,7 +191,10 @@ internal fun PagerReader(
             VerticalPager(
                 state = pagerState,
                 modifier = modifier,
-                beyondViewportPageCount = 0,
+                // 与横向用**同一个**值。这里曾经写死 0，于是竖向分页在落页那一刻会露出
+                // 一张还没解码完的页（横向早就修过这个问题，注释见上）；保留页数的内存代价
+                // 两向完全一样，没有任何理由不一致。
+                beyondViewportPageCount = adjacentPagesAlive,
                 key = { items[it].key },
             ) { index -> renderItem(index) }
         }

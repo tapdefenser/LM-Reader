@@ -278,6 +278,25 @@ private fun GeneralPage(settings: ReaderSettings, onUpdate: ((ReaderSettings) ->
         steps = (ReaderSettings.PRELOAD_PAGES_MAX - ReaderSettings.PRELOAD_PAGES_MIN - 1).coerceAtLeast(0),
         display = "${settings.preloadPages} 页",
     ) { value -> onUpdate { it.copy(preloadPages = value.toInt()) } }
+    Spacer(Modifier.height(12.dp))
+    // 「缓存章节数」= 当前章前后各保留多少章的**页清单**。
+    // 它决定"往回翻/往回跳章要不要重新枚举目录"，也顺带决定显示窗口有多大
+    // （窗口 = 已缓存的章，见 `ReaderViewModel.fillWindow`）。
+    LabeledSlider(
+        label = "缓存章节数（前后各）",
+        value = settings.cachedChaptersPerSide.toFloat(),
+        range = ReaderSettings.CACHED_CHAPTERS_MIN.toFloat()..ReaderSettings.CACHED_CHAPTERS_MAX.toFloat(),
+        steps = (ReaderSettings.CACHED_CHAPTERS_MAX - ReaderSettings.CACHED_CHAPTERS_MIN - 1)
+            .coerceAtLeast(0),
+        display = "${settings.cachedChaptersPerSide} 章",
+    ) { value -> onUpdate { it.copy(cachedChaptersPerSide = value.toInt()) } }
+    Text(
+        text = "缓存越大，往回翻得越顺；占的是内存里的页清单（几十 KB 量级）。" +
+            "调小后会按「离当前章最远」的顺序释放，当前章与相邻章永不清除。",
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(top = 4.dp),
+    )
 }
 
 /**

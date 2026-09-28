@@ -255,42 +255,36 @@ internal data class PreloadPlan(
 }
 
 /**
- * 从当前章向两侧展开窗口，补齐还没在窗口里的章。
+ * 组装显示窗口：**已缓存的章，按目录顺序**，外加当前章在其中的下标。
  *
- * @param existing 已经有页清单的章；它们的页数用于预算计算，且在有效范围内**必须留在窗口里**——
- *   把已加载的章丢掉再重新加载，正是上一版"明明已就绪却显示正在加载"的原因。
+ * ## 为什么不再按"预载页数预算"切一段
+ *
+ * 预算驱动窗口有一个隐蔽的抖动：预算用的是**已知页数**，而一章的页数要等它加载完才
+ * 知道。于是"边界章刚量到页数"会让窗口当场改变大小，跨一章就会**白重排两次**
+ * （实测 `items 19->15` 与 `15->19` 相隔 4ms；位置没错，但每次跨章多一次全列表重建）。
+ *
+ * 现在窗口就是"已缓存的那几章"：它只随**加载完成**（追加）与**淘汰**
+ * （见 `ReaderViewModel.evictLoadedChapters`）变化，不再依赖页数。副产品正好是我们要的——
+ * 正常前进时窗口只增长，项的下标不平移，位置连"按身份重新解算"都不必发生。
+ *
+ * 预算从此只决定**加载哪几章**（`chaptersToLoad`）与**预取哪些字节**（`warmPrefetch`），
+ * 也就是"加载"而不是"显示"——那才是它本来的职责。
+ *
+ * 窗口必须包含当前章前后各至少一格，否则过渡项不会生成、读者翻到章末会卡住；
+ * 这一点由"加载规划总是带上当前章 ±1"保证（`planFor` 的边界章规则），
+ * 而**淘汰**又永不动当前章及其相邻章，因此这条不变量不会被破坏。
+ *
+ * @param existing 已经枚举出页清单的章；窗口就是它们的子集
  * @return 新的窗口（按目录顺序）与当前章在其中的下标
  */
 internal fun buildWindow(
     chapterList: List<ChapterRecord>,
     currentChapterId: String,
-    plan: PreloadPlan,
     existing: Map<String, ViewerChapter>,
 ): Pair<List<ViewerChapter>, Int> {
     val currentIndex = chapterList.indexOfFirst { it.chapterId == currentChapterId }
     if (currentIndex < 0) return emptyList<ViewerChapter>() to 0
-    val wanted = sortedSetOf(currentIndex)
-    wanted += plan.nextIndices
-    wanted += plan.previousIndices
-    // 已是"当前章 ± 预载范围"之内的已加载章一律保留：丢掉它们等于让预载好的内容白费，
-    // 界面会退回"明明已就绪却显示正在加载"。
-    //
-    // 范围之外的就从窗口里放掉。窗口因此始终约等于预载范围那么大，而不是"读过多少章就有多少章"——
-    // 后者在一部上千章的漫画里会把整个目录的页清单都堆进项列表（而且 `nearWindowEdge` 会失效，
-    // 因为窗口越大，它的边界判据越晚触发）。放掉只是不显示，页清单仍留在 `loaded` 里，
-    // 往回翻时立刻就能取回，不会重新请求。
-    // `±1` 不能省：过渡项是"夹在两章之间"的那一项，只有下一章也在窗口里才会被生成
-    // （见 [items]）。规划正常情况下必然包含至少一个邻章，但万一传进来的是
-    // [PreloadPlan.EMPTY]，窗口就会只剩当前章，读者翻到本章末页便再也过不去。
-    val lo = minOf(currentIndex - 1, plan.previousIndices.minOrNull() ?: currentIndex)
-    val hi = maxOf(currentIndex + 1, plan.nextIndices.maxOrNull() ?: currentIndex)
-    chapterList.forEachIndexed { index, record ->
-        if (index in lo..hi && existing.containsKey(record.chapterId)) wanted += index
-    }
-    val window = wanted.mapNotNull { index ->
-        val record = chapterList.getOrNull(index) ?: return@mapNotNull null
-        existing[record.chapterId]
-    }
+    val window = chapterList.mapNotNull { record -> existing[record.chapterId] }
     val newCurrentIndex = window.indexOfFirst { it.chapterId == currentChapterId }
     return window to newCurrentIndex.coerceAtLeast(0)
 }

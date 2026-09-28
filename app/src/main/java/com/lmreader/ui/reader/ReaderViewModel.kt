@@ -20,6 +20,7 @@ import com.lmreader.core.storage.reader.PageSourceFactory
 import com.lmreader.core.storage.reader.PageSourceOpenResult
 import com.lmreader.core.storage.reader.ReaderPage
 import com.lmreader.core.storage.settings.ReaderPreferences
+import kotlin.math.abs
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -110,9 +111,11 @@ class ReaderViewModel(
                 val merged = global.withMangaOverride(mangaModeOverride, mangaOrientationOverride)
                 val previous = _state.value.settings
                 _state.update { it.copy(settings = merged) }
-                // 过渡页开关变了要重组列表；预载预算变了要重算窗口。
+                // 过渡页开关改了要重组列表；预载页数改了要重算预取；
+                // 缓存章节数改小了要立刻淘汰（改大了下次重建自然会带上更多章）。
                 if (previous.showChapterTransitions != merged.showChapterTransitions ||
-                    previous.preloadPages != merged.preloadPages
+                    previous.preloadPages != merged.preloadPages ||
+                    previous.cachedChaptersPerSide != merged.cachedChaptersPerSide
                 ) {
                     rebuild()
                 }
@@ -220,10 +223,11 @@ class ReaderViewModel(
     }
 
     /**
-     * 按预载预算补齐窗口，并重建项列表。
+     * 用"已缓存的章"重建显示窗口与项列表。
      *
-     * 已在窗口里的章**一律保留**（[buildWindow] 会用 `loaded` 兜住），因此这个方法可以
-     * 反复调用而不会丢掉已经加载好的内容。
+     * 窗口不再按预载预算切段（理由见 [buildWindow]）。这个方法因此可以反复调用而
+     * **必然是幂等的**：只要 `loaded` 没变，算出来的窗口就一样，[writeItems] 的等价判断
+     * 会直接跳过，不会打扰分页器。
      */
     private fun fillWindow(currentChapterId: String) {
         val snapshot = _state.value
@@ -232,11 +236,59 @@ class ReaderViewModel(
         val effectiveCurrent = currentChapterId.ifEmpty {
             snapshot.chapters?.currentChapterId ?: list.first().chapterId
         }
-        val plan = planFor(list, effectiveCurrent, snapshot.settings)
-        val (window, currentIndex) = buildWindow(list, effectiveCurrent, plan, loaded)
+        val (window, currentIndex) = buildWindow(list, effectiveCurrent, loaded)
         if (window.isEmpty()) return
-        val chapters = ViewerChapters(window = window, currentIndex = currentIndex)
-        writeItems(chapters)
+        writeItems(ViewerChapters(window = window, currentIndex = currentIndex))
+    }
+
+    /**
+     * 按用户设置的「缓存章节数」淘汰离当前章最远的页清单。
+     *
+     * ## 为什么现在淘汰是安全的
+     *
+     * 位置是**项身份**（见 [ReaderUiState.positionKey]），淘汰导致的"项下标平移"不再是问题。
+     * 三条不可越过的红线：
+     * 1. **当前章永不淘汰**——它是位置的载体；
+     * 2. **当前章前后各一格永不淘汰**——过渡项靠它们生成，抽掉会让读者在章末卡住；
+     * 3. **正在加载的章不淘汰**——那是白费一次目录枚举。
+     *
+     * 淘汰不会改变显示窗口里的内容（窗口 = 剩余缓存），因此也不会触发项列表重排；
+     * 它只是让"往回翻很远"退化成重新枚举一次目录。
+     */
+    private fun evictLoadedChapters() {
+        val keep = cachedChapterBudget()
+        if (loaded.size <= keep) return
+        val list = _state.value.chapterList
+        if (list.isEmpty()) return
+        val currentListIndex = list.indexOfFirst {
+            it.chapterId == _state.value.chapters?.currentChapterId
+        }
+        if (currentListIndex < 0) return
+        val removable = loaded.keys
+            .filterNot { it in loadJobs }
+            .mapNotNull { id ->
+                val index = list.indexOfFirst { it.chapterId == id }
+                if (index < 0) null else index to id
+            }
+            // 离当前章越远越先淘汰；距离相同则淘汰**更早**的（读者更可能往回翻近处）。
+            .sortedWith(compareByDescending<Pair<Int, String>> { abs(it.first - currentListIndex) }.thenBy { it.first })
+        var size = loaded.size
+        for ((index, id) in removable) {
+            if (size <= keep) break
+            // 红线 1、2：当前章 ±1 永不淘汰。
+            if (abs(index - currentListIndex) <= 1) continue
+            loaded.remove(id)
+            size--
+        }
+    }
+
+    /** 缓存上限（章数）：至少覆盖预载规划的范围，否则会"刚淘汰就又被要求加载"。 */
+    private fun cachedChapterBudget(): Int {
+        val perSide = maxOf(
+            _state.value.settings.cachedChaptersPerSide,
+            MAX_PRELOAD_CHAPTERS_PER_SIDE + 1,
+        )
+        return 1 + perSide * 2
     }
 
     /**
@@ -420,8 +472,11 @@ class ReaderViewModel(
         val current = _state.value.chapters?.currentChapterId
             ?: _state.value.chapterList.firstOrNull()?.chapterId
             ?: return
-        fillWindow(current)
+        // 先加载、再瘦身、最后重建：淘汰可能把远处已加载的章移出窗口，
+        // 因此顺序上要"先确保当前章附近都在，再淘汰"。
         loadNeighbors()
+        evictLoadedChapters()
+        fillWindow(current)
     }
 
     private fun loadNeighbors() {
@@ -558,19 +613,12 @@ class ReaderViewModel(
                 if (position < 0) state else state.copy(chapters = window.copy(currentIndex = position))
             }
         }
-        // 只有**换了章**才需要重新规划窗口。
+        // 换章就重算一次窗口。
         //
-        // 窗口只依赖"当前章 + 设置 + 已加载章的页数"，这些都不会因为同章内翻页而改变；
-        // 原来每次落到窗口边缘都重建一次，在一次抖动环里就是 1700 多次无谓重建。
-        // 加载完成与设置变更各有自己的重建入口（见 [loadOne] / 设置写入），不会漏。
-        if (chapterChanged && nearWindowEdge()) rebuild()
-    }
-
-    /** 读者是否已经走到窗口靠边的章（再往前一寸就该补窗口了）。 */
-    private fun nearWindowEdge(): Boolean {
-        val chapters = _state.value.chapters ?: return false
-        val index = chapters.currentIndex
-        return index <= WINDOW_EDGE_MARGIN || index >= chapters.window.size - 1 - WINDOW_EDGE_MARGIN
+        // 不再用 `nearWindowEdge()` 门控：窗口现在是"已缓存的章"，重算不依赖页数预算，
+        // 因此它是**幂等**的——窗口没变时 [writeItems] 直接跳过，不会打扰分页器。
+        // 而加载链必须每换一章就前进一次（否则会退回到"最多只能读 4 章"那个 bug）。
+        if (chapterChanged) rebuild()
     }
 
     /** 页码滑杆：跳到当前章的第 [localPageIndex] 页（0 基）。 */
@@ -856,14 +904,6 @@ class ReaderViewModel(
          * 钉住。取 3 是因为真机样本里一章 29–106 页，而预算上限 60 页在 3 章内必然用完。
          */
         const val MAX_PRELOAD_CHAPTERS_PER_SIDE = 3
-
-        /**
-         * 距窗口端点还有几章时就去补窗口。
-         *
-         * 取 1：读者走到倒数第二或第二章时就补，于是"补"总发生在还看得见旧内容的时候，
-         * 不会在读到底那一刻才卡一下。补窗口按页身份定位，因此画面不跳。
-         */
-        const val WINDOW_EDGE_MARGIN = 1
 
         fun factory(
             container: com.lmreader.di.AppContainer,

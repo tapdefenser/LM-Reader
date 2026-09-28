@@ -71,6 +71,11 @@ internal object ReaderSettingsCodec {
         putFlag(KEY_KEEP_SCREEN_ON, settings.keepScreenOn, defaults.keepScreenOn)
         putFlag(KEY_ALWAYS_TRANSITION, settings.showChapterTransitions, defaults.showChapterTransitions)
         put(KEY_PRELOAD_PAGES, settings.preloadPages.toString(), defaults.preloadPages.toString())
+        put(
+            KEY_CACHED_CHAPTERS,
+            settings.cachedChaptersPerSide.toString(),
+            defaults.cachedChaptersPerSide.toString(),
+        )
         putFlag(KEY_OVERLAY_ON_START, settings.showTapZoneOverlayOnStart, defaults.showTapZoneOverlayOnStart)
         putFlag(KEY_OVERLAY_ONCE, settings.showTapZoneOverlayOnce, defaults.showTapZoneOverlayOnce)
         putFlag(KEY_SHOW_READING_MODE, settings.showReadingMode, defaults.showReadingMode)
@@ -139,6 +144,9 @@ internal object ReaderSettingsCodec {
             preloadPages = fields[KEY_PRELOAD_PAGES]?.toIntOrNull()
                 ?.coerceIn(ReaderSettings.PRELOAD_PAGES_MIN, ReaderSettings.PRELOAD_PAGES_MAX)
                 ?: defaults.preloadPages,
+            cachedChaptersPerSide = fields[KEY_CACHED_CHAPTERS]?.toIntOrNull()
+                ?.coerceIn(ReaderSettings.CACHED_CHAPTERS_MIN, ReaderSettings.CACHED_CHAPTERS_MAX)
+                ?: defaults.cachedChaptersPerSide,
             showTapZoneOverlayOnStart = readFlag(fields, KEY_OVERLAY_ON_START, defaults.showTapZoneOverlayOnStart),
             showTapZoneOverlayOnce = readFlag(fields, KEY_OVERLAY_ONCE, defaults.showTapZoneOverlayOnce),
             showReadingMode = readFlag(fields, KEY_SHOW_READING_MODE, defaults.showReadingMode),
@@ -193,6 +201,7 @@ internal object ReaderSettingsCodec {
      * 设过的值一直有意义，不需要迁移。
      */
     private const val KEY_PRELOAD_PAGES = "preloadPages"
+    private const val KEY_CACHED_CHAPTERS = "cachedChaptersPerSide"
     private const val KEY_OVERLAY_ON_START = "overlayOnStart"
     private const val KEY_OVERLAY_ONCE = "overlayOnce"
     private const val KEY_SHOW_READING_MODE = "showReadingMode"

@@ -298,6 +298,31 @@ data class ReaderSettings(
      * "往后翻一页"不需要现读，那是最低限度的可用性。
      */
     val preloadPages: Int = PRELOAD_PAGES_DEFAULT,
+    /**
+     * 缓存的章节数（**当前章前后各保留多少章**），默认 10。
+     *
+     * ## 它控制什么
+     *
+     * 阅读器会把每章枚举出的**页清单**缓存在内存里（`ReaderViewModel.loaded`）。缓存越大，
+     * 往回翻、往回跳章节时越不用重新枚举目录（SAF 目录列举是跨进程调用，有明显的等待）；
+     * 缓存越大占的内存也越多。这个设置就是那条权衡曲线，交给用户自己拉。
+     *
+     * 量级参考：一章的页清单是纯元数据（页 ID + SAF 文档 URI + 显示名），实测约
+     * 150–300 B/页，每章 30 页上下，因此**前后各 10 章 ≈ 21 章 ≈ 150 KB**。
+     * 也就是说这个旋钮的价值主要在"目录枚举的次数"，而不是内存本身。
+     *
+     * ## 它同时决定了显示窗口
+     *
+     * 显示窗口 = **已缓存的章**（见 `ReaderViewModel.fillWindow`），因此这个设置也是
+     * "列表里同时存在多少章的页"。二者合成一件事是刻意的：窗口如果另外按页数预算算，
+     * 就会随"边界章页数刚量到"而改变大小，跨章时白重排一次（实测每跨一章两次重排）。
+     *
+     * ## 下限为什么是 4
+     *
+     * 预载规划单侧最多 3 章（`MAX_PRELOAD_CHAPTERS_PER_SIDE`）。若缓存比它小，
+     * 就会出现"刚淘汰的章立刻又被规划要求加载"的抖动。下限 4 留出一章余量。
+     */
+    val cachedChaptersPerSide: Int = CACHED_CHAPTERS_DEFAULT,
     /** Mihon `reader_navigation_overlay_on_start`，默认 false。点按区域遮罩层。 */
     val showTapZoneOverlayOnStart: Boolean = false,
     /** 首次进入是否自动显示一次点按区域遮罩（Mihon `reader_navigation_overlay_new_user` 的一次性闩锁）。 */
@@ -341,6 +366,11 @@ data class ReaderSettings(
         /** [preloadPages] 的上下限。下限 2 见字段说明；上限 19 让"两侧各 9 页"仍在合理范围。 */
         const val PRELOAD_PAGES_MIN = 2
         const val PRELOAD_PAGES_MAX = 19
+
+        /** [cachedChaptersPerSide] 的默认值与上下限。理由见字段说明。 */
+        const val CACHED_CHAPTERS_DEFAULT = 10
+        const val CACHED_CHAPTERS_MIN = 4
+        const val CACHED_CHAPTERS_MAX = 50
     }
 }
 
