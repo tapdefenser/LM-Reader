@@ -266,6 +266,13 @@ fun MangaDetailScreen(
                     if (state.inShelf) viewModel.removeFromShelf() else showCategoryDialog = true
                 },
                 onReadChapter = onReadChapter,
+                // 更新章节期间拦住"进入阅读"的一切入口（用户口径：更新章节时进入阅读的行为要阻塞）。
+                // 拦在这里而不是只 disable 按钮：章节行本身也是阅读入口，只关按钮等于留了个后门。
+                onReadBlocked = {
+                    // 用 message 通道而不是直接 showSnackbar：那条通道本来就在
+                    // LaunchedEffect(state.message) 里等着弹提示，重入一次就够了。
+                    viewModel.showReadBlockedHint()
+                },
                 onOpenSortSheet = { showSortSheet = true },
                 onToggleSelection = viewModel::toggleSelection,
                 onMoveChapter = viewModel::moveChapter,
@@ -281,11 +288,23 @@ private fun DetailContent(
     onSync: () -> Unit,
     onShelfClick: () -> Unit,
     onReadChapter: (chapterId: String?, startPage: Int?) -> Unit,
+    onReadBlocked: () -> Unit,
     onOpenSortSheet: () -> Unit,
     onToggleSelection: (String) -> Unit,
     onMoveChapter: (chapterId: String, toIndex: Int) -> Unit,
 ) {
     val manga = requireNotNull(state.manga)
+
+    /**
+     * 所有"进入阅读"的入口都走这里。
+     *
+     * 更新章节期间**必须阻塞**（用户口径）：那一刻章节表正在被原子替换（`MangaChapterSyncer`
+     * 落库 → 重读详情 → 强取封面），此时进阅读器会拿着一份就要作废的章节清单去翻页。
+     * 拦在唯一入口上，才不会出现"按钮变了灰、点章节行却还能进"这种半拦状态。
+     */
+    val startReading: (String?, Int?) -> Unit = { chapterId, startPage ->
+        if (state.syncing) onReadBlocked() else onReadChapter(chapterId, startPage)
+    }
 
     /**
      * 拖动排序的跨行状态。
@@ -367,13 +386,19 @@ private fun DetailContent(
         }
         item {
             Button(
-                onClick = { onReadChapter(null, null) },
-                enabled = state.chapters.isNotEmpty(),
+                onClick = { startReading(null, null) },
+                // 更新章节期间禁用（并就地说明原因）：这是最主要的阅读入口，
+                // 变灰比"点了弹一句提示"更直观地表达"现在不能读"。
+                enabled = state.chapters.isNotEmpty() && !state.syncing,
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                Icon(Icons.AutoMirrored.Filled.MenuBook, contentDescription = null)
+                if (state.syncing) {
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                } else {
+                    Icon(Icons.AutoMirrored.Filled.MenuBook, contentDescription = null)
+                }
                 Spacer(Modifier.width(6.dp))
-                Text("阅读 / 继续阅读")
+                Text(if (state.syncing) "更新章节中…" else "阅读 / 继续阅读")
             }
         }
         // 单章节模式**不显示章节数**（用户口径："共一章的就不要显示章节数了"）：那种卡片下
@@ -451,10 +476,14 @@ private fun DetailContent(
                         if (state.selectionMode) {
                             onToggleSelection(chapter.chapterId)
                         } else {
-                            onReadChapter(chapter.chapterId, resumePageFor(
-                                state.progress?.chapterId == chapter.chapterId,
-                                state.progress?.pageOrdinal ?: 0,
-                            ))
+                            // 走统一入口：更新章节期间这里也会被拦住（见 startReading）。
+                            startReading(
+                                chapter.chapterId,
+                                resumePageFor(
+                                    state.progress?.chapterId == chapter.chapterId,
+                                    state.progress?.pageOrdinal ?: 0,
+                                ),
+                            )
                         }
                     },
                     onLongPress = { onToggleSelection(chapter.chapterId) },

@@ -39,6 +39,34 @@ class ChapterResolverTest {
         assertTrue(success.chapters.all { it.discoveredAt == 42L })
     }
 
+    /**
+     * 用户口径："更新章节的同时应该要数每章页数，因为这个时候要获取完整的表准备给翻译用了。"
+     *
+     * 判叶子本来就要列一次那个子目录，因此页数是**零额外 IO** 拿到的；归档要打开压缩包
+     * 才知道，所以保持原值（NULL = 仍然未知，不假装）。
+     */
+    @Test
+    fun `顺手数出每章的页数而归档保持未知`() = runTest {
+        val factory = InMemoryTreeFactory(
+            rootName = "Manga",
+            paths = listOf(
+                "1/001.jpg",
+                "1/002.jpg",
+                "1/003.jpg",
+                "2/001.png",
+                "3.cbz",
+            ),
+        )
+
+        val result = ChapterResolver().resolve(manga(), emptyList(), factory.root, factory)
+
+        val success = assertIs<ChapterResolution.Success>(result)
+        assertEquals(
+            mapOf("1" to 3, "2" to 1, "3" to null),
+            success.chapters.associate { it.title to it.pageCount },
+        )
+    }
+
     @Test
     fun `returns failure when any direct child cannot be enumerated`() = runTest {
         val factory = InMemoryTreeFactory(

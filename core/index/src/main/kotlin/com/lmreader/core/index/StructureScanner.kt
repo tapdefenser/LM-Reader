@@ -209,11 +209,19 @@ private class ScanRun(
             // 每轮都检查取消：父目录的 children 已经在内存里，循环体本身不必然挂起，
             // 不显式检查就会出现"取消之后又冒出一部漫画"（验收 A09 要求无错序结果）。
             currentCoroutineContext().ensureActive()
-            if (!isLeafImageChapter(dir, child)) continue
+            // 叶子判定本来就要列一次这个子目录，页数就用那份**已经在手里**的列表数，
+            // 零额外 IO（用户口径："更新章节的同时应该要数每章页数"，扫描这一章同理）。
+            val pages = leafChapterPageCount(dir, child) ?: continue
             emitManga(
                 anchor = dir,
                 chapters = listOf(
-                    ChapterSpec(child.documentId, child.name, ChapterKind.IMAGE_DIRECTORY, child.lastModified),
+                    ChapterSpec(
+                        documentId = child.documentId,
+                        title = child.name,
+                        kind = ChapterKind.IMAGE_DIRECTORY,
+                        modifiedAt = child.lastModified,
+                        pageCount = pages,
+                    ),
                 ),
                 anchorChildren = children,
                 // 只探测到一个章节，因此章节数是"已知下限"而不是准确总数
@@ -296,7 +304,16 @@ private class ScanRun(
             when {
                 hasDirectImage && !hasDirectArchive -> emitManga(
                     anchor = dir,
-                    chapters = listOf(ChapterSpec(dir.documentId, dir.name, ChapterKind.IMAGE_DIRECTORY, dir.modifiedAt)),
+                    chapters = listOf(
+                        ChapterSpec(
+                            documentId = dir.documentId,
+                            title = dir.name,
+                            kind = ChapterKind.IMAGE_DIRECTORY,
+                            modifiedAt = dir.modifiedAt,
+                            // 图片列表已经在手里（上面 enumerateOnce 拿到了），页数顺手就有了。
+                            pageCount = children.count { it.isSupportedImage() },
+                        ),
+                    ),
                     anchorChildren = children,
                     // 单章节模式下一张卡片就是这一个目录，章节数是结构定义。
                     chaptersFullyEnumerated = true,
@@ -390,24 +407,32 @@ private class ScanRun(
      * 正确解释是：它是**一部漫画**，章节是那些压缩包（现在由 [scanManga] 的第一条规则
      * 在同一个来源里产出，不再需要另一张表）。
      */
-    private suspend fun isLeafImageChapter(parent: DirRef, child: ChildNode): Boolean {
+    /**
+     * 子目录是不是"叶子图片目录"；是的话返回它的**页数**（图片张数），不是则 null。
+     *
+     * 返回值从 `Boolean` 改成"页数或 null"是为了顺手把页数带走：判定本来就要枚举一次
+     * 这个子目录，那份列表已经在手里，数图片不额外读盘。页数口径与阅读器
+     * `PageSource` 一致（`isSupportedImage`），因此详情页显示的"共 X 页"与打开后
+     * 实际能翻的页数不会分叉。
+     */
+    private suspend fun leafChapterPageCount(parent: DirRef, child: ChildNode): Int? {
         leafProbes++
-        val ref = openChild(parent, child) ?: return false
+        val ref = openChild(parent, child) ?: return null
         return try {
             // 用一次枚举同时回答"有没有子目录"和"有没有图片"，并把它缓存在 ref 上：
             // 若判定为章节就到此为止（用户要求的跳过），若判定为包裹目录，
             // 后面的递归会直接复用这份结果，不再重读同一个目录。
-            val children = ref.enumerateOnce() ?: return false
+            val children = ref.enumerateOnce() ?: return null
             when {
-                children.any { it.isDirectory } -> false
-                children.any { it.isArchiveFile() } -> false
-                else -> children.any { it.isSupportedImage() }
+                children.any { it.isDirectory } -> null
+                children.any { it.isArchiveFile() } -> null
+                else -> children.count { it.isSupportedImage() }.takeIf { it > 0 }
             }
         } catch (cancellation: CancellationException) {
             throw cancellation
         } catch (error: Exception) {
             fail("${parent.path}/${child.name}", error)
-            false
+            null
         }
     }
 
@@ -470,8 +495,9 @@ private class ScanRun(
                 // 扫描器不知道用户选的是哪种排序，这里给 0 只是占位。
                 position = 0L,
                 modifiedAt = spec.modifiedAt,
-                // 页清单在「深入」阶段才建立（开发文档 6.1），此处不假装已知。
-                pageCount = null,
+                // 页数只在"叶子判定时顺带数到"的章节上有（见 ChapterSpec.pageCount）；
+                // 归档与未探测的章节仍是 null——不假装已知（开发文档 6.1）。
+                pageCount = spec.pageCount,
                 // 封面由补全阶段填（框架 6.3 / 开发文档 7.2），发现阶段不解码图片。
                 coverDocumentId = null,
                 contentRevision = INITIAL_CONTENT_REVISION,
@@ -598,6 +624,14 @@ private class ScanRun(
         val kind: ChapterKind,
         /** 目录/归档文件的修改时间；排序抽屉的「按修改时间排序」用它。 */
         val modifiedAt: Long? = null,
+        /**
+         * 页数；null = 本次没数出来（归档要打开压缩包才知道，属于 P2 的缺口）。
+         *
+         * 只有"判定叶子图片目录时列表已经在手里"的那些章节填得上——发现阶段只探测
+         * 一个章节，所以多章节模式下通常是第一章。完整清单由详情页的「更新章节」出，
+         * 那条路径同样顺手数页数（`ChapterResolver`）。
+         */
+        val pageCount: Int? = null,
     )
 
     private companion object {

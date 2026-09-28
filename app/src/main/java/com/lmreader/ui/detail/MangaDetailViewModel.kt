@@ -252,6 +252,17 @@ class MangaDetailViewModel(
         }
     }
 
+    /**
+     * 更新章节期间用户试图进入阅读时调用的提示（用户口径：更新章节时进入阅读的行为要阻塞）。
+     *
+     * 只发一句提示，**不做任何导航**：拦在界面的唯一阅读入口上（`startReading`），
+     * 因此这里不需要"再检查一次状态"。
+     */
+    fun showReadBlockedHint() {
+        if (!_state.value.syncing) return
+        _state.update { it.copy(message = "正在更新章节，完成后再开始阅读") }
+    }
+
     fun addToShelf(categoryId: Long) {
         viewModelScope.launch {
             try {

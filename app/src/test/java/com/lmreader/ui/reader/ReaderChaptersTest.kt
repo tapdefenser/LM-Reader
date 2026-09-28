@@ -486,6 +486,37 @@ class ReaderChaptersTest {
         assertEquals(listOf(6), plan.nextIndices)
     }
 
+    /**
+     * 页数进库之后的那条收益（用户问的"如果这样修改阅读器是不是也能改善了"）。
+     *
+     * 同一个预算、同一个章数，`pagesOf` 只在**一张表**上返回真实页数（不依赖"加载过"），
+     * 计划就能一次算到预算允许的边界，而不是"遇到第一个未知章就停下"。
+     * 计划里的章仍然只是"预载候选"，真正的加载依旧由加载器决定。
+     */
+    @Test
+    fun `页数已知时预载计划能一次算满预算而不必先加载`() {
+        val pages = mapOf(6 to 4, 7 to 4, 8 to 4, 9 to 4)
+        val known = PreloadPlan.compute(
+            chapterCount = 10,
+            currentIndex = 5,
+            budget = 9,
+            maxChapters = 5,
+            pagesOf = { pages[it] },
+        )
+        val unknown = PreloadPlan.compute(
+            chapterCount = 10,
+            currentIndex = 5,
+            budget = 9,
+            maxChapters = 5,
+            pagesOf = { null },
+        )
+
+        // 预算 9、每章 4 页 + 1 个过渡页 = 5：能覆盖两章（6、7），第三章放不下。
+        assertEquals(listOf(6, 7), known.nextIndices)
+        // 页数未知时只能先要一章去量。
+        assertEquals(listOf(6), unknown.nextIndices)
+    }
+
     /** 用户要求的那条规则：**过渡页也算一页**，因此后一章比预算短时要再要一章。 */
     @Test
     fun `后一章比预算短时继续往后一章`() {

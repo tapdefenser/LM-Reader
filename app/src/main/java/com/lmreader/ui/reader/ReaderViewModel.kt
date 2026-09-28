@@ -320,7 +320,14 @@ class ReaderViewModel(
             backBudget = budgets.backward,
             pagesOf = { index ->
                 list.getOrNull(index)?.let { record ->
-                    loaded[record.chapterId]?.pages?.size?.takeIf { size -> size > 0 }
+                    // 先看数据库里的页数（「更新章节」与扫描都顺手数了），再看已经加载的章。
+                    //
+                    // 为什么顺序是这样：`walk` 只要遇到一个"页数未知"的章就必须停下并把它
+                    // 塞进加载队列（否则预算算不下去，窗口再也长不起来）。而一章的页数原先
+                    // 只有加载完才知道，于是"预载下一章"必然要先真的加载它。库里已经有页数时
+                    // 这些章不必被加载就能参与预算，预载因此更准、也少读盘。
+                    record.pageCount?.takeIf { it > 0 }
+                        ?: loaded[record.chapterId]?.pages?.size?.takeIf { size -> size > 0 }
                 }
             },
         )
