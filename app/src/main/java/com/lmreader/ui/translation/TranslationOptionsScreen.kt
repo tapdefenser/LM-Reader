@@ -90,7 +90,7 @@ fun TranslationOptionsScreen(
     LaunchedEffect(showSetupPrompt) {
         if (showSetupPrompt && !promptShown) {
             promptShown = true
-            snackbarHostState.showSnackbar("请先为这部作品选好原文语言，填好后返回章节列表重新发起翻译")
+            snackbarHostState.showSnackbar("请完成翻译选项，填好后返回章节列表重新发起翻译")
         }
     }
 
@@ -161,6 +161,8 @@ fun TranslationOptionsScreen(
                     value = state.sourceLabel,
                     hint = "这部作品的正文是什么语言",
                     modifier = Modifier.weight(1f),
+                    // 没选就是红的（用户口径）：它是必填项，不能让"未选"看起来和已填一样。
+                    highlight = !state.sourceConfigured,
                     onClick = { editing = LanguageField.SOURCE },
                 )
                 Text("→", style = MaterialTheme.typography.titleLarge)
@@ -246,6 +248,7 @@ private fun LanguageBox(
     value: String,
     hint: String,
     modifier: Modifier = Modifier,
+    highlight: Boolean = false,
     onClick: () -> Unit,
 ) {
     Column(
@@ -258,7 +261,9 @@ private fun LanguageBox(
         Text(
             text = value,
             style = MaterialTheme.typography.bodyLarge,
-            color = if (value == "未设置") {
+            // 红字由**调用方给的状态**决定，不靠比对显示文案：文案改一个字就会静默失效，
+            // 而且"哪个词算未设置"本来就不该由这个组件猜。
+            color = if (highlight) {
                 MaterialTheme.colorScheme.error
             } else {
                 MaterialTheme.colorScheme.onSurface
