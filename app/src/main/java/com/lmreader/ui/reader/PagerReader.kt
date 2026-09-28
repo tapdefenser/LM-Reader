@@ -17,7 +17,6 @@ import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
 import com.lmreader.core.model.ReaderSettings
 import com.lmreader.core.model.ReadingDirection
-import kotlinx.coroutines.flow.first
 
 /**
  * 分页阅读器：承载 Mihon 的三种 Pager 模式
@@ -52,6 +51,15 @@ internal fun PagerReader(
      * 而不是"挪到某个记住的数字"。
      */
     positionKey: String,
+    /**
+     * 归位信号（见 `ReaderUiState.positionSyncToken`）：数值一变，就把分页器挪到
+     * [positionKey] 所在的下标。
+     *
+     * **只在状态机主动移动读者、或项列表被替换时自增**——读者自己翻页不算。
+     * 这一点是必须的：快滑时状态总是滞后于分页器，若按"位置变了就核对"来驱动，
+     * 就会反过来把已经滑到前面的分页器拽回状态记得的旧位置。
+     */
+    positionSyncToken: Int,
     onItemSettled: (Int) -> Unit,
     /** 滚动状态上报：滚动中状态机不替换项列表（见 [ReaderViewModel.onScrollingChanged]）。 */
     onScrollingChanged: (Boolean) -> Unit,
@@ -93,15 +101,6 @@ internal fun PagerReader(
      */
     var suppressSettleFrom by remember { mutableIntStateOf(-1) }
 
-    /**
-     * 是否正在做程序化归位。
-     *
-     * 这段时间里分页器的 `settledPage` **不作为**"读者翻页"上报——因为我们正要把它挪走。
-     * 这与 Mihon 在 `setChaptersInternal` 里"先摘掉 page change 监听器、改完数据再挂回来"
-     * 是同一件事：**换数据/归位本身不该产生"页变了"的事件**。
-     */
-    val syncing = remember { mutableStateOf(false) }
-
     // 滚动状态上报（闸①：滚动中状态机不替换项列表）。
     LaunchedEffect(pagerState) {
         snapshotFlow { pagerState.isScrollInProgress }.collect(onScrollingChanged)
@@ -115,7 +114,6 @@ internal fun PagerReader(
     // 当成了读者位置。真机症状：偏 3 / 偏 4 / 跳回上一章首页 / 过渡页重复 / 1 页章被漏。
     LaunchedEffect(pagerState) {
         snapshotFlow { pagerState.settledPage }.collect { page ->
-            if (syncing.value) return@collect
             if (page == suppressSettleFrom) {
                 // 这是我们自己挪过去造成的回放：消费掉，并解除抑制，
                 // 让读者之后再翻回同一页时仍能正常上报。
@@ -126,26 +124,31 @@ internal fun PagerReader(
             onItemSettled(page)
         }
     }
+
+    // 归位：**只由 [positionSyncToken] 驱动**（状态机主动移动 / 项列表被替换）。
+    //
+    // 不要等"滚动停止"再动手：那样会把这次归位推迟到读者下一次滑动的中途执行，
+    // 表现就是"滑到第 7 章又被拽回第 5 章"，而且读者不停手就会反复发生。
+    // 闸①保证"列表被替换"这件事只发生在空闲时，因此这里几乎总是空闲的。
+    LaunchedEffect(positionSyncToken) {
+        if (positionSyncToken == 0) return@LaunchedEffect
+        val target = currentIndex.coerceIn(items.indices)
+        // 不变量自检：下标解出来的项必须就是位置身份本身。不成立说明状态机内部不自洽
+        // （曾经的"陈旧窗口"就是这样被应用进来的：窗口里根本没有当前位置的项）。
+        if (positionKey.isNotEmpty() && items.getOrNull(target)?.key != positionKey) {
+            android.util.Log.w(
+                "LMR-POS",
+                "归位目标与位置身份不一致：idx=$target items=${items.size}" +
+                    " key=${items.getOrNull(target)?.key?.takeLast(22)}" +
+                    " stateKey=${positionKey.takeLast(22)}",
+            )
+        }
+        if (pagerState.currentPage == target) return@LaunchedEffect
+        suppressSettleFrom = target
+        pagerState.scrollToPage(target)
+    }
     // 外部位置变化（点按翻页、滑杆、恢复进度、换章落点、窗口重排）驱动分页器滚动。
     //
-    // key 里必须有 `currentIndex` 与 `items.size`：**位置或列表一变就要重新核对**。
-    // 只盯"项身份"（旧写法）在"项没变、下标变了"时不会触发——而窗口前滚恰恰只改下标。
-    LaunchedEffect(positionKey, currentIndex, items.size) {
-        val target = currentIndex.coerceIn(items.indices)
-        if (pagerState.currentPage == target && !pagerState.isScrollInProgress) return@LaunchedEffect
-        syncing.value = true
-        try {
-            // 等滚动落定（闸①已经让"滚动中重排"极少见，这里是兜底），再把它挪到位。
-            snapshotFlow { pagerState.isScrollInProgress }.first { !it }
-            if (pagerState.currentPage != target) {
-                suppressSettleFrom = target
-                pagerState.scrollToPage(target)
-            }
-        } finally {
-            syncing.value = false
-        }
-    }
-
     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
         val renderItem: @Composable (Int) -> Unit = { index ->
             when (val item = items[index]) {

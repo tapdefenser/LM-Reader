@@ -61,6 +61,8 @@ internal fun StripReader(
     currentIndex: Int,
     /** 当前项的**身份**；见 `ReaderUiState.positionKey`。 */
     positionKey: String,
+    /** 归位信号；只在状态机主动移动读者、或项列表被替换时自增（见 `positionSyncToken`）。 */
+    positionSyncToken: Int,
     onItemSettled: (Int) -> Unit,
     /** 滚动状态上报：滚动中状态机不替换项列表（见 [ReaderViewModel.onScrollingChanged]）。 */
     onScrollingChanged: (Boolean) -> Unit,
@@ -109,7 +111,6 @@ internal fun StripReader(
     LaunchedEffect(listState) {
         snapshotFlow { listState.layoutInfo }
             .collect { info ->
-                if (syncing.value) return@collect
                 val viewportEnd = info.viewportEndOffset
                 val candidate = info.visibleItemsInfo
                     .lastOrNull { item -> item.offset + item.size <= viewportEnd }
@@ -125,14 +126,14 @@ internal fun StripReader(
         snapshotFlow { listState.isScrollInProgress }.collect(onScrollingChanged)
     }
 
-    // 外部位置变化驱动滚动；只在该项不在视口内时滚动，避免读者正在阅读时被"纠正"到页顶。
-    //
-    // 程序化滚动期间屏蔽上报：滚动过程中布局信息会经过一串中间项，把它们当成"读者位置"
-    // 会让状态机跟着中间值跑（闸②的条带版本）。
-    LaunchedEffect(positionKey, currentIndex, items.size) {
+    // 归位：**只由 [positionSyncToken] 驱动**（状态机主动移动 / 项列表被替换），
+    // 且只在该项不在视口内时滚动——避免读者正在阅读时被"纠正"到页顶。
+    // 程序化滚动期间屏蔽上报：滚动过程中布局信息会经过一串中间项，
+    // 把它们当成"读者位置"会让状态机跟着中间值跑（闸②的条带版本）。
+    LaunchedEffect(positionSyncToken) {
+        if (positionSyncToken == 0) return@LaunchedEffect
         val target = currentIndex.coerceIn(items.indices)
-        val visible = listState.layoutInfo.visibleItemsInfo.any { it.index == target }
-        if (visible) return@LaunchedEffect
+        if (listState.layoutInfo.visibleItemsInfo.any { it.index == target }) return@LaunchedEffect
         syncing.value = true
         try {
             listState.scrollToItem(target)

@@ -93,8 +93,16 @@ class ReaderViewModel(
     /** 阅读器（分页器 / 条带）是否正在滚动。滚动中不替换项列表，见 [writeItems]。 */
     private var scrolling = false
 
-    /** 滚动期间算出来、但还没应用的窗口；落定后由 [onScrollingChanged] 冲刷。 */
-    private var pendingWindow: ViewerChapters? = null
+    /**
+     * 滚动期间有窗口需要重建。
+     *
+     * 刻意**只记"需要重建"这个事实，不保存算好的窗口**：窗口是按"当时那一章"算的，
+     * 而快滑时读者已经又前进了好几章——把旧窗口照原样应用，就会出现
+     * "窗口里根本没有当前位置的项 → 身份找不到 → 退回下标重锚 → 位置跳到几章之前"，
+     * 而且随后的连续快滑会把这个回跳重复成循环（真机反馈：567567）。
+     * 落定后重新规划，用的就是**最新**的当前章。
+     */
+    private var rebuildPending = false
 
     init {
         viewModelScope.launch {
@@ -195,6 +203,8 @@ class ReaderViewModel(
                 currentPageIndex = target,
                 // 位置真相是身份；下标只是它的派生量。两者必须一起写。
                 positionKey = items.getOrNull(target)?.key.orEmpty(),
+                // 打开/跳章是状态机主动定位，要驱动分页器跟过来。
+                positionSyncToken = state.positionSyncToken + 1,
                 error = null,
             )
         }
@@ -341,9 +351,10 @@ class ReaderViewModel(
         // 闸①：**滚动中不替换项列表**（Mihon 的 `awaitingIdleViewerChapters`）。
         //
         // 换列表会让所有下标重新编号，而分页器还在滑——它记的数字立刻失去意义。
-        // 挂起来等落定再应用，代价只是"少看一帧新章"，换来的是位置不会错。
+        // 挂起来等落定再**重新规划**（只记"待重建"，不保存这份按旧章算出的窗口——
+        // 保存它会让落定后应用一个不含当前位置的窗口，位置就跳到几章之前）。
         if (scrolling && !sameWindow) {
-            pendingWindow = chapters
+            rebuildPending = true
             return
         }
         var identityLost = false
@@ -382,6 +393,8 @@ class ReaderViewModel(
                     items = items,
                     currentPageIndex = newIndex,
                     positionKey = items.getOrNull(newIndex)?.key ?: state.positionKey,
+                    // 列表被替换 → 所有下标重新编号 → 必须让分页器按身份重新归位一次。
+                    positionSyncToken = state.positionSyncToken + 1,
                 )
             }
         }
@@ -486,7 +499,24 @@ class ReaderViewModel(
         if (current.items.isEmpty()) return
         val target = (current.currentPageIndex + delta).coerceIn(current.items.indices)
         if (target == current.currentPageIndex) return
-        settleAt(target)
+        moveTo(target)
+    }
+
+    /**
+     * 状态机**主动**把读者挪到某一项（点按 / 音量键 / 滑杆 / 按钮）。
+     *
+     * 与 [settleAt] 的区别只有一个，但很关键：这条路径要**驱动分页器跟随**，
+     * 因为位置是状态机决定的，分页器不可能自己知道。而 [settleAt] 是"分页器告诉
+     * 我们它到哪了"，那条路径**绝不能**反过来去驱动分页器。
+     */
+    private fun moveTo(absoluteIndex: Int) {
+        settleAt(absoluteIndex)
+        requestPositionSync()
+    }
+
+    /** 请求一次归位：分页器会把当前位置挪到 [ReaderUiState.positionKey] 所在的下标。 */
+    private fun requestPositionSync() {
+        _state.update { it.copy(positionSyncToken = it.positionSyncToken + 1) }
     }
 
     /** 「上一章 / 下一章」按钮：同样是移动一格，只是移动的是整章的量。 */
@@ -551,7 +581,7 @@ class ReaderViewModel(
         if (localPageIndex !in pages.indices) return
         val first = current.items.indexOfFirstPageOfChapter(chapterId)
         if (first < 0) return
-        settleAt(first + localPageIndex)
+        moveTo(first + localPageIndex)
     }
 
     /** 分页器或条带落到了第 [absoluteIndex] 项。 */
@@ -569,9 +599,11 @@ class ReaderViewModel(
         if (scrolling == value) return
         scrolling = value
         if (value) return
-        val pending = pendingWindow ?: return
-        pendingWindow = null
-        writeItems(pending)
+        // 落定后**重新规划**，而不是应用滚动期间算出的那份窗口：
+        // 那份是按当时的章算的，而读者可能已经又前进了好几章。
+        if (!rebuildPending) return
+        rebuildPending = false
+        rebuild()
     }
 
     /** 记录一页在条带里的布局高度，供滚动定位使用。 */
@@ -805,9 +837,9 @@ class ReaderViewModel(
         super.onCleared()
         loadJobs.values.forEach { it.cancel() }
         loadJobs.clear()
-        // 阅读器销毁时强制解除"滚动中"：否则挂起的窗口永远不会被应用。
+        // 阅读器销毁时强制解除"滚动中"：否则挂起的重建永远不会被应用。
         scrolling = false
-        pendingWindow = null
+        rebuildPending = false
         prefetcher?.cancelAll()
     }
 
@@ -877,6 +909,14 @@ data class ReaderUiState(
      * 不变量：`items.getOrNull(currentPageIndex)?.key == positionKey`。
      */
     val positionKey: String = "",
+    /**
+     * "请把分页器挪到 [positionKey] 所在的下标"的信号；数值变化即表示有一次归位请求。
+     *
+     * **只有当状态机主动移动读者、或项列表被替换时才自增**。绝不能因为"读者自己翻页导致
+     * [currentPageIndex] 变了"就自增：快滑时状态总是滞后于分页器，那样会反过来把已经
+     * 滑到前面的分页器**拽回**状态记得的旧位置（真机反馈：快滑时位置来回跳）。
+     */
+    val positionSyncToken: Int = 0,
     /**
      * 控制栏是否可见；默认**隐藏**：阅读器一打开就应该是内容
      * （Mihon 的 `ReaderActivity` 同样以隐藏态进入）。
