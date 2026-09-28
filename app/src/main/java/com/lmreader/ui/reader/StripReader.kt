@@ -12,10 +12,8 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
@@ -25,7 +23,6 @@ import com.lmreader.core.model.ImageScaleType
 import com.lmreader.core.model.ReaderSettings
 import com.lmreader.core.model.ReadingMode
 import com.lmreader.core.model.ZoomStart
-import kotlinx.coroutines.flow.first
 
 /**
  * 条漫阅读器：承载 Mihon 的 `Long strip` 与 `Long strip with gaps` 两种模式。
@@ -62,13 +59,10 @@ internal fun StripReader(
     mode: ReadingMode,
     settings: ReaderSettings,
     currentIndex: Int,
-    itemsRevision: Long,
-    scrollRequest: Long,
-    onItemSettled: (String) -> Unit,
+    onItemSettled: (Int) -> Unit,
     onPageHeightMeasured: (pageId: String, heightDp: Int) -> Unit,
     measureHeightDp: suspend (ReaderItem.PageItem, Float) -> Int?,
     onTap: (x: Float, y: Float) -> Unit,
-    onLongPress: () -> Unit,
     onTransitionAction: (ReaderItem.Transition) -> Unit,
     onScrollDelta: (Int) -> Unit = {},
     /** 页面字节的预取缓存；命中时不必再过一次 SAF。 */
@@ -80,8 +74,6 @@ internal fun StripReader(
     val listState = rememberLazyListState(
         initialFirstVisibleItemIndex = currentIndex.coerceIn(items.indices),
     )
-    val latestItemsRevision by rememberUpdatedState(itemsRevision)
-    var settledItemsRevision by remember { mutableLongStateOf(-1L) }
     val configuration = LocalConfiguration.current
 
     // 侧边距把条带内容缩窄（Mihon `webtoon_side_padding`，0..25%）。
@@ -101,33 +93,24 @@ internal fun StripReader(
      * 会让进度在页面刚露头时就前移，与 Mihon 的"读完再记"不同。
      * 若没有任何一项的底边越过视口底（例如刚打开、第一页比视口还高），退回到第一项。
      */
-    LaunchedEffect(listState) {
-        snapshotFlow {
-            if (settledItemsRevision != latestItemsRevision) null else {
-                val info = listState.layoutInfo
+    LaunchedEffect(listState, items.size) {
+        snapshotFlow { listState.layoutInfo }
+            .collect { info ->
                 val viewportEnd = info.viewportEndOffset
                 val candidate = info.visibleItemsInfo
                     .lastOrNull { item -> item.offset + item.size <= viewportEnd }
                     ?: info.visibleItemsInfo.firstOrNull()
-                candidate?.key as? String
+                candidate?.index?.let { index ->
+                    if (index in items.indices) onItemSettled(index)
+                }
             }
-        }.collect { key -> key?.let(onItemSettled) }
     }
 
     // 外部位置变化驱动滚动；只在该项不在视口内时滚动，避免读者正在阅读时被"纠正"到页顶。
-    var handledScrollRequest by remember { mutableLongStateOf(scrollRequest) }
-    LaunchedEffect(itemsRevision, scrollRequest) {
-        settledItemsRevision = -1L
+    LaunchedEffect(currentIndex, items.size) {
         val target = currentIndex.coerceIn(items.indices)
-        val targetKey = items[target].key
-        val visible = listState.layoutInfo.visibleItemsInfo.any { it.key == targetKey }
-        val explicitlyRequested = scrollRequest != handledScrollRequest
-        handledScrollRequest = scrollRequest
-        if (explicitlyRequested || !visible) listState.scrollToItem(target)
-        snapshotFlow {
-            listState.layoutInfo.visibleItemsInfo.any { it.index == target && it.key == targetKey }
-        }.first { it }
-        settledItemsRevision = itemsRevision
+        val visible = listState.layoutInfo.visibleItemsInfo.any { it.index == target }
+        if (!visible) listState.scrollToItem(target)
     }
 
     /**
@@ -191,7 +174,6 @@ internal fun StripReader(
                                 zoomStart = ZoomStart.CENTER,
                             ),
                             onSingleTap = onTap,
-                            onLongPress = if (settings.longTapActions) onLongPress else null,
                             prefetcher = prefetcher,
                         )
                     }

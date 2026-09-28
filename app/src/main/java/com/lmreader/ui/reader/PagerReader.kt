@@ -7,9 +7,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
@@ -17,8 +17,6 @@ import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
 import com.lmreader.core.model.ReaderSettings
 import com.lmreader.core.model.ReadingDirection
-import kotlinx.coroutines.flow.first
-import kotlin.math.abs
 
 /**
  * 分页阅读器：承载 Mihon 的三种 Pager 模式
@@ -46,11 +44,8 @@ internal fun PagerReader(
     items: List<ReaderItem>,
     settings: ReaderSettings,
     currentIndex: Int,
-    itemsRevision: Long,
-    scrollRequest: Long,
-    onItemSettled: (String) -> Unit,
+    onItemSettled: (Int) -> Unit,
     onTap: (x: Float, y: Float) -> Unit,
-    onLongPress: () -> Unit,
     onTransitionAction: (ReaderItem.Transition) -> Unit,
     /** 页面字节的预取缓存；命中时不必再过一次 SAF。 */
     prefetcher: PagePrefetcher? = null,
@@ -64,9 +59,9 @@ internal fun PagerReader(
      *
      * 与「预载页数」挂钩：那个设置表达的是"我读多少页之内不想等"，因此它同时决定
      * 预读多少**字节**（[com.lmreader.ui.reader.PagePrefetcher]）与保留多少**已解码的
-     * 页**。每侧最多 1 页：图片引擎仍会整图解码，同时保留 5 页会逼近真机 256MB 堆。
+     * 页**。上限 2 是内存考量——每页解码后是整张位图，保留太多会把真机的 256MB 堆吃满。
      */
-    val adjacentPagesAlive = (settings.preloadPages / 4).coerceIn(0, 1)
+    val adjacentPagesAlive = (settings.preloadPages / 4).coerceIn(0, 2)
 
     // initialPage 只在首次组合时生效，因此换章与预载导致的下标平移要靠下面的
     // LaunchedEffect 同步。
@@ -75,21 +70,38 @@ internal fun PagerReader(
         pageCount = { items.size },
     )
 
-    val latestItemsRevision by rememberUpdatedState(itemsRevision)
-    var settledItemsRevision by remember { mutableLongStateOf(-1L) }
-    var handledScrollRequest by remember { mutableLongStateOf(scrollRequest) }
+    /**
+     * 分页器**自己**挪动到的位置。
+     *
+     * `settledPage` 分不清"读者翻到的位置"和"我们把它挪到的位置"，而这两者必须区别对待：
+     * 把前者的回放当成读者翻页会让阅读器来回撞墙（真机上出现过：翻到过渡页 → 我们提升
+     * 章节并落到目标章第一页 → 分页器滚过去回放同一位置 → 被当成"读者往回翻了一页" →
+     * 把上一章又提升回来，于是永远进不了下一章）。
+     *
+     * 因此每次程序化滚动都记下目标位置：只有当分页器**落到别的位置**之后，同一个位置
+     * 再次出现才算读者翻页。这比"记住上一次处理过的下标"精确：后者会把读者**恰好翻到**
+     * 一个我们曾经挪到过的位置也一并丢掉。
+     */
+    var suppressSettleFrom by remember { mutableIntStateOf(-1) }
+    var cameFromScrollIntoView by remember { mutableStateOf(false) }
 
-    // 落页：回报稳定 key 而不是下标。窗口滑动会让下标整体平移，快速滑动产生的旧下标
-    // 若套到新列表上，恰好就会表现成“过渡页正确，翻过去却还是本章”。
-    LaunchedEffect(pagerState) {
-        snapshotFlow {
-            if (settledItemsRevision != latestItemsRevision) null else {
-                val page = pagerState.settledPage
-                pagerState.layoutInfo.visiblePagesInfo
-                    .firstOrNull { it.index == page }?.key as? String
+    // 落页：回报给状态机——跨章判定与进度落库都只有那一处。
+    LaunchedEffect(pagerState, items.size) {
+        snapshotFlow { pagerState.settledPage }.collect { page ->
+            if (page == suppressSettleFrom) {
+                // 这是我们自己挪过去造成的回放：消费掉，并解除抑制，
+                // 让读者之后再翻回同一页时仍能正常上报。
+                suppressSettleFrom = -1
+                cameFromScrollIntoView = false
+                return@collect
             }
-        }.collect { key ->
-            key?.let(onItemSettled)
+            suppressSettleFrom = -1
+            // 归位引起的滚动不算读者翻页：那是"这一页本来就在原处，界面把它挪回来了"。
+            if (cameFromScrollIntoView) {
+                cameFromScrollIntoView = false
+                return@collect
+            }
+            onItemSettled(page)
         }
     }
     // 外部位置变化（点按翻页、滑杆、恢复进度、换章落点）驱动分页器滚动。
@@ -98,31 +110,13 @@ internal fun PagerReader(
     // 项数不变（提升章节后当前章页面从下标 9 变到 1 就是这种），只盯项数的话不会触发
     // 归位，分页器就停在旧下标上——那个下标现在指向另一页，于是"往回翻"跳到不相干的
     // 位置，而状态机仍认为自己在原处。真机上表现为往回翻时乱跳。
-    LaunchedEffect(itemsRevision, scrollRequest) {
-        // 用户手势上报 currentIndex 不应触发反向滚动；仅列表换代或明确的导航命令归位。
-        settledItemsRevision = -1L
+    val positionKey = items.getOrNull(currentIndex.coerceIn(items.indices))?.key
+    LaunchedEffect(positionKey) {
         val target = currentIndex.coerceIn(items.indices)
-        val positionKey = items[target].key
-        val laidOutKey = pagerState.layoutInfo.visiblePagesInfo
-            .firstOrNull { it.index == pagerState.currentPage }
-            ?.key
-        val explicitlyRequested = scrollRequest != handledScrollRequest
-        handledScrollRequest = scrollRequest
-        if (explicitlyRequested || pagerState.currentPage != target || laidOutKey != positionKey) {
-            if (explicitlyRequested && settings.pageTransitions && abs(pagerState.currentPage - target) == 1) {
-                pagerState.animateScrollToPage(target)
-            } else {
-                pagerState.scrollToPage(target)
-            }
+        if (!pagerState.isScrollInProgress && pagerState.currentPage != target) {
+            suppressSettleFrom = target
+            pagerState.scrollToPage(target)
         }
-        // 一帧回调不等于目标项已完成布局；等目标下标真正对应目标 key 且已落页。
-        snapshotFlow {
-            pagerState.settledPage == target &&
-                pagerState.layoutInfo.visiblePagesInfo.any {
-                    it.index == target && it.key == positionKey
-                }
-        }.first { it }
-        settledItemsRevision = itemsRevision
     }
 
     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
@@ -132,9 +126,7 @@ internal fun PagerReader(
                     source = item.chapter.source,
                     page = item.page,
                     settings = settings,
-                    isSelected = pagerState.settledPage == index,
                     onSingleTap = onTap,
-                    onLongPress = if (settings.longTapActions) onLongPress else null,
                     prefetcher = prefetcher,
                 )
 

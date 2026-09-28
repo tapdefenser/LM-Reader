@@ -179,7 +179,6 @@ fun LibraryScreen(
                             textStyle = MaterialTheme.typography.bodyMedium,
                             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                             keyboardActions = KeyboardActions(onSearch = { viewModel.onSearchOpened() }),
-                            shape = MaterialTheme.shapes.extraLarge,
                             modifier = Modifier.fillMaxWidth(),
                         )
                     } else {

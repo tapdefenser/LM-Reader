@@ -145,7 +145,6 @@ fun BookshelfScreen(
                                 maxLines = 1,
                                 textStyle = MaterialTheme.typography.bodyMedium,
                                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                                shape = MaterialTheme.shapes.extraLarge,
                                 modifier = Modifier.fillMaxWidth(),
                             )
                         } else {

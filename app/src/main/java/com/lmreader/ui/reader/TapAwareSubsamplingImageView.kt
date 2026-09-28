@@ -29,21 +29,7 @@ internal class TapAwareSubsamplingImageView(
     context: Context,
     private val onSingleTap: (x: Float, y: Float) -> Unit,
     private val onLongPress: (() -> Unit)? = null,
-    private val allowDoubleTapZoom: () -> Boolean = { true },
 ) : SubsamplingScaleImageView(context) {
-
-    private var suppressSecondTap = false
-    private val doubleTapBlocker = GestureDetector(
-        context,
-        object : GestureDetector.SimpleOnGestureListener() {
-            override fun onDown(event: MotionEvent): Boolean = true
-
-            override fun onDoubleTap(event: MotionEvent): Boolean {
-                suppressSecondTap = true
-                return true
-            }
-        },
-    )
 
     private val gestureDetector = GestureDetector(
         context,
@@ -63,20 +49,9 @@ internal class TapAwareSubsamplingImageView(
     )
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        if (!allowDoubleTapZoom()) {
-            // 第二次点按从 DOWN 起不交给引擎；只屏蔽双击，双指缩放仍由引擎处理。
-            doubleTapBlocker.onTouchEvent(event)
-            if (suppressSecondTap) {
-                gestureDetector.onTouchEvent(event)
-                if (event.actionMasked == MotionEvent.ACTION_UP ||
-                    event.actionMasked == MotionEvent.ACTION_CANCEL
-                ) suppressSecondTap = false
-                return true
-            }
-        }
         // 先把事件交给库（缩放/拖动主要由它消费），再喂给手势检测器。
         // 顺序与 Mihon 的 Pager 一致：super 先行，检测器只做旁路观察。
-        super.onTouchEvent(event)
+        val handled = super.onTouchEvent(event)
         gestureDetector.onTouchEvent(event)
         // 始终返回 true：本视图是整屏的触摸目标，返回 false 会让父层（分页器）
         // 抢走后续事件，导致一次缩放被半途打断。

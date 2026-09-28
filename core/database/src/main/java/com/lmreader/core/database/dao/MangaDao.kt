@@ -300,44 +300,6 @@ interface MangaDao {
     )
     suspend fun search(pattern: String, offset: Int, limit: Int): List<CardQueryRow>
 
-    /** 同上，但限定在当前图库图源筛选内。 */
-    @Query(
-        """
-        SELECT m.mangaId AS mangaId,
-               m.displayName AS displayName,
-               COALESCE(md.summary, m.summary) AS summaryPreview,
-               m.sourceId AS sourceId,
-               m.coverDocumentId AS coverDocumentId,
-               m.coverChapterId AS coverChapterId,
-               m.sourceKind AS sourceKind,
-               m.layoutMode AS layoutMode,
-               m.chapterCount AS chapterCount,
-               m.chapterCountKnown AS chapterCountKnown,
-               m.availability AS availability,
-               EXISTS(
-                   SELECT 1 FROM chapters AS c
-                   WHERE c.mangaId = m.mangaId AND c.kind = 'ARCHIVE'
-               ) AS hasArchiveChapters,
-               s.categoryId AS shelfCategoryId
-        FROM mangas AS m
-        LEFT JOIN shelf_entries AS s ON s.mangaId = m.mangaId
-        LEFT JOIN metadata_records AS md
-               ON md.ownerId = m.mangaId AND md.ownerType = 'MANGA'
-        WHERE m.sourceId IN (:sourceIds)
-          AND (m.displayName LIKE :pattern ESCAPE '\'
-           OR md.normalizedSearchText LIKE :pattern ESCAPE '\')
-          AND m.availability != 'STALE'
-        ORDER BY m.sourceOrderIndex ASC, m.sortKey ASC, m.mangaId ASC
-        LIMIT :limit OFFSET :offset
-        """,
-    )
-    suspend fun searchFiltered(
-        sourceIds: List<String>,
-        pattern: String,
-        offset: Int,
-        limit: Int,
-    ): List<CardQueryRow>
-
     /**
      * 在**书架范围内**按关键字搜索。
      *

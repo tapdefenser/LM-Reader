@@ -119,23 +119,22 @@ internal fun ReaderDisplayEffects(
                 val alpha = dimAlpha
                 val dimArgb = android.graphics.Color.argb((alpha * 255f).toInt(), 0, 0, 0)
                 onDrawWithContent {
-                    if (paint == null) {
-                        drawContent()
-                    } else {
-                        drawIntoCanvas { canvas ->
-                            val native = canvas.nativeCanvas
-                            val checkpoint = native.saveLayer(
-                                0f, 0f, size.width, size.height, paint,
-                            )
-                            try {
-                                drawContent()
-                            } finally {
-                                native.restoreToCount(checkpoint)
-                            }
-                        }
+                    drawContent()
+                    if (alpha <= 0f && paint == null) return@onDrawWithContent
+                    drawIntoCanvas { canvas ->
+                        val native = canvas.nativeCanvas
+                        // saveLayer 与 restoreToCount 必须成对：少一次 restore 会让后续绘制
+                        // 都留在离屏图层里，表现为界面逐渐糊掉或整片空白。
+                        val checkpoint = native.saveLayer(
+                            0f,
+                            0f,
+                            size.width,
+                            size.height,
+                            paint,
+                        )
+                        if (alpha > 0f) native.drawColor(dimArgb)
+                        native.restoreToCount(checkpoint)
                     }
-                    // 暗化应在滤镜之后叠加，否则反色会把黑色暗化层变白。
-                    if (alpha > 0f) drawIntoCanvas { it.nativeCanvas.drawColor(dimArgb) }
                 }
             },
     ) {

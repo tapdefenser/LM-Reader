@@ -2,7 +2,6 @@ package com.lmreader.ui.reader
 
 import com.lmreader.core.model.ChapterKind
 import com.lmreader.core.model.ChapterRecord
-import com.lmreader.core.model.ReaderSettings
 import com.lmreader.core.storage.reader.PageGeometry
 import com.lmreader.core.storage.reader.PageSource
 import com.lmreader.core.storage.reader.ReaderPage
@@ -152,9 +151,14 @@ class ReaderChaptersTest {
         assertEquals(narrow.key, wide.key)
     }
 
-    /** 未就绪的相邻章只贡献一张显示载入状态的过渡页，不贡献图片。 */
+    /**
+     * 还没加载出页清单的章**完全不出现**。
+     *
+     * 否则会插出一个悬空的过渡页（甚至两个过渡页挨在一起）——读者会看到一个说不清
+     * "通向哪里"的过渡页，而目标章其实还没准备好。
+     */
     @Test
-    fun `没有页清单的相邻章只贡献一张过渡页`() {
+    fun `没有页清单的章既不贡献页也不贡献过渡页`() {
         val c1 = chapter("c1", 2)
         val unloaded = ViewerChapter(
             chapter = record("c2"),
@@ -167,30 +171,8 @@ class ReaderChaptersTest {
         // 而作品后面还有内容。
         val items = itemsOf(window("c1", c1, unloaded), finalChapterId = null)
 
-        assertEquals(listOf("c1#0", "c1#1", "T:c1->c2"), items)
-    }
-
-    @Test
-    fun `失败章阻断后续已加载单页章并提供重试落点`() {
-        val a = chapter("A", 1)
-        val b = chapter("B", 0).copy(state = ViewerChapter.LoadState.FAILED)
-        val c = chapter("C", 1)
-        val before = window("A", a, b, c)
-        assertEquals(listOf("A#0", "T:A->B"), itemsOf(before, finalChapterId = null))
-        assertEquals(listOf("A#0"), itemsOf(before, transitions = false, finalChapterId = null))
-        // 落在失败章的过渡项后仍能看见它；不能把读者弹回 A 或跳到 C。
-        assertEquals(listOf("A#0", "T:A->B"), itemsOf(window("B", a, b, c), finalChapterId = null))
-        val recovered = window("A", a, chapter("B", 1), c)
-        assertEquals(listOf("A#0", "T:A->B", "B#0", "T:B->C", "C#0"),
-            itemsOf(recovered, finalChapterId = null))
-    }
-
-    @Test
-    fun `前一章失败时不会把它之前的章接到当前章`() {
-        val a = chapter("A", 1)
-        val b = chapter("B", 0).copy(state = ViewerChapter.LoadState.FAILED)
-        val c = chapter("C", 1)
-        assertEquals(listOf("C#0"), itemsOf(window("C", a, b, c), finalChapterId = null))
+        // c2 尚未加载：列表里只有 c1 的页，既没有 c1->c2 的过渡页，也没有终点标记。
+        assertEquals(listOf("c1#0", "c1#1"), items)
     }
 
     @Test
@@ -232,15 +214,15 @@ class ReaderChaptersTest {
 
     // ------------------------------------------------------------ 前后双向预载
 
-    /** 用户确认的设置语义：N 是阅读方向预算，反方向预算为 N/2。 */
+    /**
+     * 预算拆成"往后一半、往前多于一半"。余数给往前，因为往前读的第一步常常要先跨
+     * 一个过渡页（它占一格）。
+     *
+     * 每章 1 页时跨一章付 2 格，因此 4 格恰好拿到 2 章；往前 5 格在拿到 2 章后还剩
+     * 1 格，于是再收一章（"只够一格也要收"——见 `walk` 里的说明）。
+     */
     @Test
-    fun `设置九页时往后九页往前四页`() {
-        assertEquals(PrefetchBudget(forward = 9, backward = 4), prefetchBudget(9))
-        assertEquals(PrefetchBudget(forward = 2, backward = 1), prefetchBudget(2))
-    }
-
-    @Test
-    fun `前后预算彼此独立`() {
+    fun `预算拆成往后一半往前多于一半`() {
         val plan = PreloadPlan.compute(
             chapterCount = 20,
             currentIndex = 10,
@@ -252,47 +234,6 @@ class ReaderChaptersTest {
 
         assertEquals(listOf(11, 12), plan.nextIndices)
         assertEquals(listOf(9, 8, 7), plan.previousIndices)
-    }
-
-    @Test
-    fun `隐藏过渡页后它不再消耗预载预算`() {
-        val shown = PreloadPlan.compute(
-            chapterCount = 20,
-            currentIndex = 5,
-            budget = 5,
-            maxChapters = 5,
-            backBudget = 0,
-            transitionCost = 1,
-            pagesOf = { 2 },
-        )
-        val hidden = PreloadPlan.compute(
-            chapterCount = 20,
-            currentIndex = 5,
-            budget = 5,
-            maxChapters = 5,
-            backBudget = 0,
-            transitionCost = 0,
-            pagesOf = { 2 },
-        )
-
-        assertEquals(listOf(6, 7), shown.nextIndices)
-        assertEquals(listOf(6, 7, 8), hidden.nextIndices)
-    }
-
-    @Test
-    fun `单页章节按页预算跨过三章而不会被旧上限截断`() {
-        val plan = PreloadPlan.compute(
-            chapterCount = 100,
-            currentIndex = 10,
-            budget = 9,
-            maxChapters = ReaderSettings.PRELOAD_PAGES_MAX,
-            backBudget = 0,
-            transitionCost = 1,
-            pagesOf = { 1 },
-        )
-
-        // 每章代价 1 张图 + 1 张过渡页；9 格会触及第 5 个短章。
-        assertEquals(listOf(11, 12, 13, 14, 15), plan.nextIndices)
     }
 
     /**
@@ -358,7 +299,8 @@ class ReaderChaptersTest {
     }
 
     @Test
-    fun `前后都给一格时各取紧邻章节`() {
+    fun `下限预算 2 时前后各一`() {
+        // 预载下限 2 → 往后 1、往前 1：保证"往后翻一页"永远不用现读。
         val plan = PreloadPlan.compute(
             chapterCount = 10,
             currentIndex = 5,
@@ -485,17 +427,23 @@ class ReaderChaptersTest {
         assertEquals(1, currentIndex)
     }
 
-    /** 数千章漫画也只能把当前规划覆盖的页清单放进展示窗口，不能随阅读进度无界增长。 */
+    /**
+     * 关键不变量：**已经加载好的章必须留在窗口里**。
+     *
+     * 上一版在换章时把窗口从零重建，丢掉了已经加载好的邻章页清单，于是明明已就绪的
+     * 下一章显示成"正在载入"。真机上表现为每跨一章都要等一次加载。
+     */
     @Test
-    fun `窗口只保留规划覆盖的已加载章`() {
-        val chapters = (0..3000).map { record("c$it") }
+    fun `补窗口时不会丢掉已经加载好的章`() {
+        val chapters = (0..5).map { record("c$it") }
         val existing = mapOf(
             "c0" to chapter("c0", 1),
             "c1" to chapter("c1", 1),
             "c2" to chapter("c2", 1),
-            "c3000" to chapter("c3000", 1),
+            "c5" to chapter("c5", 1),
         )
 
+        // 规划只要求 c0/c1，但 c2 与 c5 已经加载好了 → 必须全部保留。
         val (window, _) = buildWindow(
             chapterList = chapters,
             currentChapterId = "c1",
@@ -503,68 +451,7 @@ class ReaderChaptersTest {
             existing = existing,
         )
 
-        assertEquals(listOf("c0", "c1", "c2"), window.map { it.chapterId })
-    }
-
-    /**
-     * 窗口必须是**连续**目录区间：A、C 有页而 B 没有时，从 A 出发只能得到 A；
-     * B 到位后才扩成 A、B、C。否则过渡页会把 A 直接接到 C。
-     */
-    @Test
-    fun `窗口在中间缺失的章处停住`() {
-        val chapters = listOf(record("A"), record("B"), record("C"))
-        val plan = PreloadPlan(previousIndices = emptyList(), nextIndices = listOf(1, 2))
-
-        val (before, beforeIndex) = buildWindow(
-            chapterList = chapters,
-            currentChapterId = "A",
-            plan = plan,
-            existing = mapOf("A" to chapter("A", 1), "C" to chapter("C", 1)),
-        )
-        assertEquals(listOf("A"), before.map { it.chapterId })
-        assertEquals(0, beforeIndex)
-
-        val (after, afterIndex) = buildWindow(
-            chapterList = chapters,
-            currentChapterId = "A",
-            plan = plan,
-            existing = mapOf(
-                "A" to chapter("A", 1),
-                "B" to chapter("B", 1),
-                "C" to chapter("C", 1),
-            ),
-        )
-        assertEquals(listOf("A", "B", "C"), after.map { it.chapterId })
-        assertEquals(0, afterIndex)
-    }
-
-    /** 同一规则从当前章往回走：B 缺失时窗口只有 C，补齐后才是 A、B、C。 */
-    @Test
-    fun `往回展开时同样在中间缺失的章处停住`() {
-        val chapters = listOf(record("A"), record("B"), record("C"))
-        val plan = PreloadPlan(previousIndices = listOf(1, 0), nextIndices = emptyList())
-
-        val (before, beforeIndex) = buildWindow(
-            chapterList = chapters,
-            currentChapterId = "C",
-            plan = plan,
-            existing = mapOf("A" to chapter("A", 1), "C" to chapter("C", 1)),
-        )
-        assertEquals(listOf("C"), before.map { it.chapterId })
-        assertEquals(0, beforeIndex)
-
-        val (after, afterIndex) = buildWindow(
-            chapterList = chapters,
-            currentChapterId = "C",
-            plan = plan,
-            existing = mapOf(
-                "A" to chapter("A", 1),
-                "B" to chapter("B", 1),
-                "C" to chapter("C", 1),
-            ),
-        )
-        assertEquals(listOf("A", "B", "C"), after.map { it.chapterId })
-        assertEquals(2, afterIndex)
+        assertEquals(listOf("c0", "c1", "c2", "c5"), window.map { it.chapterId })
     }
 
     @Test
@@ -598,19 +485,6 @@ class ReaderChaptersTest {
 
         assertEquals(anchor.key, after[moved].key)
         assertEquals(3, moved)
-    }
-
-    @Test
-    fun `隐藏过渡页时落到下一章首页而不是沿用旧下标`() {
-        val a = chapter("A", 3)
-        val b = chapter("B", 1)
-        val chapters = window("B", a, b)
-        val before = chapters.items(showTransitions = true) { false }
-        val after = chapters.items(showTransitions = false) { false }
-        val boundary = before.indexOfFirst { it is ReaderItem.Transition && it.to?.chapterId == "B" }
-
-        val anchored = reanchorIndex(before, boundary, after)
-        assertEquals("B-p0", after[anchored].key)
     }
 
     @Test
