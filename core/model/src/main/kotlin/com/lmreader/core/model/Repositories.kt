@@ -59,11 +59,19 @@ interface MangaRepository {
      * @param query 关键字；`null` 或空白 = 不搜索。搜索与分类是**正交**的两个条件，
      *   同时给出时必须都生效——否则用户在某个分类里搜索会看到别的分类的书。
      */
+    /**
+     * 书架分页。
+     *
+     * @param sort 书架的显示排序：**全局偏好、不落库**——书架不建排序表也不支持拖动
+     *   （用户口径："不需要拖动，不建每分类的排序方法，就是一个全局显示的排序"）。
+     *   分类与关键字是筛选，排序只决定这些筛选结果内部的顺序。
+     */
     suspend fun pageShelf(
         categoryId: Long?,
         offset: Int,
         limit: Int,
         query: String? = null,
+        sort: BookshelfSort = BookshelfSort.DEFAULT,
     ): MangaPage
 
     /** 订阅「可见集合长度」变化，用于扫描过程中把新条目补进当前额度（开发文档 6.4）。 */

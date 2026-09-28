@@ -8,6 +8,7 @@ import com.lmreader.core.database.entity.toCard
 import com.lmreader.core.database.entity.toDomain
 import com.lmreader.core.database.entity.toEntity
 import com.lmreader.core.index.ChapterOrdering
+import com.lmreader.core.model.BookshelfSort
 import com.lmreader.core.model.ChapterRecord
 import com.lmreader.core.model.CoverProbeTarget
 import com.lmreader.core.model.MangaAvailability
@@ -72,24 +73,20 @@ internal class MangaRepositoryImpl(
         offset: Int,
         limit: Int,
         query: String?,
+        sort: BookshelfSort,
     ): MangaPage {
+        // 关键字与分类是正交的两个条件，现在由一条 SQL 里的 `:pattern IS NULL` /
+        // `:categoryId IS NULL` 表达（见 MangaDao.pageShelf 的说明）。
         val pattern = query?.trim()?.takeIf { it.isNotEmpty() }
             ?.let { "%" + escapeLike(it.lowercase()) + "%" }
-        val rows = when {
-            // 搜索与分类是正交的两个条件，四种组合都要走对应的查询——不能"有搜索就忽略
-            // 分类"，那会让用户在某个分类里搜索时看到别的分类的书（开发文档 8.2）。
-            query.isNullOrBlank() && categoryId == null ->
-                // null = 「全部」，包含未分类与所有自建分类；不能用 categoryId = 0 代替，
-                // 那会把自建分类的收藏排除掉（开发文档 8.2 右侧分类栏）。
-                mangaDao.pageShelf(offset, limit)
-
-            query.isNullOrBlank() ->
-                mangaDao.pageShelfInCategory(categoryId!!, offset, limit)
-
-            categoryId == null -> mangaDao.searchShelf(pattern!!, offset, limit)
-
-            else -> mangaDao.searchShelfInCategory(categoryId, pattern!!, offset, limit)
-        }
+        val rows = mangaDao.pageShelf(
+            categoryId = categoryId,
+            pattern = pattern,
+            mode = sort.mode.name,
+            descending = sort.descending,
+            offset = offset,
+            limit = limit,
+        )
         return pageOf(rows, offset, limit)
     }
 

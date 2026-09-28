@@ -5,6 +5,8 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import com.lmreader.core.model.BookshelfSort
+import com.lmreader.core.model.BookshelfSortMode
 import com.lmreader.core.model.Category
 import com.lmreader.core.model.LibraryDisplayMode
 import com.lmreader.core.model.MangaAvailability
@@ -83,6 +85,19 @@ class BookshelfViewModel(
         }
         viewModelScope.launch {
             preferences.libraryDisplayMode.collect { mode -> _state.update { it.copy(displayMode = mode) } }
+        }
+        // 书架排序：全局偏好，冷启动恢复。**持续观察**而不是读一次——在别处改了
+        // （例如以后放进设置页）书架也该跟着变。
+        viewModelScope.launch {
+            preferences.bookshelfSort.collect { sort ->
+                val changed = sort != _state.value.sort
+                _state.update { it.copy(sort = sort) }
+                if (changed) {
+                    // 偏好变了就是换了顺序：已加载的页作废（见 applySort 的说明）。
+                    resetSession()
+                    loadMore()
+                }
+            }
         }
         viewModelScope.launch {
             mangaRepository.observeDiscoveryProgress().collect {
@@ -172,6 +187,22 @@ class BookshelfViewModel(
     fun onLoadMore() {
         paging.requestNextBatch()
         viewModelScope.launch { loadMore() }
+    }
+
+    /**
+     * 应用一种书架排序（抽屉里点某一项）。
+     *
+     * 排序是**读的时候现排**的：改完必须重建分页会话，否则已经加载的那几页仍是旧顺序，
+     * 而新页按新顺序取——列表会一半旧一半新，还可能同一部作品出现两次。
+     */
+    fun applySort(mode: BookshelfSortMode) {
+        val next = _state.value.sort.pick(mode)
+        _state.update { it.copy(sort = next) }
+        viewModelScope.launch {
+            runCatching { preferences.setBookshelfSort(next) }
+            resetSession()
+            loadMore()
+        }
     }
 
     /**
@@ -323,6 +354,10 @@ class BookshelfViewModel(
                 offset = paging.nextOffset,
                 limit = PAGE_SIZE,
                 query = _state.value.appliedQuery,
+                // 排序是**全局偏好**（不落库、不分分类，用户口径）：这里是它唯一的入口，
+                // 分页时每次都带上，保证 LIMIT/OFFSET 各页在同一种顺序下切分——
+                // 少了这一条，翻页会出现重复与漏项。
+                sort = _state.value.sort,
             )
             paging.append(
                 PageSlice(page.items, page.nextOffset, page.exhausted),
@@ -414,6 +449,13 @@ data class BookshelfUiState(
     val selectedCategoryId: Long? = null,
     val sidePanelOpen: Boolean = false,
     val displayMode: LibraryDisplayMode = LibraryDisplayMode.LIST,
+    /**
+     * 书架排序（全局偏好；分类与关键字是筛选，它只决定筛选结果内部的顺序）。
+     *
+     * 与章节排序不同：书架**不落库**、不支持拖动（用户口径），所以状态里拿着的就是
+     * 全部真相，没有第二份数据要与它同步。
+     */
+    val sort: BookshelfSort = BookshelfSort.DEFAULT,
     val loading: Boolean = false,
     val exhausted: Boolean = false,
     val error: String? = null,

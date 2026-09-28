@@ -193,6 +193,34 @@ interface MangaDao {
     )
     suspend fun pageLibraryFiltered(sourceIds: List<String>, offset: Int, limit: Int): List<CardQueryRow>
 
+    /**
+     * 书架列表：分类（可空）+ 关键字（可空）+ 排序方式，**一条查询**。
+     *
+     * ## 为什么合成一条
+     *
+     * 原来拆成"分不分类 × 搜不搜索"四条查询，四份 SQL 里各有一份 `ORDER BY`。现在排序
+     * 有 3 种方式 × 2 个方向，再复制四份就是 24 处要同步的地方——加一种排序方式要改四处，
+     * 漏一处就会出现"在某个分类里搜索时不按设置排序"这种极难发现的偏差。
+     * `:categoryId IS NULL` / `:pattern IS NULL` 把四种组合收进一条。
+     *
+     * 代价：`(:categoryId IS NULL OR s.categoryId = :categoryId)` 可能让 SQLite 放弃
+     * `categoryId` 索引。书架是**用户自己收藏的那些**（几百到几千行，不是全库几万），
+     * 一次全扫 + 排序仍远低于一次分页的预算；以"排序规则只有一处"换这点开销是值得的。
+     *
+     * ## 排序为什么要用 CASE
+     *
+     * Room 不能把 `ORDER BY` 当参数传。用 `CASE WHEN :mode = '...' THEN <列> END` 逐项
+     * 求出"这一模式下该比较的值"，不匹配的模式返回 NULL：SQLite 的 `ORDER BY a, b` 里
+     * NULL 不参与比较，于是恰好只有生效的那一项决定顺序。方向靠同一项写两次 ASC/DESC
+     * 表达，避免再用一个字符串拼 SQL。
+     *
+     * "最近阅读"里**从没读过**的作品 `updatedAt` 是 NULL：ASC 时排最前（= 最久没碰，
+     * 符合"最该读的排前面"），DESC 时排最后（= 最近读过的在最上面）。两种方向都合理，
+     * 因此不额外用 COALESCE 把它们强行归到某一端。
+     *
+     * 最后两级 `m.sortKey, m.mangaId` 是**并列兜底**：主键相同的一组（从没读过的那些、
+     * 同一时刻加入的几本）如果只用 mangaId 兜底，用户看到的就是随机顺序。
+     */
     @Query(
         """
         SELECT m.mangaId AS mangaId,
@@ -216,43 +244,50 @@ interface MangaDao {
         JOIN shelf_entries AS s ON s.mangaId = m.mangaId
         LEFT JOIN metadata_records AS md
                ON md.ownerId = m.mangaId AND md.ownerType = 'MANGA'
+        LEFT JOIN reading_progress AS p ON p.mangaId = m.mangaId
         WHERE m.availability != 'STALE'
-        ORDER BY m.sourceOrderIndex ASC, m.sortKey ASC, m.mangaId ASC
+          AND (:categoryId IS NULL OR s.categoryId = :categoryId)
+          AND (
+            :pattern IS NULL
+            OR m.displayName LIKE :pattern ESCAPE '\'
+            OR md.normalizedSearchText LIKE :pattern ESCAPE '\'
+          )
+        ORDER BY
+          CASE WHEN :mode = 'NAME' AND :descending = 0 THEN m.sortKey END ASC,
+          CASE WHEN :mode = 'NAME' AND :descending = 1 THEN m.sortKey END DESC,
+          CASE WHEN :mode = 'ADDED' AND :descending = 0 THEN s.addedAt END ASC,
+          CASE WHEN :mode = 'ADDED' AND :descending = 1 THEN s.addedAt END DESC,
+          CASE WHEN :mode = 'READ' AND :descending = 0 THEN p.updatedAt END ASC,
+          CASE WHEN :mode = 'READ' AND :descending = 1 THEN p.updatedAt END DESC,
+          -- 最新章节更新时间：该漫画**所有章节里最晚的那个** `modifiedAt`（用户口径）。
+          -- 目录章节的 `modifiedAt` 就是目录自身的 mtime，归档章节是文件自身的 mtime，
+          -- 所以这就是"这部作品的文件最近一次是什么时候变的"。
+          --
+          -- 用相关子查询而不是再加一列：那一列要在每次发现/同步章节时维护，而书架只有
+          -- 用户收藏的几百到几千部，按 `mangaId` 取一次 MAX 很便宜（与 `hasArchiveChapters`
+          -- 那个 EXISTS 子查询同一个取舍）。
+          --
+          -- 没有章节、或章节都没有时间戳的作品得到 NULL：逆向时排最后（"没更新过"），
+          -- 正向时排最前，两种方向都说得通，不额外用 COALESCE 归到某一端。
+          CASE WHEN :mode = 'RECENT_CHAPTER' AND :descending = 0
+               THEN (SELECT MAX(c.modifiedAt) FROM chapters AS c WHERE c.mangaId = m.mangaId) END ASC,
+          CASE WHEN :mode = 'RECENT_CHAPTER' AND :descending = 1
+               THEN (SELECT MAX(c.modifiedAt) FROM chapters AS c WHERE c.mangaId = m.mangaId) END DESC,
+          -- 并列时退回名称：主排序键相同的一组（从没读过的那些、同一时刻加入的几本）
+          -- 若用 mangaId 兜底，在用户眼里就是"随机顺序"。名称是用户唯一能预期的兜底。
+          m.sortKey ASC,
+          m.mangaId ASC
         LIMIT :limit OFFSET :offset
         """,
     )
-    suspend fun pageShelf(offset: Int, limit: Int): List<CardQueryRow>
-
-    @Query(
-        """
-        SELECT m.mangaId AS mangaId,
-               m.displayName AS displayName,
-               COALESCE(md.summary, m.summary) AS summaryPreview,
-               m.sourceId AS sourceId,
-               m.coverDocumentId AS coverDocumentId,
-               m.coverChapterId AS coverChapterId,
-               m.coverProbedAt AS coverProbedAt,
-               m.sourceKind AS sourceKind,
-               m.layoutMode AS layoutMode,
-               m.chapterCount AS chapterCount,
-               m.chapterCountKnown AS chapterCountKnown,
-               m.availability AS availability,
-               EXISTS(
-                   SELECT 1 FROM chapters AS c
-                   WHERE c.mangaId = m.mangaId AND c.kind = 'ARCHIVE'
-               ) AS hasArchiveChapters,
-               s.categoryId AS shelfCategoryId
-        FROM mangas AS m
-        JOIN shelf_entries AS s ON s.mangaId = m.mangaId
-        LEFT JOIN metadata_records AS md
-               ON md.ownerId = m.mangaId AND md.ownerType = 'MANGA'
-        WHERE s.categoryId = :categoryId
-          AND m.availability != 'STALE'
-        ORDER BY m.sourceOrderIndex ASC, m.sortKey ASC, m.mangaId ASC
-        LIMIT :limit OFFSET :offset
-        """,
-    )
-    suspend fun pageShelfInCategory(categoryId: Long, offset: Int, limit: Int): List<CardQueryRow>
+    suspend fun pageShelf(
+        categoryId: Long?,
+        pattern: String?,
+        mode: String,
+        descending: Boolean,
+        offset: Int,
+        limit: Int,
+    ): List<CardQueryRow>
 
     @Query(
         """

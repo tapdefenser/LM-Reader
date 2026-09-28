@@ -5,6 +5,8 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import com.lmreader.core.index.ChapterOrdering
+import com.lmreader.core.model.BookshelfSort
+import com.lmreader.core.model.BookshelfSortMode
 import com.lmreader.core.model.LibraryDisplayMode
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -116,6 +118,31 @@ class AppPreferences(private val context: Context) {
         context.preferenceStore.edit { it[KEY_CHAPTER_ORDER_MANUAL] = manual }
     }
 
+    /**
+     * 书架列表的排序（全局，作用于"分类之后"的漫画）。
+     *
+     * 与章节排序的区别：书架**不落库**——没有排序表、不支持拖动，读的时候现排
+     * （用户口径："不需要拖动，不建每分类的排序方法，就是一个全局显示的排序"）。
+     * 所以这里存的就是最终答案，没有第二份数据要与它保持同步。
+     */
+    val bookshelfSort: Flow<BookshelfSort> = context.preferenceStore.data
+        .map { prefs ->
+            val mode = prefs[KEY_BOOKSHELF_SORT_MODE]?.let { stored ->
+                BookshelfSortMode.entries.firstOrNull { it.name == stored }
+            } ?: BookshelfSortMode.NAME
+            // 方向缺失（第一次用、或升级自旧版本）时取该方式的默认方向，
+            // 而不是一律 false：否则"加入时间"会以最老在前开局。
+            val descending = prefs[KEY_BOOKSHELF_SORT_DESC] ?: mode.startsDescending
+            BookshelfSort(mode = mode, descending = descending)
+        }
+
+    suspend fun setBookshelfSort(sort: BookshelfSort) {
+        context.preferenceStore.edit {
+            it[KEY_BOOKSHELF_SORT_MODE] = sort.mode.name
+            it[KEY_BOOKSHELF_SORT_DESC] = sort.descending
+        }
+    }
+
     // ---- 翻译的全局默认（漫画级留空时用它，见 MangaTranslationSettings） ----------
 
     /** 全局默认源语言；默认日语（开发文档 TR04）。 */
@@ -170,6 +197,9 @@ class AppPreferences(private val context: Context) {
         val KEY_CHAPTER_ORDER_MODE = stringPreferencesKey("chapter_order_mode")
         val KEY_CHAPTER_ORDER_DESC = booleanPreferencesKey("chapter_order_desc")
         val KEY_CHAPTER_ORDER_MANUAL = booleanPreferencesKey("chapter_order_manual")
+
+        val KEY_BOOKSHELF_SORT_MODE = stringPreferencesKey("bookshelf_sort_mode")
+        val KEY_BOOKSHELF_SORT_DESC = booleanPreferencesKey("bookshelf_sort_desc")
 
         val KEY_TRANSLATION_SOURCE_LANGUAGE = stringPreferencesKey("translation_source_language")
         val KEY_TRANSLATION_AUTO_DETECT = booleanPreferencesKey("translation_auto_detect_source")

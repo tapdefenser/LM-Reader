@@ -49,12 +49,22 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.clickable
+import androidx.compose.material.icons.automirrored.filled.Sort
+import androidx.compose.material.icons.filled.ArrowDownward
+import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material3.ListItem
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.lmreader.core.model.BookshelfSort
+import com.lmreader.core.model.BookshelfSortMode
 import com.lmreader.core.model.MangaCard
 import com.lmreader.core.model.SourceKind
 import com.lmreader.core.model.StyleMode
@@ -93,6 +103,7 @@ fun BookshelfScreen(
     var errorMessage by remember { mutableStateOf<String?>(null) }
     /** 搜索框是否展开；与图库同一套交互（图标切换、退出时清空）。 */
     var searchActive by remember { mutableStateOf(false) }
+    var showSortSheet by remember { mutableStateOf(false) }
 
     /** 右边缘召出手势的累计位移（像素）。 */
     var dragAccumulated by remember { mutableFloatStateOf(0f) }
@@ -138,6 +149,13 @@ fun BookshelfScreen(
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
+    if (showSortSheet) {
+        BookshelfSortSheet(
+            sort = state.sort,
+            onPick = viewModel::applySort,
+            onDismiss = { showSortSheet = false },
+        )
+    }
     Scaffold(
             topBar = {
                 TopAppBar(
@@ -173,12 +191,16 @@ fun BookshelfScreen(
                                 contentDescription = if (searchActive) "退出搜索" else "搜索",
                             )
                         }
-                        IconButton(
-                            onClick = viewModel::onRefresh,
-                            // 作用说清：这是"更新书架里这些漫画的章节"，不是"刷新书架列表"。
-                            // 列表自己会跟着数据变，不需要用户手动刷。
-                        ) {
+                        // 作用说清：这是"更新书架里这些漫画的章节"，不是"刷新书架列表"。
+                        // 列表自己会跟着数据变，不需要用户手动刷。
+                        IconButton(onClick = viewModel::onRefresh) {
                             Icon(Icons.Filled.Refresh, contentDescription = "更新所有漫画的章节")
+                        }
+                        IconButton(onClick = { showSortSheet = true }) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.Sort,
+                                contentDescription = "书架排序",
+                            )
                         }
                         IconButton(onClick = { viewModel.setSidePanelOpen(true) }) {
                             Icon(Icons.Filled.FilterList, contentDescription = "筛选与分类")
@@ -611,6 +633,85 @@ private fun rememberSourceTreeUris(container: AppContainer): Map<String, String>
 }
 
 private const val PREFETCH_DISTANCE = 6
+
+/**
+ * 书架排序抽屉（屏幕下方弹出，与详情页的章节排序同一个形状）。
+ *
+ * 三项：名称 / 加入时间 / 最近阅读。**第一次点某一项用它自己的默认方向**（名称 A→Z、
+ * 加入时间与最近阅读都是"新的在前"），再点同一项就反向——这样点一次就是用户想要的结果，
+ * 不用先看到最老的一批再点第二次。
+ *
+ * 与章节排序一样，点完**不关面板**：排序经常要来回比几下，每次都重新打开抽屉太烦。
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun BookshelfSortSheet(
+    sort: BookshelfSort,
+    onPick: (BookshelfSortMode) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val sheetState = rememberModalBottomSheetState()
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
+        Column(modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp)) {
+            Text(
+                text = "书架排序",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.padding(start = 24.dp, top = 4.dp, bottom = 4.dp),
+            )
+            Text(
+                text = "当前：${sort.mode.label()}${if (sort.descending) "（逆向）" else "（正向）"}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp),
+            )
+            Text(
+                text = "只影响当前分类（或搜索）里的漫画顺序；再点一次同一项就是反向",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 24.dp),
+            )
+            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+            BookshelfSortMode.entries.forEach { mode ->
+                val active = sort.mode == mode
+                ListItem(
+                    headlineContent = { Text(mode.label()) },
+                    supportingContent = {
+                        Text(mode.hint(), style = MaterialTheme.typography.bodySmall)
+                    },
+                    trailingContent = {
+                        if (active) {
+                            Icon(
+                                imageVector = if (sort.descending) {
+                                    Icons.Filled.ArrowDownward
+                                } else {
+                                    Icons.Filled.ArrowUpward
+                                },
+                                contentDescription = if (sort.descending) "逆向" else "正向",
+                                tint = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                    },
+                    modifier = Modifier.clickable { onPick(mode) },
+                )
+            }
+        }
+    }
+}
+
+private fun BookshelfSortMode.label(): String = when (this) {
+    BookshelfSortMode.NAME -> "按名称排序"
+    BookshelfSortMode.ADDED -> "按加入时间排序"
+    BookshelfSortMode.READ -> "按最近阅读排序"
+    BookshelfSortMode.RECENT_CHAPTER -> "按最新章节更新时间排序"
+}
+
+private fun BookshelfSortMode.hint(): String = when (this) {
+    BookshelfSortMode.NAME -> "作品名自然序，数字按数值（第 2 话在 第 10 话 之前）"
+    BookshelfSortMode.ADDED -> "刚加入书架的排在前面"
+    BookshelfSortMode.READ -> "刚读过的排在前面；从没读过的一律排在后面"
+    BookshelfSortMode.RECENT_CHAPTER -> "所有章节里最晚的修改时间；刚更新过的排在前面（追更用）"
+}
 
 /** 右边缘向左滑多少像素才召出筛选面板。 */
 private const val EDGE_SUMMON_THRESHOLD_PX = 24f
