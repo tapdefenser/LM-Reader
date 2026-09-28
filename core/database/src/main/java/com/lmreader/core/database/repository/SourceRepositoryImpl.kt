@@ -100,4 +100,6 @@ internal class SourceRepositoryImpl(
     override suspend fun updatePermission(sourceId: String, permission: SourcePermissionState) {
         dao.updatePermission(sourceId, permission)
     }
+
+    override suspend fun clearInterruptedScans(reason: String): Int = dao.clearInterruptedScans(reason)
 }

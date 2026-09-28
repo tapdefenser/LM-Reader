@@ -110,6 +110,23 @@ data class MangaEntity(
     val readerModeOverride: String? = null,
     /** 漫画级屏幕方向覆盖；null 表示跟随全局默认。同样存名称。 */
     val readerOrientationOverride: String? = null,
+    /**
+     * 封面探测时间；null = 从未探测过。
+     *
+     * 与 [coverDocumentId] 的分工：后者是**结果**（可能确实没有），本列是**过程**
+     * （取过一次就不再取）。封面现在由图库滚动懒加载，扫描只写路径，因此必须能区分
+     * "没有封面"与"还没取过"，否则每次滚动都会把必然拿不到的卡片重新枚举一遍目录。
+     */
+    val coverProbedAt: Long? = null,
+    /**
+     * 简介（ComicInfo）探测时间；null = 从未探测过。
+     *
+     * 与 [hasMetadata] 的分工：后者是**结果**（读到了 XML），本列是**过程**（去读过一次）。
+     * 少了它，`hasMetadata = 0` 的条目会把补全队列的头 120 条永久占住——每轮扫描都
+     * 重新打开同一批目录、什么也读不到，后面的作品永远轮不到（真机上 5408 部里
+     * `hasMetadata = 0` 的有 5408 部，也就是整个队列从来不前进）。
+     */
+    val metadataProbedAt: Long? = null,
 )
 
 /** 章节行；物理定位键是 `(documentId, kind)`（开发文档 15.3）。 */
@@ -126,6 +143,8 @@ data class MangaEntity(
     indices = [
         Index(value = ["documentId", "kind"], unique = true),
         Index(value = ["mangaId", "sortKey"]),
+        // 详情页按显示顺序取章节；没有这条索引时每次进详情页都要为一部漫画排序。
+        Index(value = ["mangaId", "position"]),
     ],
 )
 data class ChapterEntity(
@@ -135,6 +154,15 @@ data class ChapterEntity(
     val kind: ChapterKind,
     val title: String,
     val sortKey: String,
+    /**
+     * 显示位置（详情页章节列表的顺序，见 `ChapterRecord.position`）。
+     *
+     * 与 [sortKey] 分工：`sortKey` 永远是自然序、用于"自然序第一章"（封面/简介）；
+     * 本列是用户看到的顺序，排序抽屉与手动拖动都改它。两者不能合成一列。
+     */
+    val position: Long = 0L,
+    /** 目录/归档文件的修改时间；null = 提供方未给出（见 `ChapterRecord.modifiedAt`）。 */
+    val modifiedAt: Long? = null,
     val pageCount: Int?,
     val coverDocumentId: String?,
     val contentRevision: Long,
@@ -215,6 +243,35 @@ data class ReadingProgressEntity(
     val intraPageRatio: Float,
     val read: Boolean,
     val bookmark: Boolean,
+    val updatedAt: Long,
+)
+
+/**
+ * 按章的已读标记（章节多选底栏的「标记已读/未读」）。
+ *
+ * 为什么不是 `reading_progress.read`：那张表一部漫画一行，"读到哪一章哪一页"，
+ * `read` 只描述**那一章**。章节列表要给每章显示已读状态、多选要批量标记，因此按章存。
+ *
+ * 为什么不加在 `chapters` 上：开发文档 15.3「索引可变状态与用户状态分表」——
+ * `chapters` 每次扫描都会被 upsert 重写，用户标记放进去的唯一结局是被重扫抹掉。
+ * 外键指向 `chapters.chapterId` 并级联删除：章节行消失时标记跟着走，不留孤儿。
+ */
+@Entity(
+    tableName = "chapter_read_state",
+    foreignKeys = [
+        ForeignKey(
+            entity = ChapterEntity::class,
+            parentColumns = ["chapterId"],
+            childColumns = ["chapterId"],
+            onDelete = ForeignKey.CASCADE,
+        ),
+    ],
+    indices = [Index(value = ["mangaId"])],
+)
+data class ChapterReadStateEntity(
+    @PrimaryKey val chapterId: String,
+    val mangaId: String,
+    val read: Boolean,
     val updatedAt: Long,
 )
 

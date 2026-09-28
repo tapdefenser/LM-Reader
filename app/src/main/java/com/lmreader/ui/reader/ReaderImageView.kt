@@ -11,6 +11,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.doOnLayout
 import com.davemorrissey.labs.subscaleview.ImageSource
@@ -20,6 +21,8 @@ import com.lmreader.core.model.ReaderSettings
 import com.lmreader.core.model.ZoomStart
 import com.lmreader.core.storage.reader.PageSource
 import com.lmreader.core.storage.reader.ReaderPage
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * 一页的渲染视口：由 Mihon 使用的图片引擎承担缩放、平移、分块解码与裁白边。
@@ -63,10 +66,27 @@ internal fun EnginePageView(
     // 视图实例随页面身份重建：库内部持有解码状态与瓦片缓存，复用实例会让上一页的
     // 缩放位置与瓦片残留到下一页（Mihon 在 `ReaderPageImageView.recycle()` 里显式清理
     // 同一个实例，我们选择更简单且不会串页的做法）。
+    val context = LocalContext.current
     var view by remember(page.pageId) {
         mutableStateOf<TapAwareSubsamplingImageView?>(null)
     }
     var decodeFailed by remember(page.pageId) { mutableStateOf(false) }
+
+    // 解码目标（长边）：屏幕短边 × 4/3，与 EhViewer 同口径（见 [ReaderImageSampling]）。
+    // 用屏幕尺寸而不是视图尺寸，是为了不必等布局——布局还没发生时就需要决定解码计划，
+    // 而"等布局"正是上一版把解码拖到主线程上的原因之一。
+    //
+    // 「加载原图」打开时目标取 0：`planPageDecode` 对非正目标一律原样交流，
+    // 也就是"一个像素都不减"。0 同时被用进下面的 LaunchedEffect 键与视图 tag，
+    // 因此**切换开关会让当前页按新策略重新解码一次**，不必退出重进。
+    val targetLongEdge = if (settings.loadOriginalImage) {
+        0
+    } else {
+        remember(context.resources) {
+            val metrics = context.resources.displayMetrics
+            ReaderImageSampling.targetLongEdge(metrics.widthPixels, metrics.heightPixels)
+        }
+    }
 
     AndroidView(
         factory = { context ->
@@ -95,23 +115,30 @@ internal fun EnginePageView(
 
     // 载入这一页的图像流。
     //
-    // 两件事必须同时做到：
+    // 三件事必须同时做到：
     // 1. **等视图有尺寸再 setImage**：尺寸为 0 时库的瓦片初始化行为不可预期，
     //    真机日志里出现过 `setImage: 001.jpg view=0x0`；
-    // 2. **同一页只 setImage 一次**：见下面关于"整图解码"的说明。
+    // 2. **同一页只 setImage 一次**：见下面关于"整图解码"的说明；
+    // 3. **准备图源必须在 IO 上**：读文件头、必要时解码上千万像素，全是阻塞操作。
+    //    上一版这段直接跑在组合的主线程上，真机实测翻页单帧 2300~3700ms。
     //
     // 流在协程里先准备好，布局回调只负责 `setImage`。
-    LaunchedEffect(page.pageId, source, prefetcher) {
+    LaunchedEffect(page.pageId, source, prefetcher, targetLongEdge) {
         val target = view ?: return@LaunchedEffect
         decodeFailed = false
-        val imageSource = runCatching { buildImageSource(source, page, prefetcher) }.getOrNull()
+        val imageSource = withContext(Dispatchers.IO) {
+            runCatching { buildImageSource(source, page, prefetcher, targetLongEdge) }.getOrNull()
+        }
         if (imageSource == null) {
             decodeFailed = true
             return@LaunchedEffect
         }
         target.doOnLayout {
-            if (target.getTag(IMAGE_LOADED_TAG) == page.pageId) return@doOnLayout
-            target.setTag(IMAGE_LOADED_TAG, page.pageId)
+            // tag 带上解码策略：同一页在**同一策略下**只 setImage 一次（避免重组触发第二次
+            // 整图解码），但用户切换「加载原图」时必须让它重新载一次——那就是这个开关的意义。
+            val loadTag = "${page.pageId}|$targetLongEdge"
+            if (target.getTag(IMAGE_LOADED_TAG) == loadTag) return@doOnLayout
+            target.setTag(IMAGE_LOADED_TAG, loadTag)
             target.setImage(imageSource)
         }
     }
@@ -151,90 +178,99 @@ private const val IMAGE_LOADED_TAG = -0x4C4D52 // 负数，避开库与框架可
  *   而真机的堆增长上限是 256MB。真机上那笔失败的 `8294416` 字节分配就是它。
  *
  * 既然无法从外部换掉解码器（`TilesInitTask` 里是硬编码 `new Decoder(...)`，
- * `decoder` 字段 private 且无 setter），就改为**控制送进去的像素量**：
- * 超过 [MAX_ENGINE_LONG_EDGE] 的图先按 2 的幂降采样再编码成 PNG（无损，避免二次 JPEG 损失），
- * 于是那次必然发生的整图分配被压到预算内。
+ * `decoder` 字段 private 且无 setter），就改为**控制送进去的像素量**：够大的图
+ * 按 2 的幂降采样成位图直接交给引擎（`ImageSource.bitmap`），那次必然发生的
+ * 整图分配于是被压到预算内。
  *
- * ## 代价与边界
+ * ## 与上游对齐（这一版改掉了什么）
  *
- * 降采样会降低放大后的清晰度。阈值取 3000 是因为：真机屏宽 1440，
- * 库的 `minimumTileDpi(180)` 在 1440 宽下要的瓦片也在这个量级；而绝大多数漫画页
- * 长边不超过 3000，因此**这条路径通常根本不触发**。只有超大跨页才会被采样，
- * 那种图原本就是 OOM 的来源。
+ * 上一版把降采样结果**编成 PNG** 再交回去，而且整段跑在组合的主线程上。真机实测
+ * 翻页单帧 2300~3700ms、3.7 秒只出 22 帧——PNG 编码一张 2550×3299 的位图就是秒级，
+ * 而阈值判断还 off-by-one（那种尺寸算出的 sample 是 1，等于完全没降采样）。
  *
- * ## 编码为什么用 PNG
+ * 现在的规则与上游一致（EhViewer `image/Image.kt` 用 `min(屏宽,屏高) * 4/3` 作解码目标，
+ * Mihon 条漫也把视图级位图交给引擎），细节与推导见 [ReaderImageSampling]：
+ * 不到"2 × 目标"就原样交流，到了才解一次位图，**不做任何编码**。
  *
- * 页图多为 JPEG，再编一次 JPEG 会叠加有损损失；PNG 无损且这里只做"搬运"。
- * 代价是编码后的字节比 JPEG 大，但那只是一次性的内存内缓冲区，
- * 相比省下的整图 ARGB 分配是划算的。
+ * ## 线程
+ *
+ * 这里每一步都是阻塞 IO 或上千万像素的解码，调用方必须在
+ * [kotlinx.coroutines.Dispatchers.IO] 上执行（见 [EnginePageView] 的 `LaunchedEffect`）。
  */
 private suspend fun buildImageSource(
     source: PageSource,
     page: ReaderPage,
     prefetcher: PagePrefetcher?,
+    targetLongEdge: Int,
 ): ImageSource? {
-    // 预取命中时优先走本地字节：省掉一次跨进程的 `openInputStream`，而且字节已经在磁盘上，
-    // 尺寸可以从头部读出来，于是下面的降采样探测与二次读流也一并不必做。
-    //
-    // 尺寸仍然要看：超过 `MAX_ENGINE_LONG_EDGE` 的页必须降采样（那是真机上 OOM 的来源），
-    // 而预取缓存里放的是**原始字节**，不保证已经够小。过大的页因此落回常规路径。
+    // 「加载原图」：目标为 0/负 = 不降采样。连尺寸都不必探测——探测只为决定采样率，
+    // 不采样时它只是白白多开一次文件。预取命中仍优先用本地字节（省一次跨进程读取）。
+    if (targetLongEdge <= 0) {
+        if (prefetcher != null) {
+            runCatching { prefetcher.stream(page.pageId) }.getOrNull()?.let {
+                return ImageSource.inputStream(it)
+            }
+        }
+        val raw = runCatching { source.open(page) }.getOrNull() ?: return null
+        return ImageSource.inputStream(raw)
+    }
+
+    // 预取命中时优先走本地字节：省掉一次跨进程的 `openInputStream`。
+    // 这里**只读文件头**——把整页 readBytes() 进堆是上一版的另一个卡顿来源。
     if (prefetcher != null) {
-        val bytes = prefetcher.stream(page.pageId)?.use { it.readBytes() }
-        if (bytes != null) {
-            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-            val longest = maxOf(bounds.outWidth, bounds.outHeight)
-            if (longest in 1..MAX_ENGINE_LONG_EDGE) {
-                return ImageSource.provider { java.io.ByteArrayInputStream(bytes) }
+        val bounds = runCatching {
+            prefetcher.stream(page.pageId)?.use { stream ->
+                val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeStream(stream, null, options)
+                options.outWidth to options.outHeight
+            }
+        }.getOrNull()
+        if (bounds != null) {
+            val plan = planPageDecode(bounds.first, bounds.second, targetLongEdge)
+            if (plan.passThrough) {
+                runCatching { prefetcher.stream(page.pageId) }.getOrNull()?.let {
+                    return ImageSource.inputStream(it)
+                }
+            } else {
+                runCatching {
+                    prefetcher.stream(page.pageId)?.use { stream ->
+                        BitmapFactory.decodeStream(stream, null, bitmapOptions(plan.sampleSize))
+                    }
+                }.getOrNull()?.let { return ImageSource.bitmap(it) }
             }
         }
     }
 
     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
     runCatching { source.open(page).use { BitmapFactory.decodeStream(it, null, bounds) } }
-    val width = bounds.outWidth
-    val height = bounds.outHeight
-    if (width <= 0 || height <= 0) {
-        // 读不到尺寸（格式不支持等）时不猜：把原始流交给库，由它给出失败回调。
-        val raw = runCatching { source.open(page) }.getOrNull() ?: return null
-        return ImageSource.inputStream(raw)
-    }
-
-    val longest = maxOf(width, height)
-    if (longest <= MAX_ENGINE_LONG_EDGE) {
+    val plan = planPageDecode(bounds.outWidth, bounds.outHeight, targetLongEdge)
+    if (plan.passThrough) {
         // 常见情形：不采样，直接把原始流交给库，一个字节都不多搬。
         val raw = runCatching { source.open(page) }.getOrNull() ?: return null
         return ImageSource.inputStream(raw)
     }
 
-    var sample = 1
-    while (longest / (sample * 2) >= MAX_ENGINE_LONG_EDGE) sample *= 2
-    val options = BitmapFactory.Options().apply { inSampleSize = sample }
+    // 降采样路径：解码一次、交位图、不做任何编码。解不出来就退回原始流——
+    // 宁可慢一点，也不能因为这一步失败而白屏。
     val sampled = runCatching {
-        source.open(page).use { BitmapFactory.decodeStream(it, null, options) }
+        source.open(page).use { BitmapFactory.decodeStream(it, null, bitmapOptions(plan.sampleSize)) }
     }.getOrNull() ?: run {
         val raw = runCatching { source.open(page) }.getOrNull() ?: return null
         return ImageSource.inputStream(raw)
     }
-
-    // 立刻把降采样后的位图编成流并回收：库后面会自己再解一次流，
-    // 因此这里不能把位图留着，否则峰值变成"位图 + 库的整图解码"两份。
-    val bytes = runCatching {
-        java.io.ByteArrayOutputStream().use { buffer ->
-            sampled.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, buffer)
-            buffer.toByteArray()
-        }
-    }.getOrNull()
-    sampled.recycle()
-    if (bytes == null) {
-        val raw = runCatching { source.open(page) }.getOrNull() ?: return null
-        return ImageSource.inputStream(raw)
-    }
-    return ImageSource.provider { java.io.ByteArrayInputStream(bytes) }
+    return ImageSource.bitmap(sampled)
 }
 
-/** 交给引擎前允许的最长边；超过则按 2 的幂降采样。见 [buildImageSource]。 */
-private const val MAX_ENGINE_LONG_EDGE = 3000
+/**
+ * 降采样解码的选项。
+ *
+ * `RGB_565`：这张位图只用于显示，且是屏幕级尺寸（目标长边的量级），每像素省一半
+ * 内存；原图仍然按原始流交给引擎的那条路径不受影响。
+ */
+private fun bitmapOptions(sampleSize: Int): BitmapFactory.Options = BitmapFactory.Options().apply {
+    inSampleSize = sampleSize
+    inPreferredConfig = android.graphics.Bitmap.Config.RGB_565
+}
 
 /**
  * 应用与 Mihon 同源的引擎配置。

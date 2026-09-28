@@ -154,9 +154,26 @@ python -c "import sqlite3;print(sqlite3.connect(r'file:D:\VSC\LM-Reader\.scratch
    校验办法：读首字节，PNG 必须是 `89 50 4E 47`。
 8. **`uiautomator dump` 只给 Compose 的语义节点**，有些控件（例如某些 Compose 文本框）
    在 dump 里看不到 `text`，别据此判断"控件不存在"——以截图为准。
+
+   **更坑的一种：它会给出一份过期的层级。** 实测连续两次 dump（中间隔了一次长按手势）
+   返回的文件**字节数完全相同**、内容里没有刚出现的选择态顶栏，于是我误判成"长按失效了"；
+   同一时刻的截图显示长按其实生效了。判定"某状态有没有生效"时**先截图**，
+   dump 只用来取坐标；两者冲突时以截图为准。
+
+   附带的坑：`input motionevent DOWN` 之后用另一个 `input` 进程发 `UP`，
+   每个进程都会用各自的时间戳当 `downTime`，手势不会连续，还会**留下按下的指针**，
+   让后续所有手势失效（表现为"怎么点都没反应"）。清理办法是发一次
+   `input motionevent CANCEL x y`。要模拟"长按后拖动"，用 `input draganddrop x1 y1 x2 y2 <ms>`
+   （单进程、内部先等长按再移动）；要看拖动**中途**的画面，把它放到后台跑，
+   在飞行中截图。
 9. **`input swipe` 不能拿来验证"自定义手势是否生效"**：竖划本身就会滚动列表，
    看到列表动了不代表你的手势被触发。要验证自定义手势，必须找**只有你的手势才会产生**
    的观测量（例如拖动滑块时的放大倍数），或把手势里的中间量打进日志。
+10. **模拟器没有底部导航栏 inset**（`dumpsys window displays` 的 DisplayFrames 里看不到
+    导航栏占位），所以"贴底控件是否被系统导航栏压住"这类问题**在模拟器上验不出来**：
+    改完只能看像素是否变化，而这里根本不变。`cmd overlay enable
+    com.android.internal.systemui.navbar.threebutton` 在这个镜像里也不存在。
+    这类问题留给真机确认。
 
 ## 与本项目真机的关系
 

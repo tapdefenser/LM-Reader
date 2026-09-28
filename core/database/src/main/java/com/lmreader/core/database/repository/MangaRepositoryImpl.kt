@@ -3,10 +3,13 @@ package com.lmreader.core.database.repository
 import com.lmreader.core.database.LmReaderDatabase
 import com.lmreader.core.database.dao.CardQueryRow
 import com.lmreader.core.database.dao.MangaDao
+import com.lmreader.core.database.entity.ChapterReadStateEntity
 import com.lmreader.core.database.entity.toCard
 import com.lmreader.core.database.entity.toDomain
 import com.lmreader.core.database.entity.toEntity
+import com.lmreader.core.index.ChapterOrdering
 import com.lmreader.core.model.ChapterRecord
+import com.lmreader.core.model.CoverProbeTarget
 import com.lmreader.core.model.MangaAvailability
 import com.lmreader.core.model.MangaBackfillTarget
 import com.lmreader.core.model.MangaCard
@@ -34,9 +37,19 @@ import kotlinx.coroutines.flow.map
 internal class MangaRepositoryImpl(
     private val database: LmReaderDatabase,
     private val mangaDao: MangaDao,
+    /**
+     * 用户保存的章节排序方式。
+     *
+     * 数据库层不认识 DataStore，所以偏好从一个函数问进来：发现新章节时要按它决定
+     * 插到哪里（见 `ChapterOrdering`）。默认值是"从未选过排序方式"——新章节追加到末尾。
+     */
+    private val chapterOrder: ChapterOrdering.SettingProvider = ChapterOrdering.SettingProvider {
+        ChapterOrdering.Setting.DEFAULT
+    },
 ) : MangaRepository {
 
     private val chapterDao = database.chapterDao()
+    private val chapterReadStateDao = database.chapterReadStateDao()
     private val metadataDao = database.metadataDao()
 
     override suspend fun pageLibrary(
@@ -112,12 +125,64 @@ internal class MangaRepositoryImpl(
     override suspend fun getChapters(mangaId: String): List<ChapterRecord> =
         chapterDao.getByManga(mangaId).map { it.toDomain() }
 
+    override suspend fun getChaptersInDisplayOrder(mangaId: String): List<ChapterRecord> =
+        chapterDao.getByMangaInDisplayOrder(mangaId).map { it.toDomain() }
+
+    override suspend fun setChapterOrder(mangaId: String, orderedChapterIds: List<String>) {
+        database.withTransaction {
+            // 传入的清单必须正好等于这部漫画的章节集合：少一个就会留下旧位置的行，
+            // 与重排后的下标撞车（两行同 position，列表顺序变得不确定）。
+            // 调用方永远拿当前完整列表来算，所以这里是"宁可整体不写"的兜底。
+            val current = chapterDao.chapterIdsOf(mangaId)
+            if (current.size != orderedChapterIds.size || current.toHashSet() != orderedChapterIds.toHashSet()) {
+                return@withTransaction
+            }
+            orderedChapterIds.forEachIndexed { index, chapterId ->
+                chapterDao.updatePosition(chapterId, index.toLong())
+            }
+        }
+    }
+
+    /**
+     * 一批卡片的封面探测输入。
+     *
+     * 两次查询（漫画 + 来源的 JOIN、这些漫画的全部章节）就够：章节按
+     * `mangaId, sortKey` 排序返回，分组后每组第一条就是第一章，与详情页的
+     * `getChapters` 是同一个顺序。
+     */
+    override suspend fun coverProbeTargets(mangaIds: List<String>): List<CoverProbeTarget> {
+        if (mangaIds.isEmpty()) return emptyList()
+        val rows = mangaDao.coverTargets(mangaIds)
+        if (rows.isEmpty()) return emptyList()
+        val firstChapters = chapterDao.getByMangas(rows.map { it.mangaId })
+            .groupBy { it.mangaId }
+            .mapValues { (_, chapters) -> chapters.first().toDomain() }
+        return rows.map { row ->
+            CoverProbeTarget(
+                mangaId = row.mangaId,
+                anchorDocumentId = row.anchorDocumentId,
+                layoutMode = row.layoutMode,
+                sourceTreeUri = row.sourceTreeUri,
+                firstChapter = firstChapters[row.mangaId],
+            )
+        }
+    }
+
     override suspend fun updateChapterPageInfo(
         chapterId: String,
         pageCount: Int,
         coverDocumentId: String?,
     ) {
         chapterDao.updateDerivedFields(chapterId, pageCount, coverDocumentId)
+    }
+
+    override suspend fun markCoverProbed(
+        mangaId: String,
+        coverDocumentId: String?,
+        coverChapterId: String?,
+        at: Long,
+    ) {
+        mangaDao.markCoverProbed(mangaId, coverDocumentId, coverChapterId, at)
     }
 
     override suspend fun pendingBackfillIds(limit: Int): List<String> =
@@ -182,6 +247,7 @@ internal class MangaRepositoryImpl(
                 summary = update.summary,
                 author = update.author,
                 hasMetadata = update.hasMetadata,
+                metadataProbedAt = update.metadataProbedAt,
                 at = update.at,
             )
             update.records.forEach { metadataDao.upsert(it.toEntity()) }
@@ -255,8 +321,11 @@ internal class MangaRepositoryImpl(
      *    两个条件缺一不可：发现阶段会完整枚举锚点目录却只发出部分章节，
      *    只判前者会把用户手动补齐的章节列表删掉（真机 NovaSamus 59 个 zip 的归档）。
      */
-    override suspend fun upsertScanResult(result: ScanResult): ScanPersistReport =
-        database.withTransaction {
+    override suspend fun upsertScanResult(result: ScanResult): ScanPersistReport {
+        // 排序方式在事务**之前**读：它是 DataStore 里的偏好，读它不该把数据库事务
+        // 撑长（也不该让事务里出现与数据库无关的挂起点）。
+        val orderSetting = chapterOrder.current()
+        return database.withTransaction {
             val manga = result.manga
             val source = database.sourceDao().getById(manga.sourceId)
             // A09 版本门禁：扫描期间修改类型/递归/目录会使 revision 自增。
@@ -284,6 +353,11 @@ internal class MangaRepositoryImpl(
                 manga.toEntity(sourceOrderIndex = sourceOrder).copy(
                     coverDocumentId = manga.coverDocumentId ?: existing.coverDocumentId,
                     coverChapterId = manga.coverChapterId ?: existing.coverChapterId,
+                    // 封面探测记录必须一起保留：发现阶段完全不知道它，每次重扫都带 null
+                    // 重发，抹掉之后那些"探测过但没有封面"的卡片会在下一次滚动里被
+                    // 重新枚举一遍目录，滚动越深越慢。
+                    coverProbedAt = existing.coverProbedAt,
+                    metadataProbedAt = existing.metadataProbedAt,
                     summary = manga.summary ?: existing.summary,
                     author = manga.author ?: existing.author,
                     hasMetadata = manga.hasMetadata || existing.hasMetadata,
@@ -327,16 +401,48 @@ internal class MangaRepositoryImpl(
             }
 
             if (result.chapters.isNotEmpty()) {
-                chapterDao.upsertAll(result.chapters.map { it.toEntity() })
+                // 显示顺序（开发文档 8.1 的章节列表）在这里落定：
+                // - 已有章节**保持原位**，一个都不动；
+                // - 新探到的章节按用户保存的排序方式**插入**到对应位置；从没选过排序方式时
+                //   追加到末尾，同一批之间按首字母（`ChapterOrdering` 的口径）。
+                //
+                // 必须先读删除后的当前顺序：`obsolete` 刚被删掉，它们不该再参与插入定位。
+                val existingChapters = chapterDao.getByMangaInDisplayOrder(manga.mangaId)
+                    .map { it.toDomain() }
+                val existingById = existingChapters.associateBy { it.chapterId }
+                val ordered = ChapterOrdering.planInsertion(
+                    existing = existingChapters,
+                    discovered = result.chapters,
+                    setting = orderSetting,
+                )
+                val positionById = ordered.associate { it.chapterId to it.position }
+
+                chapterDao.upsertAll(
+                    result.chapters.map { chapter ->
+                        val previous = existingById[chapter.chapterId]
+                        chapter.toEntity().copy(
+                            // 位置只能来自上面的插入计划；扫描器不知道它，直接用会归零。
+                            position = positionById[chapter.chapterId] ?: previous?.position ?: 0L,
+                            // mtime 缺失时保留上次读到的值：提供方偶尔不返回时间，
+                            // 归零会让"按修改时间排序"把这一章甩到最后。
+                            modifiedAt = chapter.modifiedAt ?: previous?.modifiedAt,
+                        )
+                    },
+                )
             }
             // 章节数只在锚点完整枚举**且扫描器自己声明已知**时才敢声明"已知"
             // （开发文档 5.1：不得把探测到一章伪报成完整的一章）。
             // 多章节的发现阶段只探测一个章节，因此这里是"已发现 N 章，更新中"，
             // 不是"共 N 章"——完整清单由详情页的「更新章节」枚举。
-            if (anchorEnumerated && manga.chapterCountKnown) {
+            if (incomingIsComplete) {
                 chapterDao.refreshChapterCount(manga.mangaId)
-            } else {
+            } else if (existing?.chapterCountKnown != true) {
                 // 仍需记录当前已发现的章节数（否则卡片会显示"章节待更新"而看不出有几个）。
+                //
+                // 但**不能**把已经知道的完整章节数降级：普通「刷新」只做发现阶段（每部只
+                // 探测一个章节），而用户之前点过「更新章节」、或者列表本来就已经完整。
+                // 无条件降级会让每次刷新都把"共 10 章"变成"已发现 1 章，更新中"——信息
+                // 明明还在库里（章节行没被删，见上面的 incomingIsComplete 门禁）。
                 chapterDao.markChapterCountUnknown(manga.mangaId, result.chapters.size)
             }
 
@@ -348,11 +454,39 @@ internal class MangaRepositoryImpl(
                 mangasMarkedUnavailable = 0,
             )
         }
+    }
 
     override suspend fun deleteManga(mangaId: String) {
         // 外键 ON DELETE CASCADE 会一并清掉章节与书架项；这是"用户明确删除"的路径，
         // 与重扫的"派生字段更新"是两件事（开发文档 15.3）。
         mangaDao.delete(mangaId)
+    }
+
+    override suspend fun chapterReadMarks(mangaId: String): Map<String, Boolean> =
+        chapterReadStateDao.marksOf(mangaId).associate { it.chapterId to it.read }
+
+    override suspend fun setChapterRead(chapterIds: List<String>, read: Boolean) {
+        if (chapterIds.isEmpty()) return
+        if (!read) {
+            // 未读 = 没有行。只在表里留"用户标记过已读"的章节，500 章里标 3 章时
+            // 不该为其余 497 章各写一行。
+            chapterReadStateDao.deleteAll(chapterIds)
+            return
+        }
+        val at = System.currentTimeMillis()
+        val owners = chapterDao.mangaIdsOf(chapterIds).associate { it.chapterId to it.mangaId }
+        chapterReadStateDao.upsertAll(
+            chapterIds.mapNotNull { chapterId ->
+                // 章节行不存在的 id 直接跳过，否则外键会拒绝整批写入。
+                val mangaId = owners[chapterId] ?: return@mapNotNull null
+                ChapterReadStateEntity(
+                    chapterId = chapterId,
+                    mangaId = mangaId,
+                    read = true,
+                    updatedAt = at,
+                )
+            },
+        )
     }
 
     private suspend fun pageOf(rows: List<CardQueryRow>, offset: Int, limit: Int): MangaPage {

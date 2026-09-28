@@ -22,3 +22,7 @@ local.properties
 # Operating system files
 Thumbs.db
 .DS_Store
+
+# 由 :core:database 的 syncMigrationSchemas 从 schemas/ 同步而来，供 MigrationTestHelper
+# 从 assets 读取导出的 schema；源文件是 schemas/，这里不重复提交。
+core/database/src/androidTest/assets/

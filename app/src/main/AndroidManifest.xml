@@ -36,6 +36,20 @@
         android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
 
+    <!--
+      大堆（largeHeap）。
+
+      为什么需要：阅读器的图片引擎（Mihon 同源的 SubsamplingScaleImageView）解码一页时
+      会先整图解码一次——3024×1700 在 ARGB_8888 下约 20MB，而普通堆增长上限只有
+      256MB，连续翻几页就会撞上 OOM（见 docs/交接-阅读器真机缺陷.md）。
+
+      这不是本应用独有的取舍：两个上游参考实现都开了它——
+      Mihon `app/src/main/AndroidManifest.xml` 的 `android:largeHeap="true"`、
+      EhViewer 同文件里的 `android:largeHeap="@bool/large_heap"`。
+
+      注意它只是把天花板抬高，不减少单次占用：真正的对策是控制送进引擎的像素量
+      （见 ReaderImageSampling）与"同一页只解码一次"。
+    -->
     <application
         android:name=".LmReaderApplication"
         android:allowBackup="true"
@@ -43,6 +57,7 @@
         android:fullBackupContent="@xml/lmreader_backup_rules"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/lmreader_app_name"
+        android:largeHeap="true"
         android:requestLegacyExternalStorage="true"
         android:supportsRtl="true"
         android:theme="@style/Theme.LmReader">

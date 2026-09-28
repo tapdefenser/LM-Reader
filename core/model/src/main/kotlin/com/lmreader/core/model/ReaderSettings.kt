@@ -274,6 +274,23 @@ data class ReaderSettings(
     val showPageNumber: Boolean = true,
     /** Mihon `fullscreen`，默认 true。 */
     val fullscreen: Boolean = true,
+    /**
+     * 是否始终加载**原图**（不做任何降采样）。
+     *
+     * 关（默认）：交给引擎的图会先按"屏幕短边 × 4/3"判断一次，够大才按 2 的幂降采样
+     * （见 `app` 的 `ReaderImageSampling`）。这是内存与卡顿都最稳的一档，代价是
+     * 极端大图放大到超过采样分辨率时是插值放大。
+     *
+     * 开：**原样把文件流交给引擎**，一个像素都不减。适合"扫图/跨页/细节"这类
+     * 宁可慢一点也不糊的场合。代价是那一页的解码量回到原始尺寸——一页 3024×1700
+     * 在 ARGB_8888 下约 20MB，连着翻几页就可能触发 GC 抖动甚至 OOM（真机堆增长上限
+     * 256MB，本项目已按上游做法开 `largeHeap`）。
+     *
+     * 与 Mihon 的对应关系：它没有同名开关，而是靠 per-manga 的"按宽度适配/原始尺寸"
+     * 等显示方式间接影响采样；这里单独抽一个开关，是因为"显示方式"说的是**画到多大**，
+     * 而本项说的是**解码多少像素**——两者独立，用户想调的通常只是后者。
+     */
+    val loadOriginalImage: Boolean = false,
     /** Mihon `pref_keep_screen_on_key`，默认 false。 */
     val keepScreenOn: Boolean = false,
     /**

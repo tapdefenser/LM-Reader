@@ -68,6 +68,7 @@ internal object ReaderSettingsCodec {
         putFlag(KEY_WEBTOON_NO_ZOOM_OUT, settings.webtoonDisableZoomOut, defaults.webtoonDisableZoomOut)
         putFlag(KEY_SHOW_PAGE_NUMBER, settings.showPageNumber, defaults.showPageNumber)
         putFlag(KEY_FULLSCREEN, settings.fullscreen, defaults.fullscreen)
+        putFlag(KEY_LOAD_ORIGINAL, settings.loadOriginalImage, defaults.loadOriginalImage)
         putFlag(KEY_KEEP_SCREEN_ON, settings.keepScreenOn, defaults.keepScreenOn)
         putFlag(KEY_ALWAYS_TRANSITION, settings.showChapterTransitions, defaults.showChapterTransitions)
         put(KEY_PRELOAD_PAGES, settings.preloadPages.toString(), defaults.preloadPages.toString())
@@ -135,6 +136,7 @@ internal object ReaderSettingsCodec {
             webtoonDisableZoomOut = readFlag(fields, KEY_WEBTOON_NO_ZOOM_OUT, defaults.webtoonDisableZoomOut),
             showPageNumber = readFlag(fields, KEY_SHOW_PAGE_NUMBER, defaults.showPageNumber),
             fullscreen = readFlag(fields, KEY_FULLSCREEN, defaults.fullscreen),
+            loadOriginalImage = readFlag(fields, KEY_LOAD_ORIGINAL, defaults.loadOriginalImage),
             keepScreenOn = readFlag(fields, KEY_KEEP_SCREEN_ON, defaults.keepScreenOn),
             showChapterTransitions = readFlag(
                 fields,
@@ -193,6 +195,8 @@ internal object ReaderSettingsCodec {
     private const val KEY_WEBTOON_NO_ZOOM_OUT = "webtoonNoZoomOut"
     private const val KEY_SHOW_PAGE_NUMBER = "showPageNumber"
     private const val KEY_FULLSCREEN = "fullscreen"
+    /** 「加载原图」；默认关闭（关闭时按屏幕尺寸降采样，见 [ReaderSettings.loadOriginalImage]）。 */
+    private const val KEY_LOAD_ORIGINAL = "loadOriginal"
     private const val KEY_KEEP_SCREEN_ON = "keepScreenOn"
     private const val KEY_ALWAYS_TRANSITION = "alwaysTransition"
     /**

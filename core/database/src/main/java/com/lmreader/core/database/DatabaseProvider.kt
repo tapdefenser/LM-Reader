@@ -5,6 +5,7 @@ import com.lmreader.core.database.repository.MangaRepositoryImpl
 import com.lmreader.core.database.repository.ReadingProgressRepositoryImpl
 import com.lmreader.core.database.repository.ShelfRepositoryImpl
 import com.lmreader.core.database.repository.SourceRepositoryImpl
+import com.lmreader.core.index.ChapterOrdering
 import com.lmreader.core.model.MangaRepository
 import com.lmreader.core.model.ReadingProgressRepository
 import com.lmreader.core.model.ShelfRepository
@@ -19,12 +20,28 @@ import com.lmreader.core.model.SourceRepository
  */
 object DatabaseProvider {
 
-    fun create(context: Context): Components = create(LmReaderDatabase.build(context))
+    fun create(
+        context: Context,
+        /**
+         * 用户保存的章节排序方式；发现新章节时按它决定插到哪里。
+         *
+         * 从外面传进来而不是在本模块读 DataStore：`core:database` 不该认识偏好存储
+         * （开发文档 15.1「core:database 只管索引、事务、搜索、迁移」）。
+         */
+        chapterOrder: ChapterOrdering.SettingProvider = ChapterOrdering.SettingProvider {
+            ChapterOrdering.Setting.DEFAULT
+        },
+    ): Components = create(LmReaderDatabase.build(context), chapterOrder)
 
-    fun create(database: LmReaderDatabase): Components = Components(
+    fun create(
+        database: LmReaderDatabase,
+        chapterOrder: ChapterOrdering.SettingProvider = ChapterOrdering.SettingProvider {
+            ChapterOrdering.Setting.DEFAULT
+        },
+    ): Components = Components(
         database = database,
         sources = SourceRepositoryImpl(database, database.sourceDao()),
-        mangas = MangaRepositoryImpl(database, database.mangaDao()),
+        mangas = MangaRepositoryImpl(database, database.mangaDao(), chapterOrder),
         shelf = ShelfRepositoryImpl(database),
         readingProgress = ReadingProgressRepositoryImpl(database.readingProgressDao()),
     )

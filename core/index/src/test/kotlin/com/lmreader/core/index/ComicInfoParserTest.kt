@@ -218,6 +218,35 @@ class ComicInfoParserTest {
         assertEquals(64, first.fingerprint.length)
     }
 
+    @Test
+    fun 解析前按原文拒绝DOCTYPE() {
+        // 不依赖平台解析器支持 disallow-doctype-decl：Android 的 Harmony 实现不认那套
+        // 加固开关（见 ComicInfoParser.secureDocumentBuilder 的说明），
+        // 因此 DOCTYPE 必须在解析之前就按原文挡掉。
+        val doctype = "<!DOCTYPE ComicInfo SYSTEM \"http://example.invalid/x.dtd\"><ComicInfo><Series>A</Series></ComicInfo>"
+        val rejected = ComicInfoParser.parse("m_14", MetadataOwnerType.MANGA, doctype, "测试")
+
+        assertNotNull("含 DOCTYPE 一律不解析（框架 4.5：禁止外部实体）", rejected.parseError)
+        assertTrue(rejected.fields.isEmpty())
+        assertEquals(doctype, rejected.xml)
+
+        // 文本里的 "doctype" 字样不是声明，不能误伤。
+        val benign = "<ComicInfo><Summary>how to write a doctype</Summary></ComicInfo>"
+        val ok = ComicInfoParser.parse("m_15", MetadataOwnerType.MANGA, benign, "测试")
+        assertNull(ok.parseError)
+        assertEquals("how to write a doctype", ok.summary)
+    }
+
+    @Test
+    fun 解析失败的记录带上异常类型() {
+        // 只留 message 时无法区分"配置被平台拒绝"与"XML 本身坏了"，
+        // 真机上正是靠异常类名才定位到加固开关不被支持。
+        val record = ComicInfoParser.parse("m_16", MetadataOwnerType.MANGA, "<ComicInfo><Series>未闭合", "测试")
+
+        assertNotNull(record.parseError)
+        assertTrue("错误信息要带异常类名：${record.parseError}", record.parseError!!.contains(":"))
+    }
+
     private fun paddedXml(totalBytes: Int): String {
         val head = "<ComicInfo><Series>"
         val tail = "</Series></ComicInfo>"

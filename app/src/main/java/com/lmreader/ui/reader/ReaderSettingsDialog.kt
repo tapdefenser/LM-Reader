@@ -202,6 +202,16 @@ private fun GeneralPage(settings: ReaderSettings, onUpdate: ((ReaderSettings) ->
     ToggleRow("自动放大宽图", settings.landscapeZoom) { value ->
         onUpdate { it.copy(landscapeZoom = value) }
     }
+    // 「加载原图」放在这里而不是"显示"：它管的是**解码多少像素**，与画多大无关。
+    // 切换后会立刻按新策略重新解码当前页（见 EnginePageView 的 LaunchedEffect 键）。
+    ToggleRow(
+        title = "加载原图（不降采样）",
+        checked = settings.loadOriginalImage,
+        subtitle = "开：细节最完整，但单页解码量回到原图大小，翻页更吃内存；" +
+            "关：超过屏幕尺寸的图先降采样，翻页更稳。",
+    ) { value ->
+        onUpdate { it.copy(loadOriginalImage = value) }
+    }
 
     Spacer(Modifier.height(20.dp))
     SectionTitle("点按区域")
@@ -378,13 +388,33 @@ private fun <T> ChipRow(
 }
 
 @Composable
-private fun ToggleRow(title: String, checked: Boolean, onChange: (Boolean) -> Unit) {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween,
-    ) {
-        Text(title, style = MaterialTheme.typography.bodyMedium)
-        Switch(checked = checked, onCheckedChange = onChange)
+private fun ToggleRow(
+    title: String,
+    checked: Boolean,
+    subtitle: String? = null,
+    onChange: (Boolean) -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.weight(1f),
+            )
+            Switch(checked = checked, onCheckedChange = onChange)
+        }
+        // 有代价的开关必须把代价写在旁边：否则用户只会在内存吃紧时才发现自己开了它。
+        if (subtitle != null) {
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 2.dp, end = 12.dp),
+            )
+        }
     }
 }

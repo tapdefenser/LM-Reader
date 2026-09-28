@@ -85,8 +85,30 @@ class PagingState<T>(
     /** 当前额度是否仍有空位——扫描继续时用它决定是否立即补入新条目。 */
     fun hasFreeSlot(): Boolean = !exhausted && !loading && mutableItems.size < requestedCapacity
 
+    /**
+     * 就地替换一项（按 id 定位）。
+     *
+     * 为什么需要它：封面是滚动时异步取到的，结果回来后必须让**这一张**卡片立刻显示
+     * 封面，而不是重建整个分页会话——重建会把用户滚了很远的位置打回第一页。
+     * 找不到该项时返回 false（列表已经因为换搜索词等原因被换掉了），调用方据此
+     * 不做任何界面更新。
+     */
+    fun updateItem(id: String, transform: (T) -> T): Boolean {
+        val index = mutableItems.indexOfFirst { idOf(it) == id }
+        if (index < 0) return false
+        val updated = transform(mutableItems[index])
+        mutableItems[index] = updated
+        return true
+    }
+
     companion object {
-        const val DEFAULT_PAGE_SIZE = 40
+        /**
+         * 一批多少项。
+         *
+         * 30 而不是更大：图库是"边滚边加载"，一批越小首屏越快、封面探测的批次也越小；
+         * 用户明确要求"搜索结果可能是几千条，但依然一次加载 30 项，而不是一股脑"。
+         */
+        const val DEFAULT_PAGE_SIZE = 30
     }
 }
 

@@ -62,6 +62,25 @@ interface SourceDao {
     @Query("UPDATE library_sources SET permission = :permission WHERE sourceId = :sourceId")
     suspend fun updatePermission(sourceId: String, permission: SourcePermissionState)
 
+    /**
+     * 把"上次扫描被中断"的来源从 RUNNING 收敛成 FAILED。
+     *
+     * 为什么需要：扫描状态写在来源行上，而进程可能被系统或用户杀掉（真机快照里就有
+     * 两个来源停在 RUNNING 且 `scan_runs` 为空）。不收敛的话，路径表会永远显示
+     * "正在扫描"，用户分不清"真的在扫"与"上次没扫完"。
+     *
+     * 只在应用启动时调用一次：真正在跑的扫描由 `SourceScanRunner` 在内存里维护状态，
+     * 不会因为这个 UPDATE 被误判。
+     */
+    @Query(
+        """
+        UPDATE library_sources
+        SET lastScanStatus = 'FAILED', lastScanError = :reason
+        WHERE lastScanStatus = 'RUNNING'
+        """,
+    )
+    suspend fun clearInterruptedScans(reason: String): Int
+
     /** 拖动排序：一次事务写完整个表的顺序，避免中途被读到半旧半新的状态。 */
     @Transaction
     suspend fun applyOrder(orderedSourceIds: List<String>) {

@@ -10,12 +10,16 @@ import com.lmreader.core.model.LibraryDisplayMode
 import com.lmreader.core.model.MangaAvailability
 import com.lmreader.core.model.MangaCard
 import com.lmreader.core.model.MangaRepository
+import com.lmreader.core.model.ResolvedCover
 import com.lmreader.core.model.ShelfRepository
 import com.lmreader.core.model.SourceRepository
 import com.lmreader.core.model.StyleMode
+import com.lmreader.core.storage.cover.CoverMetadataWriter
+import com.lmreader.core.storage.cover.CoverResolver
 import com.lmreader.core.storage.scan.ChapterSyncOutcome
 import com.lmreader.core.storage.scan.MangaChapterSyncer
 import com.lmreader.core.storage.settings.AppPreferences
+import com.lmreader.ui.common.CoverProbeQueue
 import com.lmreader.ui.paging.PageSlice
 import com.lmreader.ui.paging.PagingState
 import kotlinx.coroutines.FlowPreview
@@ -40,12 +44,24 @@ class BookshelfViewModel(
     private val shelfRepository: ShelfRepository,
     private val chapterSyncer: MangaChapterSyncer,
     private val preferences: AppPreferences,
+    private val coverResolver: CoverResolver,
+    private val coverMetadataWriter: CoverMetadataWriter,
 ) : ViewModel() {
 
     private val paging = PagingState<MangaCard>(idOf = { it.mangaId })
 
     private val _state = MutableStateFlow(BookshelfUiState())
     val state: StateFlow<BookshelfUiState> = _state.asStateFlow()
+
+    /** 封面懒加载队列；与图库共用同一套规则与实现（见 [CoverProbeQueue]）。 */
+    private val coverProbes = CoverProbeQueue(
+        scope = viewModelScope,
+        probeTargets = mangaRepository::coverProbeTargets,
+        resolve = coverResolver::resolve,
+        // 与图库同一条落库路径：写封面的同时更新简介（用户要求）。
+        persist = { mangaId, cover, at -> coverMetadataWriter.write(mangaId, cover, at) },
+        onResolved = ::onCoverResolved,
+    )
 
     /** 防抖用的查询流；见 [onQueryChange]。 */
     private val queryFlow = MutableStateFlow("")
@@ -89,7 +105,7 @@ class BookshelfViewModel(
                         val shrank = previous >= 0 && visible < previous
                         previous = visible
                         if (grew) {
-                            paging.reset()
+                            resetSession()
                             loadMore()
                             return@collect
                         }
@@ -99,7 +115,7 @@ class BookshelfViewModel(
                         val hasStaleCard = mangaRepository.getCards(loaded.map { it.mangaId })
                             .any { it.availability == MangaAvailability.STALE }
                         if (hasStaleCard) {
-                            paging.reset()
+                            resetSession()
                             loadMore()
                         }
                     }
@@ -128,7 +144,7 @@ class BookshelfViewModel(
             .debounce(SEARCH_DEBOUNCE_MS)
             .distinctUntilChanged()
             .collect { query ->
-                paging.reset()
+                resetSession()
                 _state.update { it.copy(appliedQuery = query) }
                 loadMore()
             }
@@ -144,7 +160,7 @@ class BookshelfViewModel(
         if (_state.value.selectedCategoryId == categoryId) return
         _state.update { it.copy(selectedCategoryId = categoryId, sidePanelOpen = false) }
         viewModelScope.launch {
-            paging.reset()
+            resetSession()
             loadMore()
         }
     }
@@ -213,7 +229,7 @@ class BookshelfViewModel(
                     },
                 )
             }
-            paging.reset()
+            resetSession()
             loadMore()
         }
     }
@@ -232,7 +248,7 @@ class BookshelfViewModel(
      */
     fun reload() {
         viewModelScope.launch {
-            paging.reset()
+            resetSession()
             loadMore()
         }
     }
@@ -267,7 +283,7 @@ class BookshelfViewModel(
     fun deleteCategory(categoryId: Long) {
         viewModelScope.launch {
             shelfRepository.deleteCategory(categoryId)
-            paging.reset()
+            resetSession()
             loadMore()
         }
     }
@@ -284,7 +300,7 @@ class BookshelfViewModel(
     fun removeFromShelf(mangaId: String) {
         viewModelScope.launch {
             shelfRepository.removeFromShelf(mangaId)
-            paging.reset()
+            resetSession()
             loadMore()
         }
     }
@@ -292,7 +308,7 @@ class BookshelfViewModel(
     fun moveToCategory(mangaId: String, categoryId: Long) {
         viewModelScope.launch {
             shelfRepository.addToShelf(mangaId, categoryId)
-            paging.reset()
+            resetSession()
             loadMore()
         }
     }
@@ -322,8 +338,50 @@ class BookshelfViewModel(
         }
     }
 
+    /**
+     * 重建分页会话（必须与 `paging.reset()` 成对）。
+     *
+     * 换分类、换搜索词、增删收藏之后，旧的封面探测队列指向的是已经不在屏幕上的卡片，
+     * 继续取只是白花目录枚举。
+     */
+    private fun resetSession() {
+        paging.reset()
+        coverProbes.clear()
+    }
+
+    /**
+     * 上报当前可见的卡片下标（与图库同一套规则：滚动到可见才取封面）。
+     *
+     * 书架通常只有几十项，但"取过一次就不再取"的收益是一样的：一份 300 部的收藏
+     * 若每次打开都重取，代价就是 300 次目录枚举。
+     */
+    fun onCardsVisible(indices: List<Int>) {
+        if (indices.isEmpty()) return
+        val items = paging.items
+        val needsProbe = ArrayList<String>(indices.size)
+        for (index in indices) {
+            val card = items.getOrNull(index) ?: continue
+            if (card.coverDocumentId != null || card.coverProbedAt != null) continue
+            needsProbe += card.mangaId
+        }
+        coverProbes.request(needsProbe)
+    }
+
+    /** 封面探测完成：就地刷新那一张卡片，不重建分页会话（重建会打回第一页）。 */
+    private fun onCoverResolved(mangaId: String, cover: ResolvedCover?, at: Long) {
+        val updated = paging.updateItem(mangaId) { card ->
+            card.copy(
+                coverDocumentId = cover?.coverDocumentId,
+                coverChapterId = cover?.coverChapterId,
+                coverProbedAt = at,
+            )
+        }
+        if (updated) _state.update { it.copy(items = paging.items.toList()) }
+    }
+
     companion object {
-        const val PAGE_SIZE = 40
+        /** 一批多少项；与图库同一个口径（30）。 */
+        const val PAGE_SIZE = PagingState.DEFAULT_PAGE_SIZE
 
         /**
          * 搜索防抖窗口。
@@ -340,6 +398,8 @@ class BookshelfViewModel(
                     shelfRepository = container.shelfRepository,
                     chapterSyncer = container.mangaChapterSyncer,
                     preferences = container.preferences,
+                    coverResolver = container.coverResolver,
+                    coverMetadataWriter = container.coverMetadataWriter,
                 )
             }
         }

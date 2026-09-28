@@ -43,15 +43,46 @@ class SummaryBuilderTest {
     }
 
     @Test
-    fun 缺少Summary时压缩XML文本() {
+    fun 缺少Summary时按上游字段组织简介() {
         val xml = "<ComicInfo><Series>网球王子</Series><Writer>许斐刚</Writer></ComicInfo>"
         val record = ComicInfoParser.parse("m_3", MetadataOwnerType.MANGA, xml, "测试")
 
         val summary = record.summary
-        assertTrue("没有 Summary 时回退到压缩后的 XML 文本", summary != null && summary.contains("网球王子"))
+        assertTrue("没有 Summary 时回退到按字段组织的文本", summary != null && summary.contains("网球王子"))
         assertTrue(summary!!.contains("许斐刚"))
         assertTrue("标签本身不能留在摘要里", !summary.contains("<"))
         assertTrue(summary.length <= SummaryBuilder.MAX_SUMMARY_LENGTH)
+    }
+
+    @Test
+    fun EhViewer的简介按字段分行走而不是压成一句() {
+        // EhViewer 不写 Summary（见 ComicInfoFieldsTest），简介只能由其它字段组织。
+        val xml = """
+            <ComicInfo>
+              <Series>作品名</Series>
+              <AlternateSeries>作品名 日本語</AlternateSeries>
+              <Writer>社团</Writer>
+              <Penciller>画师</Penciller>
+              <Genre>f:yuri</Genre>
+              <PageCount>28</PageCount>
+            </ComicInfo>
+        """.trimIndent()
+        val record = ComicInfoParser.parse("m_6", MetadataOwnerType.MANGA, xml, "测试")
+
+        val summary = record.summary
+        assertTrue(summary != null)
+        assertEquals(
+            "别名：作品名 日本語\n作者：画师\n社团：社团\n分类：yuri\n信息：28 页\n名称：作品名",
+            summary,
+        )
+    }
+
+    @Test
+    fun 展示名与Series相同时简介不重复名称() {
+        val xml = "<ComicInfo><Series>作品名</Series><Penciller>画师</Penciller></ComicInfo>"
+        val record = ComicInfoParser.parse("m_7", MetadataOwnerType.MANGA, xml, "测试")
+
+        assertEquals("作者：画师", SummaryBuilder.build(record, excludeName = "作品名"))
     }
 
     @Test

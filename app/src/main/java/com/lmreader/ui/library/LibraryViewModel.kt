@@ -10,11 +10,15 @@ import com.lmreader.core.model.MangaAvailability
 import com.lmreader.core.model.MangaCard
 import com.lmreader.core.model.LibrarySource
 import com.lmreader.core.model.MangaRepository
+import com.lmreader.core.model.ResolvedCover
 import com.lmreader.core.model.ShelfRepository
 import com.lmreader.core.model.SourceRepository
+import com.lmreader.core.storage.cover.CoverMetadataWriter
+import com.lmreader.core.storage.cover.CoverResolver
 import com.lmreader.core.storage.scan.LibraryScanCoordinator
 import com.lmreader.core.storage.scan.ScanReason
 import com.lmreader.core.storage.settings.AppPreferences
+import com.lmreader.ui.common.CoverProbeQueue
 import com.lmreader.ui.common.ScreenState
 import com.lmreader.ui.paging.PageSlice
 import com.lmreader.ui.paging.PagingState
@@ -24,6 +28,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
@@ -41,12 +46,30 @@ class LibraryViewModel(
     private val shelfRepository: ShelfRepository,
     private val scanCoordinator: LibraryScanCoordinator,
     private val preferences: AppPreferences,
+    private val coverResolver: CoverResolver,
+    private val coverMetadataWriter: CoverMetadataWriter,
 ) : ViewModel() {
 
     private val paging = PagingState<MangaCard>(idOf = { it.mangaId })
 
     private val _state = MutableStateFlow(LibraryUiState())
     val state: StateFlow<LibraryUiState> = _state.asStateFlow()
+
+    /**
+     * 封面懒加载队列（用户要求：**滚动到可见才取**，一次一批，取过就不再取）。
+     *
+     * 与 `loadMore()` 完全解耦：加载列表项与取封面是两条独立协程，取封面慢不会让
+     * 列表停在加载态。
+     */
+    private val coverProbes = CoverProbeQueue(
+        scope = viewModelScope,
+        probeTargets = mangaRepository::coverProbeTargets,
+        resolve = coverResolver::resolve,
+        // 落库走 CoverMetadataWriter：写封面的同时把简介也读掉（用户要求：
+        // 在所有更新封面的时候也要更新简介）。两者读的是同一批目录。
+        persist = { mangaId, cover, at -> coverMetadataWriter.write(mangaId, cover, at) },
+        onResolved = ::onCoverResolved,
+    )
 
     private val queryFlow = MutableStateFlow("")
 
@@ -57,6 +80,14 @@ class LibraryViewModel(
      * 已生效的筛选必须在那之前保持不动（与路径编辑弹窗同一套约定）。
      */
     private var appliedSourceFilter: Set<String> = emptySet()
+
+    /**
+     * 库里当前可见的条目总数（订阅而来）。
+     *
+     * 用途只有一个：扫描结束时判断"分页会话是不是已经过期了"——会话宣告到底、而库里
+     * 比已加载的多，说明这批数据是扫描之前读的（见 init 里的扫描结束处理）。
+     */
+    private var visibleTotal: Int = 0
 
     init {
         paging.requestInitial()
@@ -70,7 +101,7 @@ class LibraryViewModel(
             preferences.librarySourceFilter.collect { saved ->
                 appliedSourceFilter = saved
                 _state.update { it.copy(appliedSourceFilter = saved, draftSourceFilter = saved) }
-                paging.reset()
+                resetSession()
                 loadMore()
             }
         }
@@ -95,6 +126,32 @@ class LibraryViewModel(
                 if (paging.hasFreeSlot()) loadMore()
             }
         }
+        // 库里"可见总数"，用于判断分页会话是不是已经过期（见下面的扫描结束处理）。
+        viewModelScope.launch {
+            mangaRepository.observeVisibleCount(inShelfOnly = false, categoryId = null)
+                .collect { total -> visibleTotal = total }
+        }
+        // 扫描**结束**时，如果会话已经宣告"到底了"而库里其实更多，就重建会话。
+        //
+        // 为什么需要这条：点刷新时列表先按**当时的**库加载一次，几条旧记录会让分页会话
+        // 立刻进入 `exhausted`；随后扫描插入几百条新记录，而 `observeDiscoveryProgress`
+        // 只在"额度还有空位"时补位——已经到底的会话没有空位，于是列表纹丝不动。
+        // 真机/模拟器上的表现就是"点了刷新，扫描条说发现了 311 部，列表还是那 7 项"。
+        //
+        // 只在扫描结束时判一次（不是扫描中）：扫描中列表本来就该边扫边长，反复重建会把
+        // 用户滚了很远的位置打回第一页。
+        viewModelScope.launch {
+            scanCoordinator.overall
+                .map { it.running }
+                .distinctUntilChanged()
+                .collect { running ->
+                    if (running) return@collect
+                    if (!paging.exhausted) return@collect
+                    if (visibleTotal <= paging.items.size) return@collect
+                    resetSession()
+                    loadMore()
+                }
+        }
         // 可见集合**变小**时（扫描完整结束后把"本轮没再发现"的旧卡片标成陈旧），
         // 已经加载进内存的卡片不会自己消失：必须重建分页会话，否则用户看到的是
         // "刷新过了，旧卡片还在"——正是"单章节模式里还有带子文件夹的卡片"那类现象。
@@ -113,7 +170,7 @@ class LibraryViewModel(
                     val hasStaleCard = mangaRepository.getCards(loaded.map { it.mangaId })
                         .any { it.availability == MangaAvailability.STALE }
                     if (hasStaleCard) {
-                        paging.reset()
+                        resetSession()
                         loadMore()
                     }
                 }
@@ -238,18 +295,66 @@ class LibraryViewModel(
     /** 首屏：只读已建好的本地索引。 */
     private fun loadFromCache() {
         viewModelScope.launch {
-            paging.reset()
+            resetSession()
             loadMore()
         }
+    }
+
+    /**
+     * 重建分页会话。
+     *
+     * 必须与 `paging.reset()` 成对调用：换搜索词、换筛选、重建列表之后，旧的封面探测
+     * 队列指向的是**已经不在屏幕上**的卡片，继续取只是白花目录枚举。
+     */
+    private fun resetSession() {
+        paging.reset()
+        coverProbes.clear()
     }
 
     /** 顶部刷新按钮/下拉刷新：这是用户显式要求扫描的入口（开发文档 6.3）。 */
     fun onRefresh() {
         viewModelScope.launch {
             paging.reset()
+            coverProbes.clear()
             loadMore()
             scanCoordinator.rescanAll(ScanReason.REFRESH)
         }
+    }
+
+    /**
+     * 上报当前可见的卡片下标（列表与网格共用）。
+     *
+     * 只上报"还没有封面且从未探测过"的那些 id：这一步是纯内存过滤，真正的目录枚举
+     * 由 [CoverProbeQueue] 按批、按并发上限去做。用**下标**而不是 id 是因为列表状态
+     * 是唯一的真相来源，界面上拿到的本来就只有下标。
+     */
+    fun onCardsVisible(indices: List<Int>) {
+        if (indices.isEmpty()) return
+        val items = paging.items
+        val needsProbe = ArrayList<String>(indices.size)
+        for (index in indices) {
+            val card = items.getOrNull(index) ?: continue
+            if (card.coverDocumentId != null || card.coverProbedAt != null) continue
+            needsProbe += card.mangaId
+        }
+        coverProbes.request(needsProbe)
+    }
+
+    /**
+     * 一张卡片的封面探测完成：就地更新内存里的卡片，不重建分页会话。
+     *
+     * 重建会话会把用户滚了很远的位置打回第一页，而封面是"滚动时"才有结果的，
+     * 重建的代价正好落在用户正在滚动的那一刻。
+     */
+    private fun onCoverResolved(mangaId: String, cover: ResolvedCover?, at: Long) {
+        val updated = paging.updateItem(mangaId) { card ->
+            card.copy(
+                coverDocumentId = cover?.coverDocumentId,
+                coverChapterId = cover?.coverChapterId,
+                coverProbedAt = at,
+            )
+        }
+        if (updated) _state.update { it.copy(items = paging.items.toList()) }
     }
 
     /**
@@ -265,7 +370,7 @@ class LibraryViewModel(
             .debounce(SEARCH_DEBOUNCE_MS)
             .distinctUntilChanged()
             .collect { query ->
-                paging.reset()
+                resetSession()
                 _state.update {
                     it.copy(
                         // ⚠️ 这里**不能**写 `query = query`。
@@ -369,7 +474,8 @@ class LibraryViewModel(
     }
 
     companion object {
-        const val PAGE_SIZE = 40
+        /** 一批多少项；与 `PagingState.DEFAULT_PAGE_SIZE` 必须一致（用户口径：30）。 */
+        const val PAGE_SIZE = PagingState.DEFAULT_PAGE_SIZE
         private const val SEARCH_DEBOUNCE_MS = 300L
 
         fun factory(container: com.lmreader.di.AppContainer): ViewModelProvider.Factory = viewModelFactory {
@@ -380,6 +486,8 @@ class LibraryViewModel(
                     shelfRepository = container.shelfRepository,
                     scanCoordinator = container.scanCoordinator,
                     preferences = container.preferences,
+                    coverResolver = container.coverResolver,
+                    coverMetadataWriter = container.coverMetadataWriter,
                 )
             }
         }

@@ -191,6 +191,7 @@ private class ScanRun(
                         documentId = archive.documentId,
                         title = MimeTypes.nameWithoutExtension(archive.name),
                         kind = ChapterKind.ARCHIVE,
+                        modifiedAt = archive.lastModified,
                     )
                 },
                 anchorChildren = children,
@@ -212,7 +213,7 @@ private class ScanRun(
             emitManga(
                 anchor = dir,
                 chapters = listOf(
-                    ChapterSpec(child.documentId, child.name, ChapterKind.IMAGE_DIRECTORY),
+                    ChapterSpec(child.documentId, child.name, ChapterKind.IMAGE_DIRECTORY, child.lastModified),
                 ),
                 anchorChildren = children,
                 // 只探测到一个章节，因此章节数是"已知下限"而不是准确总数
@@ -285,7 +286,7 @@ private class ScanRun(
             val title = MimeTypes.nameWithoutExtension(file.name)
             emitManga(
                 anchor = DirRef(dir.tree, file.documentId, title, "${dir.path}/${file.name}"),
-                chapters = listOf(ChapterSpec(file.documentId, title, ChapterKind.ARCHIVE)),
+                chapters = listOf(ChapterSpec(file.documentId, title, ChapterKind.ARCHIVE, file.lastModified)),
                 anchorChildren = emptyList(),
                 chaptersFullyEnumerated = true,
             )
@@ -295,7 +296,7 @@ private class ScanRun(
             when {
                 hasDirectImage && !hasDirectArchive -> emitManga(
                     anchor = dir,
-                    chapters = listOf(ChapterSpec(dir.documentId, dir.name, ChapterKind.IMAGE_DIRECTORY)),
+                    chapters = listOf(ChapterSpec(dir.documentId, dir.name, ChapterKind.IMAGE_DIRECTORY, dir.modifiedAt)),
                     anchorChildren = children,
                     // 单章节模式下一张卡片就是这一个目录，章节数是结构定义。
                     chaptersFullyEnumerated = true,
@@ -363,7 +364,7 @@ private class ScanRun(
                 fail(path, null)
                 null
             } else {
-                DirRef(tree, child.documentId, child.name, path)
+                DirRef(tree, child.documentId, child.name, path, child.lastModified)
             }
         } catch (cancellation: CancellationException) {
             throw cancellation
@@ -465,6 +466,10 @@ private class ScanRun(
                 kind = spec.kind,
                 title = spec.title,
                 sortKey = NaturalOrder.sortKey(spec.title),
+                // position 由落库时的插入计划决定（ChapterOrdering）：
+                // 扫描器不知道用户选的是哪种排序，这里给 0 只是占位。
+                position = 0L,
+                modifiedAt = spec.modifiedAt,
                 // 页清单在「深入」阶段才建立（开发文档 6.1），此处不假装已知。
                 pageCount = null,
                 // 封面由补全阶段填（框架 6.3 / 开发文档 7.2），发现阶段不解码图片。
@@ -565,6 +570,14 @@ private class ScanRun(
         val documentId: String,
         val name: String,
         val path: String,
+        /**
+         * 目录自身的修改时间；null = 提供方没给（根目录就属于这种：它是授权根，
+         * 不是某个父目录的子项，扫描器拿不到它的 ChildNode）。
+         *
+         * 只用于「按修改时间排序」：章节是图片目录时，它的"修改时间"就是目录的 mtime；
+         * 章节是归档文件时用文件自己的 mtime（见 emitManga 的调用点）。
+         */
+        val modifiedAt: Long? = null,
     ) {
         /**
          * 已枚举的子项缓存。
@@ -583,6 +596,8 @@ private class ScanRun(
         val documentId: String,
         val title: String,
         val kind: ChapterKind,
+        /** 目录/归档文件的修改时间；排序抽屉的「按修改时间排序」用它。 */
+        val modifiedAt: Long? = null,
     )
 
     private companion object {

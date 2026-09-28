@@ -24,6 +24,8 @@ data class CardQueryRow(
     val sourceId: String,
     val coverDocumentId: String?,
     val coverChapterId: String?,
+    /** 封面探测时间；null = 从未探测过（见 `MangaEntity.coverProbedAt`）。 */
+    val coverProbedAt: Long?,
     val sourceKind: SourceKind,
     val layoutMode: LayoutMode,
     val chapterCount: Int?,
@@ -46,6 +48,20 @@ data class CardQueryRow(
 data class SourceVisibleCountRow(
     val sourceId: String,
     val itemCount: Int,
+)
+
+/**
+ * 封面探测的输入投影（图库滚动懒加载）。
+ *
+ * 与 [CardQueryRow] 分开的理由：卡片投影每批都要读，而探测输入只对"还没有封面且
+ * 从未探测过"的少数卡片需要，且必须带上锚点目录与来源树 URI（卡片上没有这两个字段）。
+ */
+data class CoverTargetRow(
+    val mangaId: String,
+    val anchorDocumentId: String,
+    val layoutMode: LayoutMode,
+    /** 来源的授权树 URI；封面只能按「树 URI + documentId」组合打开（开发文档 4.1）。 */
+    val sourceTreeUri: String,
 )
 
 /**
@@ -118,6 +134,7 @@ interface MangaDao {
                m.sourceId AS sourceId,
                m.coverDocumentId AS coverDocumentId,
                m.coverChapterId AS coverChapterId,
+               m.coverProbedAt AS coverProbedAt,
                m.sourceKind AS sourceKind,
                m.layoutMode AS layoutMode,
                m.chapterCount AS chapterCount,
@@ -153,6 +170,7 @@ interface MangaDao {
                m.sourceId AS sourceId,
                m.coverDocumentId AS coverDocumentId,
                m.coverChapterId AS coverChapterId,
+               m.coverProbedAt AS coverProbedAt,
                m.sourceKind AS sourceKind,
                m.layoutMode AS layoutMode,
                m.chapterCount AS chapterCount,
@@ -183,6 +201,7 @@ interface MangaDao {
                m.sourceId AS sourceId,
                m.coverDocumentId AS coverDocumentId,
                m.coverChapterId AS coverChapterId,
+               m.coverProbedAt AS coverProbedAt,
                m.sourceKind AS sourceKind,
                m.layoutMode AS layoutMode,
                m.chapterCount AS chapterCount,
@@ -212,6 +231,7 @@ interface MangaDao {
                m.sourceId AS sourceId,
                m.coverDocumentId AS coverDocumentId,
                m.coverChapterId AS coverChapterId,
+               m.coverProbedAt AS coverProbedAt,
                m.sourceKind AS sourceKind,
                m.layoutMode AS layoutMode,
                m.chapterCount AS chapterCount,
@@ -242,6 +262,7 @@ interface MangaDao {
                m.sourceId AS sourceId,
                m.coverDocumentId AS coverDocumentId,
                m.coverChapterId AS coverChapterId,
+               m.coverProbedAt AS coverProbedAt,
                m.sourceKind AS sourceKind,
                m.layoutMode AS layoutMode,
                m.chapterCount AS chapterCount,
@@ -277,6 +298,7 @@ interface MangaDao {
                m.sourceId AS sourceId,
                m.coverDocumentId AS coverDocumentId,
                m.coverChapterId AS coverChapterId,
+               m.coverProbedAt AS coverProbedAt,
                m.sourceKind AS sourceKind,
                m.layoutMode AS layoutMode,
                m.chapterCount AS chapterCount,
@@ -316,6 +338,7 @@ interface MangaDao {
                m.sourceId AS sourceId,
                m.coverDocumentId AS coverDocumentId,
                m.coverChapterId AS coverChapterId,
+               m.coverProbedAt AS coverProbedAt,
                m.sourceKind AS sourceKind,
                m.layoutMode AS layoutMode,
                m.chapterCount AS chapterCount,
@@ -360,6 +383,7 @@ interface MangaDao {
                m.sourceId AS sourceId,
                m.coverDocumentId AS coverDocumentId,
                m.coverChapterId AS coverChapterId,
+               m.coverProbedAt AS coverProbedAt,
                m.sourceKind AS sourceKind,
                m.layoutMode AS layoutMode,
                m.chapterCount AS chapterCount,
@@ -392,6 +416,7 @@ interface MangaDao {
                m.sourceId AS sourceId,
                m.coverDocumentId AS coverDocumentId,
                m.coverChapterId AS coverChapterId,
+               m.coverProbedAt AS coverProbedAt,
                m.sourceKind AS sourceKind,
                m.layoutMode AS layoutMode,
                m.chapterCount AS chapterCount,
@@ -494,6 +519,7 @@ interface MangaDao {
             summary = COALESCE(:summary, summary),
             author = COALESCE(:author, author),
             hasMetadata = CASE WHEN :hasMetadata = 1 THEN 1 ELSE hasMetadata END,
+            metadataProbedAt = COALESCE(:metadataProbedAt, metadataProbedAt),
             updatedAt = :at
         WHERE mangaId = :mangaId
         """,
@@ -505,6 +531,7 @@ interface MangaDao {
         summary: String?,
         author: String?,
         hasMetadata: Boolean,
+        metadataProbedAt: Long?,
         at: Long,
     )
 
@@ -512,17 +539,42 @@ interface MangaDao {
     suspend fun getBySource(sourceId: String): List<MangaEntity>
 
     /**
-     * 待补全的漫画：缺封面或缺 XML。
+     * 批量取封面探测输入：漫画的锚点目录 + 布局模式 + 来源树 URI。
      *
-     * 用 `hasMetadata = 0 OR coverDocumentId IS NULL` 而不是"上次扫描之后新增的"：
-     * 补全可能因为权限或解码失败中断，未完成的条目必须能再次被选中，否则它永远
-     * 停在"无简介"状态且不会被搜索命中（验收 A10）。
+     * 用 JOIN 一次取齐而不是分三次查：滚动时这个动作每批都要做，而每张卡片三次往返
+     * 会让"边滚边取封面"自己变成卡顿的来源。来源行不存在（孤儿卡片）时该行直接不返回，
+     * 调用方因此不会把"来源没了"误标成"探测过了、只是没有封面"。
+     */
+    @Query(
+        """
+        SELECT m.mangaId AS mangaId,
+               m.anchorDocumentId AS anchorDocumentId,
+               m.layoutMode AS layoutMode,
+               s.treeUri AS sourceTreeUri
+        FROM mangas AS m
+        JOIN library_sources AS s ON s.sourceId = m.sourceId
+        WHERE m.mangaId IN (:mangaIds)
+        """,
+    )
+    suspend fun coverTargets(mangaIds: List<String>): List<CoverTargetRow>
+
+    /**
+     * 待补全**简介**（ComicInfo）的漫画。
+     *
+     * 两个条件缺一不可：
+     * - `hasMetadata = 0`：还没有读到 XML；
+     * - `metadataProbedAt IS NULL`：**还没有去读过**。缺了这条，读不到 XML 的条目会
+     *   永久占据队列头部，每轮补全都重开同一批目录（真机上 5408 部全是 `hasMetadata = 0`，
+     *   也就是队列从来不前进）。
+     *
+     * 封面已经搬去图库滚动懒加载，因此这里**不再**看 `coverDocumentId`。
      */
     @Query(
         """
         SELECT mangaId FROM mangas
         WHERE availability = 'AVAILABLE'
-          AND (hasMetadata = 0 OR coverDocumentId IS NULL)
+          AND hasMetadata = 0
+          AND metadataProbedAt IS NULL
         ORDER BY sourceOrderIndex ASC, sortKey ASC, mangaId ASC
         LIMIT :limit
         """,
@@ -530,10 +582,35 @@ interface MangaDao {
     suspend fun pendingBackfillIds(limit: Int): List<String>
 
     /**
+     * 写入一次封面探测结果（图库滚动懒加载 / 详情页「更新章节」）。
+     *
+     * 与 [updateDerivedFields] 的区别：这里的 null 是**结论**（"确实没有首图"）而不是
+     * "本次没有新值"，所以直接赋值而不是 COALESCE，并且一定会写 `coverProbedAt`。
+     * 三者必须一起更新：只写 `coverProbedAt` 不写封面会让已探测的卡片永远空白，
+     * 只写封面不写 `coverProbedAt` 会让失败项每次滚动都被重新枚举。
+     */
+    @Query(
+        """
+        UPDATE mangas
+        SET coverDocumentId = :coverDocumentId,
+            coverChapterId = :coverChapterId,
+            coverProbedAt = :at
+        WHERE mangaId = :mangaId
+        """,
+    )
+    suspend fun markCoverProbed(
+        mangaId: String,
+        coverDocumentId: String?,
+        coverChapterId: String?,
+        at: Long,
+    )
+
+    /**
      * 来源顺序变化时重排冗余列。
      *
      * 与 `library_sources.orderIndex` 必须成对更新，否则图库排序会与路径表不一致
-     * （开发文档 4.1 拖动排序、6.4 有效源顺序）。
+     * （开发文档 4.1 拖动排序、6.4 有效源顺序）。历史分叉（同一来源下 1 与 4 并存）
+     * 由 v3→v4 迁移里的一次性校正负责，这里只保证之后的写入不再产生新的分叉。
      */
     @Query("UPDATE mangas SET sourceOrderIndex = :orderIndex WHERE sourceId = :sourceId")
     suspend fun updateSourceOrder(sourceId: String, orderIndex: Int)

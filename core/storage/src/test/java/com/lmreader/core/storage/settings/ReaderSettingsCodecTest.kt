@@ -77,6 +77,7 @@ class ReaderSettingsCodecTest {
             ReaderSettings(theme = ReaderTheme.WHITE),
             ReaderSettings(showPageNumber = false),
             ReaderSettings(fullscreen = false),
+            ReaderSettings(loadOriginalImage = true),
             ReaderSettings(keepScreenOn = true),
             ReaderSettings(showChapterTransitions = false),
             ReaderSettings(preloadPages = ReaderSettings.PRELOAD_PAGES_MIN),
@@ -126,6 +127,7 @@ class ReaderSettingsCodecTest {
             theme = ReaderTheme.AUTO,
             showPageNumber = false,
             fullscreen = false,
+            loadOriginalImage = true,
             keepScreenOn = true,
             showChapterTransitions = false,
             preloadPages = 17,
@@ -181,6 +183,21 @@ class ReaderSettingsCodecTest {
         val on = ReaderSettingsCodec.encode(ReaderSettings(customBrightness = true))
         assertTrue(on.contains("customBrightness=true"), "显式开启必须写出：$on")
         assertTrue(ReaderSettingsCodec.decode(on).customBrightness)
+    }
+
+    @Test
+    fun `加载原图默认关闭且显式开启后往返一致`() {
+        // 默认必须是**关闭**：开着它意味着每页按原始像素解码（真机上单页约 20MB），
+        // 默认打开会让"翻页更稳"这套降采样白做。
+        assertFalse(ReaderSettings().loadOriginalImage)
+        assertFalse(
+            ReaderSettingsCodec.encode(ReaderSettings()).contains("loadOriginal"),
+            "默认关闭不该写出该键",
+        )
+
+        val on = ReaderSettingsCodec.encode(ReaderSettings(loadOriginalImage = true))
+        assertTrue(on.contains("loadOriginal=true"), "显式开启必须写出：$on")
+        assertTrue(ReaderSettingsCodec.decode(on).loadOriginalImage)
     }
 
     @Test

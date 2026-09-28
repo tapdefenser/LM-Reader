@@ -123,6 +123,24 @@ fun LibraryScreen(
             .collect { viewModel.onLoadMore() }
     }
 
+    // 封面懒加载：把**当前可见**的卡片下标报给 ViewModel（用户要求：扫描只写路径，
+    // 封面在往下滚动时边加载边取，一次一批，取过就不再取）。
+    //
+    // 为什么要上报可见集合而不是"新加载的那一批"：一批 30 项里用户可能只看得到 12 张，
+    // 其余 18 张取封面是白花的目录枚举；反过来，用户滚回去时那些卡片本来就会重新可见。
+    LaunchedEffect(listState, state.displayMode) {
+        if (state.displayMode != LibraryDisplayMode.LIST) return@LaunchedEffect
+        snapshotFlow { listState.layoutInfo.visibleItemsInfo.map { it.index } }
+            .distinctUntilChanged()
+            .collect { indices -> viewModel.onCardsVisible(indices) }
+    }
+    LaunchedEffect(gridState, state.displayMode) {
+        if (state.displayMode != LibraryDisplayMode.GRID) return@LaunchedEffect
+        snapshotFlow { gridState.layoutInfo.visibleItemsInfo.map { it.index } }
+            .distinctUntilChanged()
+            .collect { indices -> viewModel.onCardsVisible(indices) }
+    }
+
     // 图源筛选栏：吸附在**右侧**的抽屉（用户要求）。点顶栏按钮可打开，
     // 也可以从屏幕右边缘向左滑打开。
     // 用自实现的 EndSideDrawer（Popup 覆盖层）而不是 ModalNavigationDrawer：

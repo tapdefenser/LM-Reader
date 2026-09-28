@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import com.lmreader.core.index.ChapterOrdering
 import com.lmreader.core.model.Category
 import com.lmreader.core.model.ChapterRecord
 import com.lmreader.core.model.MangaRecord
@@ -13,17 +14,21 @@ import com.lmreader.core.model.ReadingProgress
 import com.lmreader.core.model.ReadingProgressRepository
 import com.lmreader.core.model.ShelfRepository
 import com.lmreader.core.model.SourceRepository
+import com.lmreader.core.storage.cover.CoverMetadataWriter
+import com.lmreader.core.storage.cover.CoverResolver
 import com.lmreader.core.storage.reader.PageSourceFactory
 import com.lmreader.core.storage.reader.PageSourceOpenResult
 import com.lmreader.core.storage.scan.ChapterSyncOutcome
 import com.lmreader.core.storage.scan.MangaChapterSyncer
 import com.lmreader.core.storage.settings.AppPreferences
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MangaDetailViewModel(
     private val mangaId: String,
@@ -34,6 +39,9 @@ class MangaDetailViewModel(
     private val progressRepository: ReadingProgressRepository,
     private val pageSourceFactory: PageSourceFactory,
     private val preferences: AppPreferences,
+    private val coverResolver: CoverResolver,
+    private val coverMetadataWriter: CoverMetadataWriter,
+    private val clock: () -> Long = System::currentTimeMillis,
 ) : ViewModel() {
     private val _state = MutableStateFlow(MangaDetailUiState())
     val state: StateFlow<MangaDetailUiState> = _state.asStateFlow()
@@ -53,11 +61,17 @@ class MangaDetailViewModel(
                 _state.update { it.copy(categories = categories) }
             }
         }
-        // 章节排序偏好：全局记住用户的选择（用户要求）。持续观察而不是读一次，
-        // 这样在别处改了也能立刻反映。
+        // 章节排序方式（用户勾选的那一项）与"是否手动拖过"：两者都只是**显示**用
+        // （抽屉里标出当前是哪一种、还是手动）。顺序本身在 `chapters.position` 里，
+        // 不靠这两个偏好推导。
         viewModelScope.launch {
-            preferences.chapterSortDescending.collect { descending ->
-                _state.update { it.copy(chapterSortDescending = descending) }
+            preferences.chapterOrder.collect { setting ->
+                _state.update { it.copy(orderSetting = setting) }
+            }
+        }
+        viewModelScope.launch {
+            preferences.chapterOrderManual.collect { manual ->
+                _state.update { it.copy(orderManual = manual) }
             }
         }
         // 首次进入详情页：加载详情 → 回填页数 → **自动更新一次章节**（不弹提示）。
@@ -71,6 +85,7 @@ class MangaDetailViewModel(
         // 这里的 init 只在这个详情页的 ViewModel 首次创建时跑一次。
         viewModelScope.launch {
             loadDetail(showLoading = true)
+            resolveCover(force = false)
             backfillPageCounts()
             runChapterSync(announce = false)
         }
@@ -81,6 +96,42 @@ class MangaDetailViewModel(
             loadDetail(showLoading = _state.value.manga == null)
             backfillPageCounts()
         }
+    }
+
+    /**
+     * 取这一部漫画的封面，**并顺手更新简介**（用户要求：在所有更新封面的时候也要更新简介）。
+     *
+     * ## 两条入口，语义不同
+     *
+     * - `force = false`：进详情页时的**懒加载**。只在"还没有封面且从未探测过"
+     *   （`coverProbedAt == null`）或"**简介从未读过**"（`metadataProbedAt == null`）
+     *   时才动手——图库里滚过的卡片封面早就探测过了，再取一次只是白关一次目录，
+     *   但简介没读过的那些必须在这里补上，否则详情页会一直是"作者：未知 / 无简介"，
+     *   而要等扫描期的补全队列（每来源每轮 120 条）慢慢轮到；
+     * - `force = true`：点「更新章节」。用户明确要求**必取**：章节列表刚刚被完整
+     *   枚举过，此刻的"第一章"才是权威的，封面与首章简介都必须按它重算并刷新探测记录。
+     *
+     * ## 写完为什么要再 loadDetail 一次
+     *
+     * `manga` 是这次加载的快照，简介与作者由 `CoverMetadataWriter` 写进了数据库；
+     * 不重读的话界面会一直显示改之前的值，直到用户离开再回来。
+     */
+    private suspend fun resolveCover(force: Boolean) {
+        val state = _state.value
+        val needsCover = state.coverDocumentId == null && state.manga?.coverProbedAt == null
+        val needsMetadata = force || state.manga?.metadataProbedAt == null
+        if (!needsCover && !needsMetadata) return
+        val target = runCatching { mangaRepository.coverProbeTargets(listOf(mangaId)) }
+            .getOrNull()
+            ?.firstOrNull()
+            ?: return
+        val resolved = runCatching { coverResolver.resolve(target) }.getOrNull()
+        val at = clock()
+        runCatching {
+            coverMetadataWriter.write(mangaId, resolved, at, forceMetadata = force)
+        }
+        _state.update { it.copy(coverDocumentId = resolved?.coverDocumentId) }
+        if (needsMetadata) loadDetail(showLoading = false)
     }
 
     /**
@@ -115,12 +166,16 @@ class MangaDetailViewModel(
             var filled = 0
             for (chapter in pending.take(PAGE_BACKFILL_LIMIT)) {
                 val counted = runCatching {
-                    when (val opened = pageSourceFactory.open(sourceTreeUri, chapter)) {
-                        is PageSourceOpenResult.Unsupported -> null
-                        is PageSourceOpenResult.Ready -> {
-                            val pages = opened.source.pages()
-                            // 空页清单不写：写了会显示"共 0 页"，比"未知"更糟。
-                            if (pages.isEmpty()) null else pages.size to pages.first().documentId
+                    // 目录枚举是真正的 IO：`viewModelScope` 跑在主调度器上，
+                    // 不切走的话"进详情页要点 8 次目录"会直接卡住首帧。
+                    withContext(Dispatchers.IO) {
+                        when (val opened = pageSourceFactory.open(sourceTreeUri, chapter)) {
+                            is PageSourceOpenResult.Unsupported -> null
+                            is PageSourceOpenResult.Ready -> {
+                                val pages = opened.source.pages()
+                                // 空页清单不写：写了会显示"共 0 页"，比"未知"更糟。
+                                if (pages.isEmpty()) null else pages.size to pages.first().documentId
+                            }
                         }
                     }
                 }.getOrNull() ?: continue
@@ -163,6 +218,9 @@ class MangaDetailViewModel(
                     }
                     is ChapterSyncOutcome.Success -> {
                         loadDetail(showLoading = false)
+                        // 「更新章节」必取封面（用户要求）：章节列表刚刚被完整枚举，
+                        // 此刻的"第一章"才是权威的。这里**强制**重取，不看 coverProbedAt。
+                        resolveCover(force = true)
                         _state.update {
                             it.copy(
                                 syncing = false,
@@ -212,14 +270,100 @@ class MangaDetailViewModel(
     }
 
     /**
-     * 切换章节列表的顺序（从旧到新 ↔ 从新到旧），并**记住**这个选择。
+     * 应用一种章节排序方式：**整表重排**（用户已确认这是期望行为）。
      *
-     * 排序不在仓储层做：顺序是纯展示决策，倒序需要另一条 SQL（`ORDER BY sortKey DESC`），
-     * 而列表最多几百项，在内存里反转一次比维护两条查询简单，也不会让"排序方向"渗进
-     * 数据层——那会让每个调用方都要想一下自己拿到的是什么顺序。
+     * 三件事必须一起做，缺一个都会出现"界面和库里不一致"：
+     * 1. 内存里立刻按新顺序显示（用户点完马上看到结果）；
+     * 2. 把结果写进 `chapters.position`——顺序是**库里的数据**，不是显示层的技巧，
+     *    否则退出详情页再进来就变回去了；
+     * 3. 记住这次的选择（[AppPreferences.chapterOrder]）：扫描发现新章节时要按它插入。
+     *
+     * 同一项再点一次 = 反向（用户口径：点一次正向，点两次逆向）。
      */
-    fun setChapterSortDescending(descending: Boolean) {
-        viewModelScope.launch { preferences.setChapterSortDescending(descending) }
+    fun applyChapterOrder(mode: ChapterOrdering.Mode) {
+        val current = _state.value.orderSetting
+        val reversed = current.mode == mode && !current.descending
+        val setting = ChapterOrdering.Setting(mode = mode, descending = reversed)
+        val reordered = ChapterOrdering.resort(_state.value.chapters, setting)
+        _state.update { it.copy(chapters = reordered, orderSetting = setting, orderManual = false) }
+        viewModelScope.launch {
+            runCatching { preferences.setChapterOrder(mode, reversed) }
+            runCatching { mangaRepository.setChapterOrder(mangaId, reordered.map { it.chapterId }) }
+                .onFailure { _state.update { state -> state.copy(message = "排序未能保存") } }
+        }
+    }
+
+    /**
+     * 一次手动拖动的结果：把 [chapterId] 从当前位置移到 [toIndex]。
+     *
+     * 拖动即"顺序由我决定"：写库之外还把 `chapterOrderManual` 置位，让抽屉如实显示
+     * "当前：手动"。**不改**用户已保存的排序方式——用户口径是新章节依然按它插入，
+     * 手动结果不被重排。
+     *
+     * 多选态下拖动也只移动这一章（用户口径：一次拖动只能拖动一个章节）。
+     */
+    fun moveChapter(chapterId: String, toIndex: Int) {
+        val chapters = _state.value.chapters
+        val from = chapters.indexOfFirst { it.chapterId == chapterId }
+        if (from < 0) return
+        val target = toIndex.coerceIn(0, chapters.lastIndex)
+        if (from == target) return
+        val reordered = chapters.toMutableList().apply { add(target, removeAt(from)) }
+            .mapIndexed { index, chapter -> chapter.copy(position = index.toLong()) }
+        _state.update { it.copy(chapters = reordered, orderManual = true) }
+        viewModelScope.launch {
+            runCatching { preferences.setChapterOrderManual(true) }
+            runCatching { mangaRepository.setChapterOrder(mangaId, reordered.map { it.chapterId }) }
+                .onFailure { _state.update { state -> state.copy(message = "新顺序未能保存") } }
+        }
+    }
+
+    // ---- 多选（为翻译铺路，见开发文档 8.1 章节多选） --------------------------
+
+    /** 长按一行：没选中就选中它，已选中就取消它（与 Mihon 一致）。 */
+    fun toggleSelection(chapterId: String) {
+        _state.update { state ->
+            val selection = state.selection
+            state.copy(
+                selection = if (chapterId in selection) selection - chapterId else selection + chapterId,
+            )
+        }
+    }
+
+    fun selectAllChapters() {
+        _state.update { it.copy(selection = it.chapters.mapTo(LinkedHashSet()) { c -> c.chapterId }) }
+    }
+
+    fun invertSelection() {
+        _state.update { state ->
+            state.copy(selection = state.chapters.filterNot { it.chapterId in state.selection }
+                .mapTo(LinkedHashSet()) { it.chapterId })
+        }
+    }
+
+    fun clearSelection() {
+        _state.update { it.copy(selection = emptySet()) }
+    }
+
+    /**
+     * 批量标记已读/未读。
+     *
+     * 只改 [ReadingProgress.read]，**不动阅读位置**：用户批量标已读时不该把他"读到第几页"
+     * 的记录顺手改掉（那会让"继续阅读"跳到别处）。
+     */
+    fun markSelectionRead(read: Boolean) {
+        val ids = _state.value.selection
+        if (ids.isEmpty()) return
+        viewModelScope.launch {
+            runCatching { mangaRepository.setChapterRead(ids.toList(), read) }
+                .onFailure {
+                    _state.update { state -> state.copy(message = "标记未能保存") }
+                    return@launch
+                }
+            loadDetail(showLoading = false)
+            val label = if (read) "已标记已读" else "已标记未读"
+            _state.update { it.copy(message = "$label ${ids.size} 章") }
+        }
     }
 
     private suspend fun loadDetail(showLoading: Boolean) {
@@ -233,15 +377,24 @@ class MangaDetailViewModel(
             // 阅读进度要一起读出来：章节行要显示"读到第几页"，而且"继续阅读"要能从
             // 那一页打开。放在同一次加载里而不是让 UI 各自去查，避免两处显示不一致。
             val progress = progressRepository.get(mangaId)
+            // 章节列表按**用户看到的顺序**（`position`）读，而不是 `target.chapters`
+            // 的自然序：封面与简介要自然序第一章，章节列表要用户排的顺序，两者不同源。
+            val chapters = mangaRepository.getChaptersInDisplayOrder(mangaId)
+            val readMarks = mangaRepository.chapterReadMarks(mangaId)
             _state.update {
                 it.copy(
                     loading = false,
                     manga = target.manga,
-                    chapters = target.chapters,
+                    coverDocumentId = target.manga.coverDocumentId,
+                    chapters = chapters,
+                    readMarks = readMarks,
                     sourceTreeUri = source.treeUri,
                     sourceDisplayPath = source.displayPath,
                     inShelf = card?.inShelf == true,
                     progress = progress,
+                    // 章节集合变了（同步/扫描）之后，已经不在列表里的选择必须清掉，
+                    // 否则"翻译所选"会把已经不存在的章节也算进去。
+                    selection = it.selection.intersect(chapters.mapTo(HashSet()) { c -> c.chapterId }),
                     error = null,
                 )
             }
@@ -267,6 +420,8 @@ class MangaDetailViewModel(
                     progressRepository = container.readingProgressRepository,
                     pageSourceFactory = container.pageSourceFactory,
                     preferences = container.preferences,
+                    coverResolver = container.coverResolver,
+                    coverMetadataWriter = container.coverMetadataWriter,
                 )
             }
         }
@@ -278,29 +433,46 @@ private const val PAGE_BACKFILL_LIMIT = 8
 data class MangaDetailUiState(
     val loading: Boolean = true,
     val manga: MangaRecord? = null,
+    /**
+     * 详情页显示的封面；进页面后异步取到（或点「更新章节」强制重取）。
+     *
+     * 单独一个字段而不是复用 `manga.coverDocumentId`：探测结果必须能立刻反映到界面，
+     * 而 `manga` 是这次加载的快照。两者在"刚探测完"这一刻必然不同。
+     */
+    val coverDocumentId: String? = null,
+    /**
+     * 章节列表，**已经按用户看到的顺序**（`chapters.position`）排好。
+     *
+     * 不再有"再排一次"的派生字段：顺序是库里的数据（谁排的、怎么排的都写进去了），
+     * 显示层原样渲染。以前那个 `sortedChapters`（按偏好反转）在 v6 之后没有意义——
+     * 方向已经是排序方式的一部分，并已落进 `position`。
+     */
     val chapters: List<ChapterRecord> = emptyList(),
+    /** 按章的已读标记；没有条目的章节 = 未读。 */
+    val readMarks: Map<String, Boolean> = emptyMap(),
+    /** 用户保存的章节排序方式；抽屉据此显示"当前是哪一种"。 */
+    val orderSetting: ChapterOrdering.Setting = ChapterOrdering.Setting.DEFAULT,
+    /** 用户是否手动拖过章节顺序（抽屉显示「当前：手动」）。 */
+    val orderManual: Boolean = false,
+    /**
+     * 多选中的章节 id。非空 = 处于多选态（顶栏换成 ✕/计数/全选反选，底栏换成批量动作）。
+     */
+    val selection: Set<String> = emptySet(),
     val sourceTreeUri: String? = null,
     val sourceDisplayPath: String? = null,
     val inShelf: Boolean = false,
     val categories: List<Category> = emptyList(),
     val syncing: Boolean = false,
-    /** 章节列表是否从新到旧排列；全局偏好，见 AppPreferences.chapterSortDescending。 */
-    val chapterSortDescending: Boolean = false,
     /** 这部漫画的阅读进度；null 表示还没读过。 */
     val progress: ReadingProgress? = null,
     val error: String? = null,
     val message: String? = null,
 ) {
-    /**
-     * 按当前排序偏好排好的章节列表。
-     *
-     * 单独派生而不是在 [chapters] 里就地排序：`chapters` 是"仓储给的原始顺序"，
-     * 而顺序是展示决策。这样切换排序不会丢掉原始顺序，改回来也不会错位。
-     */
-    val sortedChapters: List<ChapterRecord>
-        get() = if (chapterSortDescending) chapters.asReversed() else chapters
+    val selectionMode: Boolean get() = selection.isNotEmpty()
 
-    /** 排序方向的文案，直接给按钮用。 */
-    val chapterSortLabel: String
-        get() = if (chapterSortDescending) "从新到旧" else "从旧到新"
+    /** 抽屉里给当前项打勾用；手动拖过之后不再属于任何一种排序方式。 */
+    val activeSortMode: ChapterOrdering.Mode? get() = if (orderManual) null else orderSetting.mode
+
+    /** 已读数，给"共 N 章"旁边显示进度用。 */
+    val readCount: Int get() = chapters.count { readMarks[it.chapterId] == true }
 }

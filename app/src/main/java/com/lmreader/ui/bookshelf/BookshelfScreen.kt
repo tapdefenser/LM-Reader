@@ -108,6 +108,14 @@ fun BookshelfScreen(
             .collect { viewModel.onLoadMore() }
     }
 
+    // 封面懒加载：上报当前可见的卡片（与图库同一套规则）。书架只有一种展示方式
+    // （列表），因此不需要按 displayMode 分支。
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.layoutInfo.visibleItemsInfo.map { it.index } }
+            .distinctUntilChanged()
+            .collect { indices -> viewModel.onCardsVisible(indices) }
+    }
+
     // 分类侧栏：吸附在**右侧**的抽屉（用户要求），与图库的图源筛选栏同一侧、同一套手势。
     // 点右上角筛选按钮可打开，也可以从屏幕右边缘向左滑打开。
     // 参考 EhViewer 的 DownloadsScreen：它的分类/筛选面板就是右侧面板。

@@ -139,6 +139,14 @@ class SourceRepositoryImplReorderTest {
             rows[sourceId]?.let { rows[sourceId] = it.copy(permission = permission) }
         }
 
+        override suspend fun clearInterruptedScans(reason: String): Int {
+            val running = rows.values.filter { it.lastScanStatus == ScanRunStatus.RUNNING }
+            running.forEach { row ->
+                rows[row.sourceId] = row.copy(lastScanStatus = ScanRunStatus.FAILED, lastScanError = reason)
+            }
+            return running.size
+        }
+
         fun orderOf(): Map<String, Int> = rows.mapValues { it.value.orderIndex }
     }
 }

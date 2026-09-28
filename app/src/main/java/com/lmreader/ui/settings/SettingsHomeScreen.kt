@@ -72,7 +72,7 @@ fun SettingsHomeScreen(
             )
             SettingsEntry(
                 title = "阅读器",
-                subtitle = "预载页数、缓存章节数（只在打开阅读器前生效）",
+                subtitle = "预载页数、缓存章节数（下次打开生效）、加载原图（立即生效）",
                 enabled = true,
                 onClick = onOpenReader,
             )

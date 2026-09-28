@@ -21,6 +21,18 @@ data class MangaCard(
     val sourceId: String,
     val coverDocumentId: String?,
     val coverChapterId: String?,
+    /**
+     * 封面**探测过**的时间；null 表示从未探测。
+     *
+     * 为什么要区分"没有封面"和"没探测过"：封面改为图库滚动时懒加载（扫描只写路径），
+     * 而"这部漫画确实没有可用首图"（空目录、首章是归档、目录读不到）与"还没轮到它"
+     * 在数据上都是 `coverDocumentId = null`。少了这一列，每次滚动都会把那些**必然拿不到**
+     * 封面的卡片重新枚举一遍目录，滚动越深越慢。
+     *
+     * 语义：非 null = 已经取过一次（成功或失败），不再取第二次；只有详情页的
+     * 「更新章节」会强制重取并刷新它。
+     */
+    val coverProbedAt: Long?,
     val sourceKind: SourceKind,
     val layoutMode: LayoutMode,
     val chapterCount: Int?,
@@ -35,6 +47,41 @@ data class MangaCard(
      * 用户才知道哪几张卡暂时读不了）。
      */
     val hasArchiveChapters: Boolean = false,
+)
+
+/**
+ * 一次封面探测所需的最小信息（图库滚动懒加载）。
+ *
+ * 为什么不直接把这些字段塞进 [MangaCard]：卡片是**每批 30 张**都要读的投影，而封面
+ * 探测只发生在"这张卡还没有封面且从未探测过"的那一小部分卡片上。把 anchor /
+ * treeUri 塞进卡片等于让每一次分页都多读两列只偶尔用到的数据；单独一次批量查询
+ * 反而更省，也让"探测用到的输入"与"列表展示用到的字段"各自独立演进。
+ */
+data class CoverProbeTarget(
+    val mangaId: String,
+    /** 漫画锚点目录；多章节下是作品的根目录，单章节下就是唯一那一章的目录。 */
+    val anchorDocumentId: String,
+    val layoutMode: LayoutMode,
+    /** 该卡片所属来源的授权树 URI：封面只能用「树 URI + documentId」组合打开。 */
+    val sourceTreeUri: String,
+    /**
+     * 该漫画的**第一章**（自然序）；null 表示章节表里已经没有它的章节。
+     *
+     * 用第一章而不是锚点章节：扫描的发现阶段只保证"锚点章节存在"，而它不保证是自然序
+     * 第一章（见 `StructureScanner` 的偏离记录），封面必须是第一页（开发文档 7.2）。
+     */
+    val firstChapter: ChapterRecord?,
+)
+
+/**
+ * 一次封面探测的结果。
+ *
+ * [coverDocumentId] 与 [coverChapterId] 同生共死：章节 id 是"这张封面属于哪一章"，
+ * 详情页用它做跳转与重取；只有其一没有意义。
+ */
+data class ResolvedCover(
+    val coverDocumentId: String,
+    val coverChapterId: String,
 )
 
 /**
@@ -82,6 +129,13 @@ data class MangaMetadataUpdate(
     val summary: String? = null,
     val author: String? = null,
     val hasMetadata: Boolean = false,
+    /**
+     * 本次**探测**简介的时间；null 表示这次不是一次完整探测（不写标记）。
+     *
+     * 与 [hasMetadata] 的区别见 `MangaEntity.metadataProbedAt`：读不到 XML 也必须记
+     * "读过了"，否则补全队列会在同一批条目上无限空转。
+     */
+    val metadataProbedAt: Long? = null,
     /** 按 owner 归属的 ComicInfo 记录；章节级的也在这里。 */
     val records: List<MetadataRecord> = emptyList(),
     /** 漫画级搜索投影文本（开发文档 6.4）。 */

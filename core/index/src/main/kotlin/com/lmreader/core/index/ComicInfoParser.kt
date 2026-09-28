@@ -40,6 +40,15 @@ object ComicInfoParser {
     private const val COMIC_INFO_ELEMENT = "ComicInfo"
 
     /**
+     * XML 的 DOCTYPE 声明。
+     *
+     * 大小写敏感：XML 规范要求 `DOCTYPE` 全大写，因此按原文精确匹配即可，
+     * 不需要（也不该）放宽成大小写不敏感——那会把注释或文本里的 `<!doctype`
+     * 也当成声明。
+     */
+    private const val DOCTYPE_DECLARATION = "<!DOCTYPE"
+
+    /**
      * 解析 ComicInfo 原文。xml 为原文；解析失败时 fields 为空、parseError 非空，原文仍返回。
      *
      * 解析失败不抛异常：坏 XML 只影响该漫画的简介，不能阻断漫画本身
@@ -60,6 +69,16 @@ object ComicInfoParser {
             return failure(
                 ownerId, ownerType, xml, sourceLabel, fingerprint, updatedAt,
                 "ComicInfo 超过 ${MAX_BYTES / 1024 / 1024} MiB 上限，未解析；列表不解析巨文档，原文仍可查看（开发文档 7.1）",
+            )
+        }
+
+        // DOCTYPE 一律拒绝，**在解析之前**按原文判定（见 [secureDocumentBuilder] 的说明）：
+        // 没有 DTD 就没有实体声明，外部实体（XXE）与实体展开炸弹（billion laughs）
+        // 都无从谈起。这一条不依赖平台解析器支持任何加固开关，是真正可携带的保证。
+        if (xml.contains(DOCTYPE_DECLARATION)) {
+            return failure(
+                ownerId, ownerType, xml, sourceLabel, fingerprint, updatedAt,
+                "ComicInfo 含 DOCTYPE，按未解析处理；原文仍可查看（框架 4.5：禁止外部实体）",
             )
         }
 
@@ -122,31 +141,76 @@ object ComicInfoParser {
             ?.value?.trim()?.takeIf { it.isNotEmpty() }
 
     /**
-     * 构造关闭 XXE 的 DOM 解析器（框架 4.5）：
-     * 禁止 DOCTYPE、关闭外部通用/参数实体与外部 DTD/Schema，并注册空实体解析器兜底。
+     * 构造 DOM 解析器。
      *
-     * 允许 `setFeature`/`setAttribute` 抛出：宁可让解析失败并保留原文，
-     * 也不能在无法确认防护生效时按不安全配置解析用户文件。
+     * ## 加固为什么是"尽力而为"，以及真正的保证是什么
+     *
+     * OWASP 那套 XXE 加固（`disallow-doctype-decl`、`external-general-entities=false`、
+     * `setAttribute(ACCESS_EXTERNAL_DTD/SCHEMA, "")`…）是**按 JDK 的 Xerces 实现**
+     * 写的。Android 的解析器是 libcore 里的 Harmony 实现
+     * （`org.apache.harmony.xml.parsers.DocumentBuilderFactoryImpl`），它**不认**
+     * 那套属性，并且把拒绝延迟到 `newDocumentBuilder()`：
+     *
+     * ```text
+     * ParserConfigurationException: This parser does not support specification "Unknown" version "0.0"
+     * ```
+     *
+     * 真机上（MuMu Android 15）这条异常会让**每一份 ComicInfo 都解析失败**——简介与作者
+     * 永远是空，日志里只有一句"ComicInfo 解析失败"。因此这里分两步：
+     *
+     * 1. [hardenedBuilder] 先按标准加固配置试一次，平台拒绝就整段放弃；
+     * 2. [plainBuilder] 用最小配置兜底（命名空间感知、不校验、不展开实体引用）。
+     *
+     * 两步都装上**空 EntityResolver**：任何外部实体解析请求都得到空输入。
+     *
+     * 真正与实现无关的三条保证在别处，它们才是安全性的来源：
+     * - [parse] 在解析前按原文拒绝 `<!DOCTYPE` —— 没有 DTD 就没有实体声明，
+     *   XXE 与实体展开炸弹都无从谈起（这同时补上了平台不认
+     *   `disallow-doctype-decl` 的缺口）；
+     * - [MAX_BYTES] 在读取与解析前截断，巨文档不参与解析；
+     * - 只读用户的本地文件，不做网络解析。
      */
     private fun secureDocumentBuilder(): DocumentBuilder {
-        val factory = DocumentBuilderFactory.newInstance()
-        factory.isNamespaceAware = true
-        factory.isValidating = false
-        factory.isXIncludeAware = false
-        factory.isExpandEntityReferences = false
-        factory.isIgnoringComments = true
-        // 防止实体展开炸弹（billion laughs）：即使 DOCTYPE 被放行也有总量上限。
-        factory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true)
-        factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
-        factory.setFeature("http://xml.org/sax/features/external-general-entities", false)
-        factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false)
-        factory.setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false)
-        factory.setAttribute(XMLConstants.ACCESS_EXTERNAL_DTD, "")
-        factory.setAttribute(XMLConstants.ACCESS_EXTERNAL_SCHEMA, "")
-        return factory.newDocumentBuilder().apply {
+        val builder = (hardenedBuilder() ?: plainBuilder())
+        // 兜底：无论加固项是否生效，外部实体都解析成空串。
+        return builder.apply {
             setEntityResolver { _, _ -> InputSource(StringReader("")) }
         }
     }
+
+    /** 标准加固配置；平台拒绝其中任何一项时返回 null，由调用方退回 [plainBuilder]。 */
+    private fun hardenedBuilder(): DocumentBuilder? = runCatching {
+        DocumentBuilderFactory.newInstance().apply {
+            isNamespaceAware = true
+            isValidating = false
+            isXIncludeAware = false
+            isExpandEntityReferences = false
+            isIgnoringComments = true
+            // 防止实体展开炸弹（billion laughs）：即使 DOCTYPE 被放行也有总量上限。
+            setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true)
+            setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
+            setFeature("http://xml.org/sax/features/external-general-entities", false)
+            setFeature("http://xml.org/sax/features/external-parameter-entities", false)
+            setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false)
+            setAttribute(XMLConstants.ACCESS_EXTERNAL_DTD, "")
+            setAttribute(XMLConstants.ACCESS_EXTERNAL_SCHEMA, "")
+        }
+            // 关键：加固项是否被接受，只有 newDocumentBuilder() 会告诉我们
+            // （Harmony 实现正是把拒绝延迟到这里），所以探测必须在 try 里面。
+            .newDocumentBuilder()
+    }.getOrNull()
+
+    /**
+     * 最小可用配置：只关掉真正不该发生的事（校验、实体引用展开、注释），
+     * 不使用任何平台可能不认的开关。
+     */
+    private fun plainBuilder(): DocumentBuilder = DocumentBuilderFactory.newInstance().apply {
+        isNamespaceAware = true
+        isValidating = false
+        isExpandEntityReferences = false
+        isIgnoringComments = true
+    }.newDocumentBuilder()
+
 
     /**
      * 读取字段：`ComicInfo` 元素的直接子元素，键为本地名，值为文本。
@@ -244,9 +308,18 @@ object ComicInfoParser {
         updatedAt = updatedAt,
     )
 
-    private fun describe(error: Exception): String =
-        (error.message?.trim()?.takeIf { it.isNotEmpty() } ?: error::class.simpleName ?: "未知错误")
-            .take(240)
+    /**
+     * 异常摘要。
+     *
+     * 带上异常类名而不是只留 message：Android 与 JVM 的解析器实现不同，
+     * 只按 message 判断会漏掉"是哪一层拒绝了"——真机上就是靠
+     * `ParserConfigurationException` 才定位到加固开关不被支持的。
+     */
+    private fun describe(error: Exception): String {
+        val name = error::class.simpleName ?: "未知错误"
+        val message = error.message?.trim()?.takeIf { it.isNotEmpty() }
+        return (message?.let { "$name: $it" } ?: name).take(240)
+    }
 
     private fun sha256Hex(text: String): String {
         val digest = MessageDigest.getInstance("SHA-256").digest(text.toByteArray(Charsets.UTF_8))

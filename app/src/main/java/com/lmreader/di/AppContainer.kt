@@ -10,6 +10,8 @@ import com.lmreader.core.model.ShelfRepository
 import com.lmreader.core.model.SourceRepository
 import com.lmreader.core.storage.access.StorageAccessCoordinator
 import com.lmreader.core.storage.access.TreeAccess
+import com.lmreader.core.storage.cover.CoverMetadataWriter
+import com.lmreader.core.storage.cover.CoverResolver
 import com.lmreader.core.storage.saf.SafTreeAccess
 import com.lmreader.core.storage.scan.LibraryScanCoordinator
 import com.lmreader.core.storage.scan.MangaChapterSyncer
@@ -20,6 +22,7 @@ import com.lmreader.core.storage.settings.AppPreferences
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /**
@@ -33,7 +36,14 @@ import kotlinx.coroutines.launch
  */
 class AppContainer(private val application: Application) {
 
-    private val databaseComponents by lazy { DatabaseProvider.create(application) }
+    private val databaseComponents by lazy {
+        DatabaseProvider.create(
+            context = application,
+            // 章节排序方式由用户偏好决定；数据库层靠它给新探到的章节定位
+            // （见 ChapterOrdering：新章节按已保存的排序方式插入，不动已有顺序）。
+            chapterOrder = { preferences.chapterOrder.first() },
+        )
+    }
 
     /**
      * 启动时的一次性索引维护（不参与依赖图，失败不影响使用）。
@@ -62,6 +72,18 @@ class AppContainer(private val application: Application) {
                     }
                 }
                 .onFailure { error -> android.util.Log.e(TAG, "启动维护：孤儿卡片清扫失败", error) }
+        }
+
+        // 上次进程被系统/用户杀掉时，来源行会停在 RUNNING（真机快照里就有两个）。
+        // 不收敛的话路径表永远显示"正在扫描"，用户分不清"真的在扫"与"上次没扫完"。
+        maintenanceScope.launch {
+            runCatching { sourceRepository.clearInterruptedScans("上次扫描被中断，请重新扫描") }
+                .onSuccess { cleared ->
+                    if (cleared > 0) {
+                        android.util.Log.i(TAG, "启动维护：收敛 $cleared 个停留在「扫描中」的来源")
+                    }
+                }
+                .onFailure { error -> android.util.Log.e(TAG, "启动维护：扫描状态收敛失败", error) }
         }
     }
 
@@ -109,9 +131,31 @@ class AppContainer(private val application: Application) {
 
     val backfillWorker by lazy {
         MetadataBackfillWorker(
-            context = application,
             treeAccess = treeAccess,
             mangaRepository = mangaRepository,
+        )
+    }
+
+    /**
+     * 封面解析（图库/书架滚动时的懒加载，以及详情页「更新章节」的强制重取）。
+     *
+     * 放在容器里而不是各个 ViewModel 里：图库、书架、详情页三处要用**同一套**规则
+     * （自然序第一章的第一页、单章节用锚点目录本身、最多往下试 3 章），各写一份
+     * 迟早会出现"图库有封面、详情页没有"这类分叉。
+     */
+    val coverResolver by lazy { CoverResolver(treeAccess) }
+
+    /**
+     * 写封面探测结果时**顺手更新简介**（用户要求：在所有更新封面的时候也要更新简介）。
+     *
+     * 图库、书架、详情页三处都通过它落库：封面与简介读的是同一批目录，绑在一起才不会
+     * 出现"卡片有封面、简介一直是空的"——简介原本只由扫描期补全负责，每来源每轮 120 条，
+     * 几千部作品要刷十几次才轮得到。
+     */
+    val coverMetadataWriter by lazy {
+        CoverMetadataWriter(
+            mangaRepository = mangaRepository,
+            metadataBackfill = backfillWorker,
         )
     }
 

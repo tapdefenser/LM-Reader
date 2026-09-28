@@ -9,6 +9,24 @@ android {
     }
 }
 
+/**
+ * 把导出的 schema 同步成 androidTest 的 assets。
+ *
+ * `MigrationTestHelper` 只从 assets 里读 `<数据库类名>/<版本>.json`，而 AGP 10 的
+ * **库模块**上 `sourceSets.getByName("androidTest").assets` 会抛
+ * `DefaultAndroidLibrarySourceSet_Decorated cannot be cast to AndroidLibrarySourceSet`
+ * （官方推荐的那行 DSL 在这个版本组合下用不了）。Sync 到默认 assets 目录绕开它，
+ * 效果相同：迁移测试能读到 `schemas/` 里导出的 schema。
+ */
+val syncMigrationSchemas by tasks.registering(Sync::class) {
+    from(layout.projectDirectory.dir("schemas"))
+    into(layout.projectDirectory.dir("src/androidTest/assets"))
+}
+
+tasks.matching { it.name.startsWith("pre") && it.name.endsWith("AndroidTestBuild") }
+    .configureEach { dependsOn(syncMigrationSchemas) }
+tasks.matching { it.name == "preBuild" }.configureEach { dependsOn(syncMigrationSchemas) }
+
 dependencies {
     api(project(":core:model"))
     // 复用 core:index 的自然序键：卡片排序必须与章节排序用同一套规则，

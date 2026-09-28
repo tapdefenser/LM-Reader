@@ -25,6 +25,14 @@ interface SourceRepository {
     suspend fun reorder(orderedSourceIds: List<String>)
     suspend fun updateScanResult(sourceId: String, at: Long, status: ScanRunStatus, error: String?)
     suspend fun updatePermission(sourceId: String, permission: SourcePermissionState)
+
+    /**
+     * 把"上次扫描被中断"（进程被杀）而停在 RUNNING 的来源收敛成 FAILED。
+     *
+     * 应用启动时调用一次；返回本次收敛的数量。不收敛的话路径表会永远显示"正在扫描"，
+     * 用户无法区分"真的在扫"与"上次没扫完"。
+     */
+    suspend fun clearInterruptedScans(reason: String): Int
 }
 
 /**
@@ -93,6 +101,17 @@ interface MangaRepository {
     suspend fun getCards(mangaIds: List<String>): List<MangaCard>
 
     /**
+     * 为一批卡片准备封面探测所需的输入（图库/书架滚动懒加载）。
+     *
+     * 一次批量查询而不是每张卡片各查一次：一批 30 张卡片若各自查"漫画 + 来源 + 第一章"，
+     * 就是 90 次数据库往返，而滚动时这个动作每批都要做一遍。
+     *
+     * 返回的列表只包含**存在且来源仍有效**的卡片；找不到的 id 直接不出现在结果里
+     * （调用方对它们不做任何事，也就不会误标成"已探测"）。
+     */
+    suspend fun coverProbeTargets(mangaIds: List<String>): List<CoverProbeTarget>
+
+    /**
      * 取补全阶段需要的工作投影（开发文档 6.1 第 2 步）。
      *
      * 返回 null 表示漫画行已不存在（例如用户刚删掉了整个来源）。
@@ -145,8 +164,57 @@ interface MangaRepository {
     /** 批量取章节；按自然序（`sortKey`）返回，封面取第一章不依赖调用方再排序。 */
     suspend fun getChapters(mangaId: String): List<ChapterRecord>
 
+    /**
+     * 详情页章节列表：**按用户看到的顺序**（`position`）返回。
+     *
+     * 与 [getChapters] 分成两条而不是让调用方自己排：封面与简介要求"**自然序**第一章"
+     * （开发文档 7.1/7.2），而用户手动拖过章节之后这两者必然不同。合成一条就一定会
+     * 有一边是错的。
+     */
+    suspend fun getChaptersInDisplayOrder(mangaId: String): List<ChapterRecord>
+
+    /**
+     * 写入这部漫画的完整章节显示顺序（`orderedChapterIds` 的下标就是新的 `position`）。
+     *
+     * 排序抽屉"整表重排"与手动拖动共用它：**顺序是整体属性**，一次拖动的结果必须
+     * 整条链一起落库，局部更新在重排时会留下互相冲突的中间状态。
+     */
+    suspend fun setChapterOrder(mangaId: String, orderedChapterIds: List<String>)
+
+    /**
+     * 该漫画**按章**的已读标记（章节 id → 是否已读）。
+     *
+     * 为什么不是 `reading_progress.read`：那张表一部漫画只有一行（"读到哪一章哪一页"），
+     * 它的 `read` 描述的是**那一章**，不是每一章。章节列表要给每章显示已读状态、
+     * 多选要能批量标记，因此必须有按章的状态。
+     *
+     * 存在独立表而不是 `chapters` 的列：开发文档 15.3 要求"索引可变状态与用户状态分表"——
+     * `chapters` 会被每次扫描重写，用户标记混在里面的唯一结局是被重扫抹掉。
+     */
+    suspend fun chapterReadMarks(mangaId: String): Map<String, Boolean>
+
+    /** 批量设置已读/未读（章节多选底栏）。 */
+    suspend fun setChapterRead(chapterIds: List<String>, read: Boolean)
+
     /** 页源完整枚举后回填页数和首页；不改变章节身份。 */
     suspend fun updateChapterPageInfo(chapterId: String, pageCount: Int, coverDocumentId: String?)
+
+    /**
+     * 写入一次**封面探测**的结果（图库滚动懒加载 / 详情页更新章节）。
+     *
+     * 与 `coverDocumentId = COALESCE(...)` 那套"null 表示本次没有新值"的语义**不同**：
+     * 这里的 null 是**有意义的结论**——"这个位置确实没有可用首图"。因此它会同时写
+     * [coverProbedAt]，让界面与后续探测都知道"不用再试了"。
+     *
+     * @param coverDocumentId 探测到的首图；null = 探测过了但没有
+     * @param coverChapterId 封面所属章节；与 [coverDocumentId] 同生共死
+     */
+    suspend fun markCoverProbed(
+        mangaId: String,
+        coverDocumentId: String?,
+        coverChapterId: String?,
+        at: Long,
+    )
 
     /**
      * 写入漫画级阅读覆盖（开发文档 15.3「漫画级阅读偏好归数据库」）。

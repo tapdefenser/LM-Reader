@@ -90,7 +90,10 @@ private fun rememberCoverPainter(request: CoverRequest?): Painter? {
     LaunchedEffect(request?.treeUri, request?.documentId) {
         val target = request ?: return@LaunchedEffect
         painter = withContext(Dispatchers.IO) {
-            CoverCache.get(target) ?: loadCover(context, target)?.also { CoverCache.put(target, it) }
+            CoverCache.get(target)?.let { return@withContext it }
+            val decoded = loadCover(context, target) ?: return@withContext null
+            CoverCache.put(target, decoded)
+            decoded.painter
         }
     }
     return painter
@@ -103,7 +106,7 @@ private fun rememberCoverPainter(request: CoverRequest?): Painter? {
  * 低版本走 `BitmapFactory` 的 `inSampleSize`。直接解码一张 5000×7000 的图
  * 会一次吃掉上百 MB 内存，滚动万级图库必然 OOM。
  */
-private fun loadCover(context: Context, request: CoverRequest): Painter? {
+private fun loadCover(context: Context, request: CoverRequest): DecodedCover? {
     val uri = if (request.documentId.startsWith("/")) {
         Uri.fromFile(File(request.documentId))
     } else {
@@ -130,7 +133,7 @@ private fun loadCover(context: Context, request: CoverRequest): Painter? {
                 decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
             }
             (drawable as? android.graphics.drawable.BitmapDrawable)
-                ?.let { BitmapPainter(it.bitmap.asImageBitmap()) }
+                ?.let { DecodedCover(BitmapPainter(it.bitmap.asImageBitmap()), it.bitmap.byteCount) }
         } else {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
@@ -141,10 +144,16 @@ private fun loadCover(context: Context, request: CoverRequest): Painter? {
             }
             resolver.openInputStream(uri)
                 ?.use { BitmapFactory.decodeStream(it, null, options) }
-                ?.let { BitmapPainter(it.asImageBitmap()) }
+                ?.let { DecodedCover(BitmapPainter(it.asImageBitmap()), it.byteCount) }
         }
     }.getOrNull()
 }
+
+/** 一张已解码的封面；[bytes] 是位图在堆上的实际占用，缓存按它计量。 */
+private data class DecodedCover(
+    val painter: Painter,
+    val bytes: Int,
+)
 
 /** 采样率取 2 的幂：`inSampleSize` 非 2 的幂时部分解码器会向上取整，反而浪费内存。 */
 private fun sampleSizeFor(width: Int, height: Int): Int {
@@ -156,25 +165,47 @@ private fun sampleSizeFor(width: Int, height: Int): Int {
 }
 
 /**
- * 极简 LRU 封面缓存。
+ * 按**字节**计量的 LRU 封面缓存。
  *
- * 上限按"条目数"而不是字节数，是第一步的简化；开发文档 6.5 要求缩略图缓存有
- * 大小上限并按 LRU 淘汰，字节计量与磁盘缓存属于 P1 项。
+ * ## 为什么必须按字节而不是按条数
+ *
+ * 上一版的上限是"120 条"，而每条持有一张位图：320 宽的封面按比例约 320×460，
+ * ARGB_8888 下每条约 590KB——120 条就是约 70MB，接近真机 256MB 堆的三分之一。
+ * 封面从"扫描期慢慢补"改成"图库滚动时成批取"之后，缓存会更快被填满，
+ * 按条数计量的上限就不再能表达"最多占多少内存"。
+ *
+ * 上限取 24MB：一屏可见封面通常十几张（约 8MB），加上滚动预取的两三屏，
+ * 够用且不至于挤占阅读器的页图内存。
  */
 private object CoverCache {
-    private const val MAX_ENTRIES = 120
+    private const val MAX_BYTES = 24 * 1024 * 1024
 
-    private val entries = object : LinkedHashMap<CoverRequest, Painter>(64, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<CoverRequest, Painter>?): Boolean =
-            size > MAX_ENTRIES
+    private var bytes = 0
+
+    private val entries = object : LinkedHashMap<CoverRequest, DecodedCover>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<CoverRequest, DecodedCover>?): Boolean {
+            if (bytes <= MAX_BYTES) return false
+            // 逐出最久未用的一条，直到回到预算内。用 while 而不是 if 是因为
+            // 一条封面本身可能就比"超出量"大得多（例如一张超大跨页当封面）。
+            bytes -= eldest?.value?.bytes ?: 0
+            return true
+        }
     }
 
     @Synchronized
-    fun get(key: CoverRequest): Painter? = entries[key]
+    fun get(key: CoverRequest): Painter? = entries[key]?.painter
 
     @Synchronized
-    fun put(key: CoverRequest, value: Painter) {
-        entries[key] = value
+    fun put(key: CoverRequest, value: DecodedCover) {
+        val previous = entries.put(key, value)
+        bytes += value.bytes - (previous?.bytes ?: 0)
+        // LinkedHashMap 的逐出只在 put **之后**由 removeEldestEntry 判定，
+        // 而它一次只判一条；这里补一轮循环，保证单张超大图也不会把预算撑破。
+        while (bytes > MAX_BYTES && entries.isNotEmpty()) {
+            val eldest = entries.entries.first()
+            bytes -= eldest.value.bytes
+            entries.remove(eldest.key)
+        }
     }
 }
 

@@ -49,4 +49,7 @@ dependencies {
     // 出错时不会崩溃、只会让读者在章末撞墙或跳页，因此必须用单测把结构钉住。
     testImplementation(libs.junit4)
     testImplementation(libs.kotlin.test)
+    // 封面懒加载队列是协程状态机（去重、批次、上限、落库时机），
+    // 用 runTest 才能确定性地驱动它，不必依赖真机滚动。
+    testImplementation(libs.kotlinx.coroutines.test)
 }

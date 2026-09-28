@@ -24,18 +24,25 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.lmreader.core.model.ReaderSettings
 import com.lmreader.di.AppContainer
 import com.lmreader.ui.common.LabeledSlider
+import com.lmreader.ui.common.LabeledSwitch
 import kotlinx.coroutines.launch
 
 /**
- * 设置 →「阅读器」：**只在打开阅读器之前生效**的那些参数。
+ * 设置 →「阅读器」：不适合放进阅读中面板的那些参数。
  *
- * ## 为什么这两项不放在阅读中的设置面板里
+ * ## 为什么两个滑杆不放在阅读中的设置面板里
  *
  * - 「预载页数」决定阅读器**打开时**要预取多少字节（`PagePrefetcher` 的磁盘预取格数）；
  * - 「缓存章节数」决定阅读器**在内存里保留多少章的页清单**（也就是显示窗口有多大）。
  *
  * 两者都在 `ReaderViewModel.init` 之后按当时读到的设置生效，阅读中改动不会追溯生效。
  * 放在阅读中的面板里会让人以为"拉一下立刻变快"，所以挪到这里，入口只此一处。
+ *
+ * ## 「加载原图」为什么两处都有
+ *
+ * 它改一下就能**立刻**看到效果（当前页会按新策略重新解码），所以阅读中的面板里也放了一份，
+ * 方便看到糊了就地切换；这里保留一份，是因为它属于"解码多少像素"这类全局取舍，
+ * 用户在设置页找它的可能性更大。
  *
  * 阅读中的那套设置面板仍然保留：方向、连续模式、缩放、裁白边、音量键、亮度、点按区域
  * ——那些改一下就能立刻看到效果。
@@ -74,7 +81,8 @@ fun ReaderSettingsScreen(
                 .padding(horizontal = 16.dp),
         ) {
             Text(
-                text = "这里的改动会在「下次打开」阅读器时生效。",
+                text = "预载页数、缓存章节数在「下次打开」阅读器时生效；" +
+                    "「加载原图」切换后当前页就会按新策略重新解码。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(vertical = 12.dp),
@@ -113,6 +121,20 @@ fun ReaderSettingsScreen(
                 scope.launch {
                     preferences.update { it.copy(cachedChaptersPerSide = value.toInt()) }
                 }
+            }
+
+            HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
+
+            LabeledSwitch(
+                label = "加载原图",
+                checked = settings.loadOriginalImage,
+                hint = "开：图片按原始像素交给引擎，一个像素都不减——细节最完整，但" +
+                    "单页解码量回到原图大小（一页 3000×1700 约 20MB），连着翻页可能变卡、" +
+                    "内存吃紧时甚至闪退。\n" +
+                    "关：超过「屏幕短边 × 4/3」的图先按 2 的幂降采样，翻页更稳更省内存；" +
+                    "放到很大时画面是插值放大的。",
+            ) { enabled ->
+                scope.launch { preferences.update { it.copy(loadOriginalImage = enabled) } }
             }
         }
     }

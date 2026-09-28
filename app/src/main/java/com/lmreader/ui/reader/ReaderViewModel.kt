@@ -22,6 +22,7 @@ import com.lmreader.core.storage.reader.ReaderPage
 import com.lmreader.core.storage.settings.ReaderPreferences
 import kotlin.math.abs
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -31,6 +32,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 
 /**
  * 阅读器状态机。
@@ -189,7 +191,7 @@ class ReaderViewModel(
         val treeUri = snapshot.sourceTreeUri ?: error("来源路径不可用")
         _state.update { it.copy(loading = true, error = null) }
 
-        val current = loadChapter(record, treeUri)
+        val current = withContext(Dispatchers.IO) { loadChapter(record, treeUri) }
         if (current == null) {
             _state.update { it.copy(loading = false, error = "无法打开「${record.title}」") }
             return
@@ -510,7 +512,9 @@ class ReaderViewModel(
         val fallbackSource = _state.value.chapters?.current?.source ?: return
         loadJobs[record.chapterId] = viewModelScope.launch {
             try {
-                val result = loadChapter(record, treeUri)
+                // 列一章的页 = 一次目录枚举（真机上是系统调用）。`viewModelScope` 跑在
+                // 主调度器上，不切走的话"打开章节"会先卡住首帧再显示。
+                val result = withContext(Dispatchers.IO) { loadChapter(record, treeUri) }
                 loaded[record.chapterId] = result ?: ViewerChapter(
                     chapter = record,
                     pages = emptyList(),

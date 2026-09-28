@@ -86,6 +86,7 @@ class ChapterResolver(
                 sortKey = NaturalOrder.sortKey(title),
                 pageCount = existing?.pageCount,
                 coverDocumentId = existing?.coverDocumentId,
+                modifiedAt = node.lastModified ?: existing?.modifiedAt,
                 contentRevision = node.lastModified ?: existing?.contentRevision ?: INITIAL_CONTENT_REVISION,
                 discoveredAt = existing?.discoveredAt ?: now,
             )

@@ -91,6 +91,14 @@ internal class ImageDirectoryPageSource(
     private var cachedPages: List<ReaderPage>? = null
 
     /**
+     * 已知页 ID 的集合，供 [open] 做 O(1) 归属校验。
+     *
+     * 上一版每次 `open` 都走 `pages().any { ... }`：一页要打开两次（读尺寸 + 交给引擎），
+     * 每翻一页就是两次线性扫描；章节越长越明显。
+     */
+    private var cachedPageIds: Set<String> = emptySet()
+
+    /**
      * 尺寸缓存。
      *
      * 用 `ConcurrentHashMap` 而不是普通 map：`probe` 会被连续模式的多个可见项并发的
@@ -119,12 +127,14 @@ internal class ImageDirectoryPageSource(
                 displayName = node.name,
                 documentId = node.documentId,
             )
-        }.also { cachedPages = it }
+        }.also {
+            cachedPages = it
+            cachedPageIds = it.mapTo(HashSet()) { page -> page.pageId }
+        }
     }
 
     override suspend fun open(page: ReaderPage): InputStream {
-        val known = pages().any { it.pageId == page.pageId && it.documentId == page.documentId }
-        if (!known) throw FileNotFoundException("页面已不在当前章节中")
+        if (!cachedPageIds.contains(page.pageId)) throw FileNotFoundException("页面已不在当前章节中")
         return treeAccess.openInputStream(treeUri, page.documentId)
             ?: throw FileNotFoundException("无法读取页面「${page.displayName}」")
     }
