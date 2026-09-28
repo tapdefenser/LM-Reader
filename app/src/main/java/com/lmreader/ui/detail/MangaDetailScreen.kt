@@ -95,6 +95,7 @@ import com.lmreader.core.index.ChapterOrdering
 import com.lmreader.core.model.ChapterKind
 import com.lmreader.core.model.ChapterRecord
 import com.lmreader.core.model.ChapterTranslation
+import com.lmreader.core.model.LayoutMode
 import com.lmreader.core.model.TranslationState
 import com.lmreader.di.AppContainer
 import com.lmreader.ui.common.CoverImage
@@ -375,32 +376,44 @@ private fun DetailContent(
                 Text("阅读 / 继续阅读")
             }
         }
-        item {
-            val countText = if (manga.chapterCountKnown) {
-                "共 ${state.chapters.size} 章"
-            } else {
-                "已发现 ${state.chapters.size} 章，更新中"
-            }
-            // 表头：左边是章节数（有已读标记时附带"已读 N"），右边是排序按钮。
-            // 图标不变，点了从屏幕下方弹出排序抽屉（用户口径）。
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
-                Text(
-                    text = if (state.readCount > 0) "$countText · 已读 ${state.readCount}" else countText,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                if (state.chapters.size > 1) {
-                    IconButton(onClick = onOpenSortSheet) {
-                        Icon(
-                            // 图形不变，只是换成 RTL 感知的那一份（原来的会被弃用）。
-                            imageVector = Icons.AutoMirrored.Filled.Sort,
-                            contentDescription = "章节排序",
-                            modifier = Modifier.size(20.dp),
-                        )
+        // 单章节模式**不显示章节数**（用户口径："共一章的就不要显示章节数了"）：那种卡片下
+        // "共 1 章"是纯噪音。整行一起省掉——这行的另一半（排序按钮）本来就只在多于一章时出现，
+        // 而每章的阅读进度在它自己那一行上写着（"读到第 Y 页"），所以没有信息丢失。
+        //
+        // 判据用 layoutMode 而**不是** `chapters.size == 1`：多章节模式只扫到 1 章时，
+        // "共 1 章"是**有用**的（还可能再扫出更多，未扫完时那句"已发现 N 章，更新中"尤其有用），
+        // 不该被一起抹掉。
+        //
+        // 注意这只是显示层：章节页数依旧是"点进去才取"（`backfillPageCounts` 一行不动），
+        // 不为了把这一行填满去枚举整部漫画。
+        if (manga.layoutMode != LayoutMode.SINGLE_CHAPTER) {
+            item {
+                val countText = if (manga.chapterCountKnown) {
+                    "共 ${state.chapters.size} 章"
+                } else {
+                    "已发现 ${state.chapters.size} 章，更新中"
+                }
+                // 表头：左边是章节数（有已读标记时附带"已读 N"），右边是排序按钮。
+                // 图标不变，点了从屏幕下方弹出排序抽屉（用户口径）。
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text(
+                        text = if (state.readCount > 0) "$countText · 已读 ${state.readCount}" else countText,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    if (state.chapters.size > 1) {
+                        IconButton(onClick = onOpenSortSheet) {
+                            Icon(
+                                // 图形不变，只是换成 RTL 感知的那一份（原来的会被弃用）。
+                                imageVector = Icons.AutoMirrored.Filled.Sort,
+                                contentDescription = "章节排序",
+                                modifier = Modifier.size(20.dp),
+                            )
+                        }
                     }
                 }
             }

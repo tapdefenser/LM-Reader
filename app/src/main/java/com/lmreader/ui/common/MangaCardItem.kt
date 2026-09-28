@@ -30,6 +30,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.lmreader.core.model.LayoutMode
 import com.lmreader.core.model.MangaAvailability
 import com.lmreader.core.model.MangaCard
 
@@ -137,11 +138,14 @@ fun MangaCardItem(
                     }
                     // 解释方式文案与类型列下拉共用一处（ui/common/LayoutModeLabels.kt）。
                     Badge(text = card.layoutMode.displayName())
-                    Text(
-                        text = chapterLabel(card),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    // null = 不显示（单章节模式不写"共 1 章"，见 chapterLabel 的说明）。
+                    chapterLabel(card)?.let { label ->
+                        Text(
+                            text = label,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
             }
         }
@@ -194,8 +198,17 @@ fun MangaGridItem(
     }
 }
 
-/** 章节状态文案；未知总数不伪造成确定值（开发文档 5.1、8.1）。 */
-internal fun chapterLabel(card: MangaCard): String = when {
+/**
+ * 章节状态文案；未知总数不伪造成确定值（开发文档 5.1、8.1）。
+ *
+ * 返回 null = **不显示**：单章节模式的卡片刻意不写章节数（用户口径："共一章的就不要显示
+ * 章节数了"）——那种卡片旁边已经有「单章节」徽标，再跟一句"共 1 章"是同一件事说两遍。
+ *
+ * 只吃掉"已经知道就是 1 章"这一种情况，"更新中 / 待更新"照旧显示：那两个状态是**可行动**的
+ * 信息（索引还没补齐），跟"确切地只有一章"不是一回事。
+ */
+internal fun chapterLabel(card: MangaCard): String? = when {
+    card.layoutMode == LayoutMode.SINGLE_CHAPTER && card.chapterCountKnown -> null
     card.chapterCountKnown && card.chapterCount != null -> "共 ${card.chapterCount} 章"
     card.chapterCount != null -> "已发现 ${card.chapterCount} 章，更新中"
     else -> "章节待更新"
