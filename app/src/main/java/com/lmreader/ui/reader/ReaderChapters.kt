@@ -257,7 +257,7 @@ internal data class PreloadPlan(
 /**
  * 从当前章向两侧展开窗口，补齐还没在窗口里的章。
  *
- * @param existing 已经有页清单的章；它们的页数用于预算计算，且**必须留在窗口里**——
+ * @param existing 已经有页清单的章；它们的页数用于预算计算，且在有效范围内**必须留在窗口里**——
  *   把已加载的章丢掉再重新加载，正是上一版"明明已就绪却显示正在加载"的原因。
  * @return 新的窗口（按目录顺序）与当前章在其中的下标
  */
@@ -272,9 +272,20 @@ internal fun buildWindow(
     val wanted = sortedSetOf(currentIndex)
     wanted += plan.nextIndices
     wanted += plan.previousIndices
-    // 已在窗口里的章一律保留：丢掉它们的页清单会让已经预载好的内容白费。
+    // 已是"当前章 ± 预载范围"之内的已加载章一律保留：丢掉它们等于让预载好的内容白费，
+    // 界面会退回"明明已就绪却显示正在加载"。
+    //
+    // 范围之外的就从窗口里放掉。窗口因此始终约等于预载范围那么大，而不是"读过多少章就有多少章"——
+    // 后者在一部上千章的漫画里会把整个目录的页清单都堆进项列表（而且 `nearWindowEdge` 会失效，
+    // 因为窗口越大，它的边界判据越晚触发）。放掉只是不显示，页清单仍留在 `loaded` 里，
+    // 往回翻时立刻就能取回，不会重新请求。
+    // `±1` 不能省：过渡项是"夹在两章之间"的那一项，只有下一章也在窗口里才会被生成
+    // （见 [items]）。规划正常情况下必然包含至少一个邻章，但万一传进来的是
+    // [PreloadPlan.EMPTY]，窗口就会只剩当前章，读者翻到本章末页便再也过不去。
+    val lo = minOf(currentIndex - 1, plan.previousIndices.minOrNull() ?: currentIndex)
+    val hi = maxOf(currentIndex + 1, plan.nextIndices.maxOrNull() ?: currentIndex)
     chapterList.forEachIndexed { index, record ->
-        if (existing.containsKey(record.chapterId)) wanted += index
+        if (index in lo..hi && existing.containsKey(record.chapterId)) wanted += index
     }
     val window = wanted.mapNotNull { index ->
         val record = chapterList.getOrNull(index) ?: return@mapNotNull null
@@ -315,3 +326,22 @@ internal fun List<ReaderItem>.indexOfFirstPageOfChapter(chapterId: String): Int 
 /** 当前项属于哪一章；列表为空时返回 null。 */
 internal fun List<ReaderItem>.chapterIdAt(index: Int): String? =
     getOrNull(index)?.chapterId
+
+/**
+ * 落页到 [item] 时**真正进入了**哪一章；`null` = 没有换章。
+ *
+ * ## 为什么过渡项不算换章（这条判定的理由值得单独写下来）
+ *
+ * [ReaderItem.Transition] 的 `chapterId` 按设计取**后一章**（这样它在任何窗口下都算出同一个
+ * `key`）。但"落到过渡页"并不等于"已经进入下一章"——它只是夹在两章之间的那一张。
+ *
+ * 用过渡项当换章判据会引发一个每帧一轮的正反馈环：落页回报 → 当前章被翻转 →
+ * 窗口按当前章重算 → 项列表长度变化 → 分页器（右到左的 `reverseLayout`）的
+ * "滚动偏移 ↔ 下标"映射抖一格 → 下一次落页回报指到相邻的另一章 → 再翻转……
+ * 实测每秒重建 80 多个引擎视图、每次都整图解码，native heap 被顶到 300MB 以上。
+ *
+ * 不换章也不会把跨章读卡住：下一章本来就被"边界章"规则收进窗口并加载好了
+ * （见 `ReaderViewModel.chaptersToLoad`），读者真正落到下一章第一页时才会换章。
+ */
+internal fun chapterEnteredBy(item: ReaderItem): String? =
+    if (item is ReaderItem.PageItem) item.chapterId else null

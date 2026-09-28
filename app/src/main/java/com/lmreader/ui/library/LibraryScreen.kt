@@ -16,8 +16,6 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.GridView
@@ -33,7 +31,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -48,7 +45,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -72,6 +68,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.launch
 import com.lmreader.ui.common.ScreenState
+import com.lmreader.ui.common.SearchField
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
 
@@ -165,20 +162,12 @@ fun LibraryScreen(
             TopAppBar(
                 title = {
                     if (searchActive) {
-                        OutlinedTextField(
+                        // 胶囊形、比默认扁：见 [SearchField] 里"为什么不用 OutlinedTextField"。
+                        SearchField(
                             value = state.query,
                             onValueChange = viewModel::onQueryChange,
-                            placeholder = { Text("搜索漫画名或简介", maxLines = 1) },
-                            // 单行 + 不换行：搜索框要"文字在框里左右拖动"，而不是长高了
-                            // 把顶栏撑开。`singleLine` 只约束 IME 回车行为，
-                            // 因此 `maxLines = 1` 也要显式写上。
-                            singleLine = true,
-                            maxLines = 1,
-                            // 顶栏里的搜索框要瘦下来：默认高度（56dp）会顶掉标题栏的
-                            // 视觉比重，也让输入区看起来不像一个"条"。
-                            textStyle = MaterialTheme.typography.bodyMedium,
-                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                            keyboardActions = KeyboardActions(onSearch = { viewModel.onSearchOpened() }),
+                            placeholder = "搜索漫画名或简介",
+                            onSearch = { viewModel.onSearchOpened() },
                             modifier = Modifier.fillMaxWidth(),
                         )
                     } else {

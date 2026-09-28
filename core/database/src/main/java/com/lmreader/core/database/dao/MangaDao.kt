@@ -301,6 +301,51 @@ interface MangaDao {
     suspend fun search(pattern: String, offset: Int, limit: Int): List<CardQueryRow>
 
     /**
+     * 同 [search]，但限定在已勾选的图源内。
+     *
+     * 为什么必须单独一个查询而不是"搜完全库再在内存里过滤"：图库是分页读的，
+     * 内存过滤会让"本页 30 条里恰好 2 条属于勾选的图源"变成一页 2 条，
+     * 而且 `nextOffset` 会按未过滤的总数前进，于是**结果越翻越少、还会漏项**。
+     * 筛选必须下推到 SQL，和 [pageLibraryFiltered] 一样。
+     */
+    @Query(
+        """
+        SELECT m.mangaId AS mangaId,
+               m.displayName AS displayName,
+               COALESCE(md.summary, m.summary) AS summaryPreview,
+               m.sourceId AS sourceId,
+               m.coverDocumentId AS coverDocumentId,
+               m.coverChapterId AS coverChapterId,
+               m.sourceKind AS sourceKind,
+               m.layoutMode AS layoutMode,
+               m.chapterCount AS chapterCount,
+               m.chapterCountKnown AS chapterCountKnown,
+               m.availability AS availability,
+               EXISTS(
+                   SELECT 1 FROM chapters AS c
+                   WHERE c.mangaId = m.mangaId AND c.kind = 'ARCHIVE'
+               ) AS hasArchiveChapters,
+               s.categoryId AS shelfCategoryId
+        FROM mangas AS m
+        LEFT JOIN shelf_entries AS s ON s.mangaId = m.mangaId
+        LEFT JOIN metadata_records AS md
+               ON md.ownerId = m.mangaId AND md.ownerType = 'MANGA'
+        WHERE (m.displayName LIKE :pattern ESCAPE '\'
+           OR md.normalizedSearchText LIKE :pattern ESCAPE '\')
+          AND m.availability != 'STALE'
+          AND m.sourceId IN (:sourceIds)
+        ORDER BY m.sourceOrderIndex ASC, m.sortKey ASC, m.mangaId ASC
+        LIMIT :limit OFFSET :offset
+        """,
+    )
+    suspend fun searchInSources(
+        sourceIds: List<String>,
+        pattern: String,
+        offset: Int,
+        limit: Int,
+    ): List<CardQueryRow>
+
+    /**
      * 在**书架范围内**按关键字搜索。
      *
      * 与 [search] 的差别只有 `JOIN shelf_entries`：书架是收藏引用，因此搜索必须限定在
@@ -375,6 +420,38 @@ interface MangaDao {
         offset: Int,
         limit: Int,
     ): List<CardQueryRow>
+
+    /**
+     * 当前书架筛选（分类 + 关键词）下的**全部**漫画 ID，不分页。
+     *
+     * 用途只有一个：书架的「一键更新章节」要知道该更新哪几部。它必须跟着筛选走
+     * （用户要求："更新所有（经过筛选的）书架页里漫画的章节"），因此**不能**只取
+     * 已加载的那几页，也不能整库更新。
+     *
+     * 两个筛选条件都用可空参数在一个查询里表达，而不是按组合写四份：SQL 的
+     * `:param IS NULL OR ...` 让"不筛"与"筛"共用一条语句，四份拷贝里任何一份走形
+     * 都会变成"某个组合下更新了不该更新的漫画"，而那种 bug 只在特定组合下出现。
+     *
+     * @param categoryId null = 「全部」
+     * @param pattern 已转义并小写的 LIKE 模式；null = 不按关键词筛
+     */
+    @Query(
+        """
+        SELECT m.mangaId FROM mangas AS m
+        JOIN shelf_entries AS s ON s.mangaId = m.mangaId
+        LEFT JOIN metadata_records AS md
+               ON md.ownerId = m.mangaId AND md.ownerType = 'MANGA'
+        WHERE m.availability != 'STALE'
+          AND (:categoryId IS NULL OR s.categoryId = :categoryId)
+          AND (
+                :pattern IS NULL
+                OR m.displayName LIKE :pattern ESCAPE '\'
+                OR md.normalizedSearchText LIKE :pattern ESCAPE '\'
+              )
+        ORDER BY m.sourceOrderIndex ASC, m.sortKey ASC, m.mangaId ASC
+        """,
+    )
+    suspend fun shelfMangaIds(categoryId: Long?, pattern: String?): List<String>
 
     /**
      * 书架条目数。陈旧卡片不算进去：它们默认不出现在书架上（行本身保留，

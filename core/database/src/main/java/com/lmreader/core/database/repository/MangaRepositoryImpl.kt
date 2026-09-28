@@ -79,6 +79,14 @@ internal class MangaRepositoryImpl(
         return pageOf(rows, offset, limit)
     }
 
+    override suspend fun shelfMangaIds(categoryId: Long?, query: String?): List<String> {
+        // 转义规则与 pageShelf 保持一致：同一个关键词在"列表"与"一键更新范围"
+        // 上必须命中同一批漫画，否则用户会看到"列表里 3 部、却更新了 5 部"。
+        val pattern = query?.trim()?.takeIf { it.isNotEmpty() }
+            ?.let { "%" + escapeLike(it.lowercase()) + "%" }
+        return mangaDao.shelfMangaIds(categoryId, pattern)
+    }
+
     override fun observeVisibleCount(inShelfOnly: Boolean, categoryId: Long?): Flow<Int> = when {
         !inShelfOnly -> mangaDao.observeCount()
         categoryId == null -> mangaDao.observeShelfTotal()
@@ -215,11 +223,23 @@ internal class MangaRepositoryImpl(
 
     override suspend fun observeTotalCount(): Flow<Int> = mangaDao.observeCount()
 
-    override suspend fun search(query: String, offset: Int, limit: Int): MangaPage {
+    override suspend fun search(
+        query: String,
+        offset: Int,
+        limit: Int,
+        sourceFilter: Set<String>?,
+    ): MangaPage {
         val trimmed = query.trim()
-        if (trimmed.isEmpty()) return pageLibrary(offset, limit)
+        // 关键词为空时退化成"浏览"，因此筛选必须一并带上；否则清空搜索框会突然
+        // 把被筛掉的图源放回来（用户会以为筛选失效了）。
+        if (trimmed.isEmpty()) return pageLibrary(offset, limit, sourceFilter)
         val pattern = "%" + escapeLike(trimmed.lowercase()) + "%"
-        return pageOf(mangaDao.search(pattern, offset, limit), offset, limit)
+        val rows = when {
+            sourceFilter == null -> mangaDao.search(pattern, offset, limit)
+            sourceFilter.isEmpty() -> emptyList()
+            else -> mangaDao.searchInSources(sourceFilter.toList(), pattern, offset, limit)
+        }
+        return pageOf(rows, offset, limit)
     }
 
     /**

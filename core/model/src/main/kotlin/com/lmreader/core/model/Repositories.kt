@@ -59,6 +59,18 @@ interface MangaRepository {
     ): MangaPage
 
     /** 订阅「可见集合长度」变化，用于扫描过程中把新条目补进当前额度（开发文档 6.4）。 */
+    /**
+     * 当前书架筛选（分类 + 关键词）下的**全部**漫画 ID，不分页。
+     *
+     * 给书架的「一键更新章节」用：更新范围必须与用户当前看到的筛选一致
+     * （"更新所有（经过筛选的）书架页里漫画的章节"），因此这里刻意返回全部 ID
+     * 而不是已加载的那几页。
+     *
+     * @param categoryId null = 「全部」
+     * @param query 关键词；空白 = 不按关键词筛
+     */
+    suspend fun shelfMangaIds(categoryId: Long?, query: String?): List<String>
+
     fun observeVisibleCount(inShelfOnly: Boolean, categoryId: Long?): Flow<Int>
 
     /**
@@ -157,7 +169,19 @@ interface MangaRepository {
      * 才允许删除章节（框架 5.2）。
      */
     suspend fun upsertScanResult(result: ScanResult): ScanPersistReport
-    suspend fun search(query: String, offset: Int, limit: Int): MangaPage
+    /**
+     * 按关键字搜索。
+     *
+     * @param sourceFilter 与 [pageLibrary] 同一个语义：`null` = 不筛；空集合 = 没有匹配
+     *   （当前勾选的图源一个都没有）。**搜索必须落在筛选结果之内**，否则用户在"只看某个
+     *   图源"的状态下搜索会看到别的图源的书，而标题还写着"图库（1 个图源）"。
+     */
+    suspend fun search(
+        query: String,
+        offset: Int,
+        limit: Int,
+        sourceFilter: Set<String>? = null,
+    ): MangaPage
     suspend fun deleteManga(mangaId: String)
     suspend fun observeTotalCount(): Flow<Int>
 }

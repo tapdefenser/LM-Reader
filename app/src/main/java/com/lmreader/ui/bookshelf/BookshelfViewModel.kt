@@ -13,8 +13,8 @@ import com.lmreader.core.model.MangaRepository
 import com.lmreader.core.model.ShelfRepository
 import com.lmreader.core.model.SourceRepository
 import com.lmreader.core.model.StyleMode
-import com.lmreader.core.storage.scan.LibraryScanCoordinator
-import com.lmreader.core.storage.scan.ScanReason
+import com.lmreader.core.storage.scan.ChapterSyncOutcome
+import com.lmreader.core.storage.scan.MangaChapterSyncer
 import com.lmreader.core.storage.settings.AppPreferences
 import com.lmreader.ui.paging.PageSlice
 import com.lmreader.ui.paging.PagingState
@@ -38,7 +38,7 @@ import kotlinx.coroutines.launch
 class BookshelfViewModel(
     private val mangaRepository: MangaRepository,
     private val shelfRepository: ShelfRepository,
-    private val scanCoordinator: LibraryScanCoordinator,
+    private val chapterSyncer: MangaChapterSyncer,
     private val preferences: AppPreferences,
 ) : ViewModel() {
 
@@ -73,18 +73,29 @@ class BookshelfViewModel(
                 if (paging.hasFreeSlot()) loadMore()
             }
         }
-        // 可见收藏**变小**时（扫描完整结束后把"本轮没再发现"的旧卡片标成陈旧），
-        // 已经加载进内存的卡片不会自己消失：确认后重建分页会话，否则用户点过刷新
-        // 仍会看到不该出现的旧卡片——与图库同一处理。
+        // 可见收藏**变化**时重建分页会话。
+        //
+        // 两种变化都要管，而它们的原因是相反的：
+        // - **变小**：扫描完整结束后把"本轮没再发现"的旧卡片标成陈旧。已经加载进内存的
+        //   卡片不会自己消失，不重建的话用户点过刷新仍会看到不该出现的旧卡片。
+        // - **变大**：用户在图库里把一部漫画加入书架。早先只处理"变小"，于是**新加入的
+        //   漫画不会出现在书架上**——列表是分页读出来的快照，没人去重读它（真机反馈）。
         viewModelScope.launch {
             _state.map { it.selectedCategoryId }.distinctUntilChanged().collectLatest { categoryId ->
                 var previous = -1
                 mangaRepository.observeVisibleCount(inShelfOnly = true, categoryId = categoryId)
                     .collect { visible ->
+                        val grew = previous >= 0 && visible > previous
                         val shrank = previous >= 0 && visible < previous
                         previous = visible
+                        if (grew) {
+                            paging.reset()
+                            loadMore()
+                            return@collect
+                        }
+                        if (!shrank) return@collect
                         val loaded = _state.value.items
-                        if (!shrank || loaded.isEmpty()) return@collect
+                        if (loaded.isEmpty()) return@collect
                         val hasStaleCard = mangaRepository.getCards(loaded.map { it.mangaId })
                             .any { it.availability == MangaAvailability.STALE }
                         if (hasStaleCard) {
@@ -147,11 +158,82 @@ class BookshelfViewModel(
         viewModelScope.launch { loadMore() }
     }
 
+    /**
+     * 一键更新**当前筛选下书架里所有漫画的章节**。
+     *
+     * ## 这个按钮不是"刷新书架"
+     *
+     * 书架列表是数据库里的收藏引用，它自己会跟着数据变（见 `init` 里对可见数量的订阅），
+     * 不需要用户手动刷新。用户点这个按钮要的是另一件事：**把书架里这些漫画的章节目录
+     * 重新读一遍**，好让新下载/新加进来的章节出现在详情页与阅读器里。
+     *
+     * 因此这里：
+     * - 逐个调 [MangaChapterSyncer.sync]（与详情页「更新章节」同一条路径），
+     *   **不**调 `scanCoordinator.rescanAll`——那是"重扫整库目录"，会把用户没在看的
+     *   来源也一起翻一遍，既慢又不是用户想要的；
+     * - 范围取"当前筛选下的全部收藏"（分类 + 关键词），用户勾了筛选就只更新那些；
+     * - 更新完重建列表，因为章节数变了，卡片上的"共 N 章"要跟着变。
+     */
     fun onRefresh() {
+        if (_state.value.chapterUpdateTotal > 0) return // 已经在更新了，别重复排队
+        val categoryId = _state.value.selectedCategoryId
+        val query = _state.value.appliedQuery
+        viewModelScope.launch {
+            val ids = runCatching { mangaRepository.shelfMangaIds(categoryId, query) }
+                .getOrElse { error ->
+                    _state.update { it.copy(error = error.message ?: "读取书架失败") }
+                    return@launch
+                }
+            if (ids.isEmpty()) {
+                _state.update { it.copy(chapterUpdateMessage = "书架里没有可更新的漫画") }
+                return@launch
+            }
+            _state.update {
+                it.copy(
+                    chapterUpdateDone = 0,
+                    chapterUpdateTotal = ids.size,
+                    chapterUpdateMessage = null,
+                )
+            }
+            var failed = 0
+            for ((index, mangaId) in ids.withIndex()) {
+                // 逐个更新而不是并发：每部漫画都要枚举自己的目录，并发几十个只会
+                // 让 SAF 与磁盘互相抢，而用户要的是"更新完"，不是"最快更新完"。
+                val outcome = runCatching { chapterSyncer.sync(mangaId) }.getOrNull()
+                if (outcome !is ChapterSyncOutcome.Success) failed++
+                _state.update { it.copy(chapterUpdateDone = index + 1) }
+            }
+            _state.update {
+                it.copy(
+                    chapterUpdateTotal = 0,
+                    chapterUpdateMessage = if (failed == 0) {
+                        "已更新 ${ids.size} 部漫画的章节"
+                    } else {
+                        "已更新 ${ids.size - failed} 部，${failed} 部失败"
+                    },
+                )
+            }
+            paging.reset()
+            loadMore()
+        }
+    }
+
+    /** 清掉一键更新完成后的提示（用户看过即可）。 */
+    fun dismissChapterUpdateMessage() {
+        if (_state.value.chapterUpdateMessage == null) return
+        _state.update { it.copy(chapterUpdateMessage = null) }
+    }
+
+    /**
+     * 重新读取当前筛选下的书架列表。
+     *
+     * 与 [onRefresh] 是**两件事**：这里只重读数据库（列表读失败时的「重试」走这里），
+     * 不碰任何漫画的章节目录。把两者合成一个动作正是"刷新键语义不清"的来源。
+     */
+    fun reload() {
         viewModelScope.launch {
             paging.reset()
             loadMore()
-            scanCoordinator.rescanAll(ScanReason.REFRESH)
         }
     }
 
@@ -256,7 +338,7 @@ class BookshelfViewModel(
                 BookshelfViewModel(
                     mangaRepository = container.mangaRepository,
                     shelfRepository = container.shelfRepository,
-                    scanCoordinator = container.scanCoordinator,
+                    chapterSyncer = container.mangaChapterSyncer,
                     preferences = container.preferences,
                 )
             }
@@ -278,13 +360,22 @@ data class BookshelfUiState(
     /**
      * 搜索框里**当前**的文本；只由 [BookshelfViewModel.onQueryChange] 更新。
      *
-     * 它是 `OutlinedTextField` 的 `value`，因此**绝不能**被防抖之后的延迟值覆盖
+     * 它是搜索框的 `value`，因此**绝不能**被防抖之后的延迟值覆盖
      * （那样会覆盖用户刚敲的字符并把光标重置到开头）。
      */
     val query: String = "",
     /** 当前结果对应的查询词（防抖之后的）；空状态文案按它说话。 */
     val appliedQuery: String = "",
+    /** 一键更新章节的总数；0 = 当前没有在更新。 */
+    val chapterUpdateTotal: Int = 0,
+    /** 一键更新章节已完成的部数。 */
+    val chapterUpdateDone: Int = 0,
+    /** 一键更新结束后的提示；null = 无提示。 */
+    val chapterUpdateMessage: String? = null,
 ) {
+    /** 是否正在一键更新章节。 */
+    val updatingChapters: Boolean get() = chapterUpdateTotal > 0
+
     val selectedCategoryName: String
         get() = categories.firstOrNull { it.categoryId == selectedCategoryId }?.name ?: "全部"
 

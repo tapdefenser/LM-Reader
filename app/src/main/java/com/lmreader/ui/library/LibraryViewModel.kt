@@ -336,7 +336,14 @@ class LibraryViewModel(
                     sourceFilter = _state.value.effectiveSourceFilter,
                 )
             } else {
-                mangaRepository.search(query, paging.nextOffset, PAGE_SIZE)
+                // 搜索**落在已生效的图源筛选之内**：用户在"只看某个图源"的状态下搜索，
+                // 期望的是"在这个图源里找"，而不是把别的图源的书也翻出来。
+                mangaRepository.search(
+                    query = query,
+                    offset = paging.nextOffset,
+                    limit = PAGE_SIZE,
+                    sourceFilter = _state.value.effectiveSourceFilter,
+                )
             }
             paging.append(
                 PageSlice(items = page.items, nextOffset = page.nextOffset, exhausted = page.exhausted),

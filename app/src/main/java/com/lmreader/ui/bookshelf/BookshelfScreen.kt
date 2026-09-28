@@ -17,7 +17,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.FilterList
@@ -33,6 +32,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -52,7 +52,6 @@ import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -66,6 +65,7 @@ import com.lmreader.ui.common.EndSideDrawer
 import com.lmreader.ui.common.LoadingState
 import com.lmreader.ui.common.MangaCardItem
 import com.lmreader.ui.common.MessageState
+import com.lmreader.ui.common.SearchField
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
 
@@ -135,16 +135,11 @@ fun BookshelfScreen(
                 TopAppBar(
                     title = {
                         if (searchActive) {
-                            OutlinedTextField(
+                            // 与图库同一个组件：两处样式不会各走各的。见 [SearchField]。
+                            SearchField(
                                 value = state.query,
                                 onValueChange = viewModel::onQueryChange,
-                                placeholder = { Text("搜索书架", maxLines = 1) },
-                                // 单行 + 不换行：搜索框要"文字在框里左右拖动"，
-                                // 而不是长高了把顶栏撑开。
-                                singleLine = true,
-                                maxLines = 1,
-                                textStyle = MaterialTheme.typography.bodyMedium,
-                                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                                placeholder = "搜索书架",
                                 modifier = Modifier.fillMaxWidth(),
                             )
                         } else {
@@ -170,8 +165,12 @@ fun BookshelfScreen(
                                 contentDescription = if (searchActive) "退出搜索" else "搜索",
                             )
                         }
-                        IconButton(onClick = viewModel::onRefresh) {
-                            Icon(Icons.Filled.Refresh, contentDescription = "刷新")
+                        IconButton(
+                            onClick = viewModel::onRefresh,
+                            // 作用说清：这是"更新书架里这些漫画的章节"，不是"刷新书架列表"。
+                            // 列表自己会跟着数据变，不需要用户手动刷。
+                        ) {
+                            Icon(Icons.Filled.Refresh, contentDescription = "更新所有漫画的章节")
                         }
                         IconButton(onClick = { viewModel.setSidePanelOpen(true) }) {
                             Icon(Icons.Filled.FilterList, contentDescription = "筛选与分类")
@@ -181,11 +180,18 @@ fun BookshelfScreen(
             },
         ) { padding ->
             Column(modifier = Modifier.fillMaxSize().padding(padding)) {
+                // 一键更新章节的进度与结果。
+                //
+                // 它可能持续几十秒（每部漫画都要枚举一次目录），没有反馈的话用户只会
+                // 以为按钮没反应、然后反复点。因此给出确定进度（第几部 / 共几部）而不是
+                // 一个转圈。
+                ChapterUpdateStatus(state = state, onDismiss = viewModel::dismissChapterUpdateMessage)
                 if (state.error != null) {
                     MessageState(
                         message = state.error!!,
                         actionLabel = "重试",
-                        onAction = viewModel::onRefresh,
+                        // 「重试」重读列表，不是更新章节：这里失败的是"读书架"。
+                        onAction = viewModel::reload,
                     )
                 } else if (state.items.isEmpty() && state.loading) {
                     LoadingState()
@@ -534,6 +540,55 @@ private fun MangaCard.coverRequest(treeUris: Map<String, String>): CoverRequest?
     val documentId = coverDocumentId ?: return null
     val treeUri = treeUris[sourceId] ?: return null
     return CoverRequest(treeUri = treeUri, documentId = documentId)
+}
+
+/**
+ * 一键更新章节的进度 / 结果提示。
+ *
+ * 进度用**确定值**（第几部 / 共几部）而不是转圈：这个操作每部漫画都要枚举一次目录，
+ * 几十部就是几十秒，用户需要知道"还剩多少"，否则只会以为按钮没反应。
+ * 更新范围写明"当前筛选"，因为用户勾了分类或搜索词时，更新的是那一部分，不是全部收藏。
+ */
+@Composable
+private fun ChapterUpdateStatus(
+    state: BookshelfUiState,
+    onDismiss: () -> Unit,
+) {
+    if (state.updatingChapters) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 6.dp),
+        ) {
+            LinearProgressIndicator(
+                progress = { state.chapterUpdateDone.toFloat() / state.chapterUpdateTotal },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Text(
+                text = "正在更新章节 ${state.chapterUpdateDone} / ${state.chapterUpdateTotal}" +
+                    "（仅当前筛选下的收藏）",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+        }
+        return
+    }
+    val message = state.chapterUpdateMessage ?: return
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 12.dp, end = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = message,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f),
+        )
+        TextButton(onClick = onDismiss) { Text("知道了") }
+    }
 }
 
 @Composable

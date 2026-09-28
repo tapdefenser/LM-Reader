@@ -72,6 +72,120 @@ class ReaderChaptersTest {
         return ViewerChapters(window = list, currentIndex = list.indexOfFirst { it.chapterId == current })
     }
 
+    /**
+     * **窗口前端放掉一章，会让已有项的下标整体平移——这是"翻页后跳到别的页"的根源。**
+     *
+     * 参数完全按真机复现：**每章 3 页**、「预载页数」默认 9（往后 4 / 往前 5 格预算）。
+     * 当前章从第 3 章推进到第 4 章时，往前预算只够覆盖 1 章多一点，于是窗口前端把第 1 章
+     * 放掉、后端收进第 6 章：
+     *
+     * ```
+     * current=c3 → [c1 c2 c3 c4 c5]      c4 第 0 页在下标 12
+     * current=c4 → [c2 c3 c4 c5 c6]      c4 第 0 页在下标  8
+     * ```
+     *
+     * 前端放掉的是「3 页 + 1 个过渡页 = **4 项**」，所以平移量正好是 4。
+     * 分页器若还停在旧数字上就会**正好偏 4 格**——真机反馈的两种症状都是这个 4：
+     *
+     * - 往前偏 4：跨过过渡页之后不是进入下一章第 1 页，而是又一张过渡页 / 第 5 页附近；
+     * - 往回偏 4：从下一章第 1 页"跳回上一章第 1 页"（−4 项正好是上一章首页）。
+     *
+     * 这条用例**不是在断言这种行为是对的**，而是把这个平移量钉成可检查的事实：
+     * 位置一旦用"会平移的下标"表达，任何重排都可能让读者偏掉整整一章。
+     */
+    @Test
+    fun `窗口前端放掉一章会让项下标整体平移 4 格`() {
+        val records = (1..6).map { record("c$it", pageCount = 3) }
+        val existing = (1..6).associate { "c$it" to chapter("c$it", 3) }
+
+        // 与 planFor 对同样输入算出的计划一致（每章 3 页已知、预载 9 → 后 4 / 前 5）。
+        fun planFor(currentIndex: Int) = PreloadPlan.compute(
+            chapterCount = records.size,
+            currentIndex = currentIndex,
+            budget = 4,
+            maxChapters = 3,
+            backBudget = 5,
+            pagesOf = { 3 },
+        )
+
+        fun itemsFor(currentIndex: Int): List<ReaderItem> {
+            val plan = planFor(currentIndex)
+            // 边界章规则：规划覆盖不到的那一章也要收进来。
+            val next = plan.nextIndices.toMutableList()
+            val previous = plan.previousIndices.toMutableList()
+            val nextFrontier = (next.lastOrNull() ?: currentIndex) + 1
+            val previousFrontier = (previous.firstOrNull() ?: currentIndex) - 1
+            if (nextFrontier in records.indices && next.size < 3) next += nextFrontier
+            if (previousFrontier in records.indices && previous.size < 3) previous += previousFrontier
+            val (window, current) = buildWindow(
+                chapterList = records,
+                currentChapterId = records[currentIndex].chapterId,
+                plan = PreloadPlan(previousIndices = previous, nextIndices = next),
+                existing = existing,
+            )
+            return ViewerChapters(window = window, currentIndex = current)
+                .items(showTransitions = true, isFinalChapter = { false })
+        }
+
+        val before = itemsFor(currentIndex = 2) // 当前 = c3
+        val after = itemsFor(currentIndex = 3) // 当前 = c4
+
+        assertEquals(5, before.count { it is ReaderItem.PageItem } / 3) // 窗口 5 章
+        assertEquals(5, after.count { it is ReaderItem.PageItem } / 3)
+
+        fun indexOf(items: List<ReaderItem>, key: String) = items.indexOfFirst { it.key == key }
+
+        // 锚点一：c4 的**第一页**。12 → 8，偏 4。
+        val firstPageKey = before.filterIsInstance<ReaderItem.PageItem>()
+            .first { it.chapter.chapterId == "c4" }.key
+        assertEquals(12, indexOf(before, firstPageKey))
+        assertEquals(8, indexOf(after, firstPageKey))
+
+        // 锚点二：c3→c4 那个**过渡项**（它的 chapterId 归后一章 c4，所以别用 chapterId 找它）。
+        // 11 → 7，同样偏 4。分页器停在旧的 11 上时，新列表下标 11 处已经是**另一个过渡项**
+        // （c4→c5）——这正是"同一张过渡页出现了两次"的由来：两张过渡页长得几乎一样。
+        val transitionKey = before.first { it is ReaderItem.Transition && it.chapterId == "c4" }.key
+        assertEquals(11, indexOf(before, transitionKey))
+        assertEquals(7, indexOf(after, transitionKey))
+
+        assertEquals(
+            4,
+            indexOf(before, firstPageKey) - indexOf(after, firstPageKey),
+            "前端放掉「3 页 + 1 过渡页」= 4 项，下标就整体减 4；" +
+                "分页器若停在旧下标上，读者会正好偏掉一格过渡页的量",
+        )
+    }
+
+    /**
+     * 落到**过渡项**不算换章。
+     *
+     * 过渡项的 `chapterId` 取的是后一章（为了 key 稳定），但"站在两章之间那一张上"不等于
+     * "已经进入下一章"。少了这条判定，当前章会在边界上被反复翻转，而窗口内容依赖当前章，
+     * 于是与分页器的一格抖动合成正反馈环——实测每秒重建 80 多个引擎视图、每次都整图解码，
+     * 把 native heap 顶到 300MB 以上（详见 `chapterEnteredBy` 的说明）。
+     */
+    @Test
+    fun `落到过渡项不算换章`() {
+        val chapters = window("c1", chapter("c1", 3), chapter("c2", 3))
+        val items = chapters.items(showTransitions = true, isFinalChapter = { false })
+
+        val transition = items.first { it is ReaderItem.Transition }
+        // 它的 chapterId 确实是后一章——所以只看 `chapterId` 会误判成"换章了"。
+        assertEquals("c2", transition.chapterId)
+        assertNull(chapterEnteredBy(transition))
+    }
+
+    /** 落到**页**才算进入它所属的那一章。 */
+    @Test
+    fun `落到页才算进入该章`() {
+        val chapters = window("c1", chapter("c1", 3), chapter("c2", 3))
+        val items = chapters.items(showTransitions = true, isFinalChapter = { false })
+
+        val pageOfSecond = items.filterIsInstance<ReaderItem.PageItem>()
+            .first { it.chapter.chapterId == "c2" }
+        assertEquals("c2", chapterEnteredBy(pageOfSecond))
+    }
+
     /** 默认把窗口里最后那一章当作整部的末章（"到底了"标记因此会出现）。 */
     private fun itemsOf(
         window: ViewerChapters,
@@ -428,13 +542,15 @@ class ReaderChaptersTest {
     }
 
     /**
-     * 关键不变量：**已经加载好的章必须留在窗口里**。
+     * 关键不变量：**预载范围内的已加载章必须留在窗口里**，哪怕规划没有点名它。
      *
      * 上一版在换章时把窗口从零重建，丢掉了已经加载好的邻章页清单，于是明明已就绪的
      * 下一章显示成"正在载入"。真机上表现为每跨一章都要等一次加载。
+     *
+     * 这里 c0 不在规划里（规划只要求 c2），但它落在当前章的前一格内，仍必须保留。
      */
     @Test
-    fun `补窗口时不会丢掉已经加载好的章`() {
+    fun `补窗口时不会丢掉范围内的已加载章`() {
         val chapters = (0..5).map { record("c$it") }
         val existing = mapOf(
             "c0" to chapter("c0", 1),
@@ -443,15 +559,60 @@ class ReaderChaptersTest {
             "c5" to chapter("c5", 1),
         )
 
-        // 规划只要求 c0/c1，但 c2 与 c5 已经加载好了 → 必须全部保留。
+        // 规划只点名 c2，但 c0 与 c1 也在范围内且已加载 → 必须保留；
+        // c5 在范围之外 → 从窗口里放掉（页清单仍留在 `loaded`，往回翻不会重读）。
         val (window, _) = buildWindow(
             chapterList = chapters,
             currentChapterId = "c1",
-            plan = PreloadPlan(previousIndices = listOf(0), nextIndices = listOf(2)),
+            plan = PreloadPlan(previousIndices = emptyList(), nextIndices = listOf(2)),
             existing = existing,
         )
 
-        assertEquals(listOf("c0", "c1", "c2", "c5"), window.map { it.chapterId })
+        assertEquals(listOf("c0", "c1", "c2"), window.map { it.chapterId })
+    }
+
+    /**
+     * 窗口必须有界：范围之外的已加载章不再留在窗口里。
+     *
+     * 否则整部漫画读过多少章、项列表里就有多少章，"预载窗口"会退化成"全部已读章节"。
+     * 这既让 `nearWindowEdge` 的边界判据（它假设窗口约等于预载范围那么大）永不触发，
+     * 也让上千章的漫画把整个目录的页清单堆在内存里。放掉只是不显示，不是丢数据。
+     */
+    @Test
+    fun `范围之外的已加载章不留在窗口里`() {
+        val chapters = (0..9).map { record("c$it") }
+        val existing = (0..9).associate { "c$it" to chapter("c$it", 1) }
+
+        val (window, currentIndex) = buildWindow(
+            chapterList = chapters,
+            currentChapterId = "c5",
+            plan = PreloadPlan(previousIndices = listOf(4), nextIndices = listOf(6)),
+            existing = existing,
+        )
+
+        assertEquals(listOf("c4", "c5", "c6"), window.map { it.chapterId })
+        assertEquals(1, currentIndex)
+    }
+
+    /**
+     * 规划为空时窗口也至少含当前章的前后各一格。
+     *
+     * 过渡项只有"后一章也在窗口里"才会生成，因此范围两侧各留一格是**跨章翻页的必要条件**：
+     * 少了它，读者翻到本章末页会直接卡住，既过不去也没有"到底了"的提示。
+     */
+    @Test
+    fun `规划为空时窗口仍保留前后各一格`() {
+        val chapters = (0..3).map { record("c$it") }
+        val existing = chapters.associate { it.chapterId to chapter(it.chapterId, 1) }
+
+        val (window, _) = buildWindow(
+            chapterList = chapters,
+            currentChapterId = "c1",
+            plan = PreloadPlan.EMPTY,
+            existing = existing,
+        )
+
+        assertEquals(listOf("c0", "c1", "c2"), window.map { it.chapterId })
     }
 
     @Test

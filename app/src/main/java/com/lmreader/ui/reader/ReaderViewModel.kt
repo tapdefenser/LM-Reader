@@ -309,26 +309,61 @@ class ReaderViewModel(
     }
 
     /** 重新组装项列表并按项身份把读者放回原处。 */
+    /**
+     * 把窗口写成项列表，并按项身份把读者放回原处。
+     *
+     * ## 窗口没变时**必须什么都不做**
+     *
+     * 这里曾经无条件替换 `items`（哪怕内容一模一样），而 `items` 一变，分页器就要重新
+     * 布局：它的「滚动偏移 ↔ 下标」映射在**右到左**模式（`reverseLayout`）下会随手抖动一格。
+     * 这一格足以让落页回报指到相邻的另一章，而当前章一翻转窗口内容就跟着翻转——
+     * **表长变 → 抖一格 → 章翻转 → 表长再变**，形成每帧一轮的正反馈环，实测每秒重建
+     * 80 多个引擎视图、每次都整图解码，把 native heap 顶到 300MB。
+     *
+     * 判据是**章的 id 序列**而不是列表实例：只要窗口还是那几章（页数与设置都没动），
+     * 项列表就一定等价，没有任何理由让分页器重排。
+     */
     private fun writeItems(chapters: ViewerChapters) {
         _state.update { state ->
-            val items = chapters.items(
-                showTransitions = state.settings.showChapterTransitions,
-                isFinalChapter = { id -> state.chapterList.lastOrNull()?.chapterId == id },
-            )
-            state.copy(
-                chapters = chapters,
-                items = items,
-                currentPageIndex = reanchorIndex(state.items, state.currentPageIndex, items),
-            )
+            val sameWindow = state.chapters?.window?.map { it.chapterId } ==
+                chapters.window.map { it.chapterId }
+            if (sameWindow) {
+                // 只同步"当前章在窗口里的下标"，`items` 原样保留（保持同一个实例）。
+                if (state.chapters?.currentIndex == chapters.currentIndex) {
+                    state
+                } else {
+                    state.copy(chapters = chapters)
+                }
+            } else {
+                val items = chapters.items(
+                    showTransitions = state.settings.showChapterTransitions,
+                    isFinalChapter = { id -> state.chapterList.lastOrNull()?.chapterId == id },
+                )
+                val newIndex = reanchorIndex(state.items, state.currentPageIndex, items)
+                state.copy(
+                    chapters = chapters,
+                    items = items,
+                    currentPageIndex = newIndex,
+                )
+            }
         }
     }
 
-    /** 按当前状态重算窗口；设置变化与邻章加载完成都走这里。 */
+    /**
+     * 按当前状态重算窗口，并把新规划出来的章排上加载。
+     *
+     * **必须同时做这两件事。** 这里出过一个很隐蔽的 bug：`rebuild()` 只重排窗口、
+     * 不请求加载，于是加载链只在"上一章加载完成"时前进一次——进入第 1 章时请求了
+     * 2/3/4，三章都完成后 `chaptersToLoad` 仍然只返回 2/3/4（已在 `loadJobs` 里，被跳过），
+     * **链就断了**。读者于是被永久关在最初的这几章里（真机反馈：最多只能读到 4 章）。
+     * 读者每推进一章都要重新规划，因此规划与加载必须一起发生。
+     */
     private fun rebuild() {
         val current = _state.value.chapters?.currentChapterId
             ?: _state.value.chapterList.firstOrNull()?.chapterId
             ?: return
         fillWindow(current)
+        loadNeighbors()
     }
 
     private fun loadNeighbors() {
@@ -347,21 +382,35 @@ class ReaderViewModel(
      *
      * 完成后把它写进 `loaded` 并重建列表。因为窗口固定、且重建走 [reanchorIndex]，
      * 页与过渡页是**插进**已有列表的，读者的位置不变。
+     *
+     * 两个守卫的意思不同，都不能省：
+     * - `loadJobs` 里已有 → 同一章正在加载，别重复排队；
+     * - `loaded` 里已有 → 这一章**已经有结论**（成功或失败），不必再来一次。
+     *   失败的章由「重试」显式重来（[retryFailedChapters] 会先把它从 `loaded` 里摘掉），
+     *   否则每次 rebuild 都会重试失败章，变成无限重试。
      */
     private fun loadOne(record: ChapterRecord, treeUri: String) {
         if (loadJobs.containsKey(record.chapterId)) return
+        if (loaded.containsKey(record.chapterId)) return
+        // 占位用的页源在协程外先取好：启动之后再取可能已经换章（`?: return@launch`
+        // 会把后面的重建一起跳过，那是另一个坑）。
+        val fallbackSource = _state.value.chapters?.current?.source ?: return
         loadJobs[record.chapterId] = viewModelScope.launch {
-            val result = loadChapter(record, treeUri)
-            loaded[record.chapterId] = result ?: ViewerChapter(
-                chapter = record,
-                pages = emptyList(),
-                source = _state.value.chapters?.current?.source
-                    ?: return@launch,
-                state = ViewerChapter.LoadState.FAILED,
-            )
-            rebuild()
-            loadNeighbors()
-            warmPrefetch()
+            try {
+                val result = loadChapter(record, treeUri)
+                loaded[record.chapterId] = result ?: ViewerChapter(
+                    chapter = record,
+                    pages = emptyList(),
+                    source = fallbackSource,
+                    state = ViewerChapter.LoadState.FAILED,
+                )
+                rebuild()
+                warmPrefetch()
+            } finally {
+                // 任务结束时把登记撤掉，这样"正在加载"这个判断才始终是真的。
+                // 一直留着会让 `loadJobs` 变成"曾经请求过"的集合，语义就错了。
+                loadJobs.remove(record.chapterId)
+            }
         }
     }
 
@@ -420,18 +469,24 @@ class ReaderViewModel(
         _state.update { it.copy(currentPageIndex = absoluteIndex) }
         val item = snapshot.items[absoluteIndex]
         // 当前章由"当前项属于哪一章"反推——不再有提升动作。
-        val chapterId = item.chapterId
+        // [chapterEnteredBy] 说明为什么**过渡项不算换章**，以及少了这条判定会怎样。
+        val entered = chapterEnteredBy(item)
         if (item is ReaderItem.PageItem) saveProgressAt(item)
         val moved = _state.value
-        if (moved.chapters?.currentChapterId != chapterId) {
+        val chapterChanged = entered != null && moved.chapters?.currentChapterId != entered
+        if (chapterChanged) {
             _state.update { state ->
                 val window = state.chapters ?: return@update state
-                val position = window.indexOf(chapterId)
+                val position = window.indexOf(entered!!)
                 if (position < 0) state else state.copy(chapters = window.copy(currentIndex = position))
             }
         }
-        // 快走到窗口边缘时补窗口；补完按页身份定位，画面不跳。
-        if (nearWindowEdge()) rebuild()
+        // 只有**换了章**才需要重新规划窗口。
+        //
+        // 窗口只依赖"当前章 + 设置 + 已加载章的页数"，这些都不会因为同章内翻页而改变；
+        // 原来每次落到窗口边缘都重建一次，在一次抖动环里就是 1700 多次无谓重建。
+        // 加载完成与设置变更各有自己的重建入口（见 [loadOne] / 设置写入），不会漏。
+        if (chapterChanged && nearWindowEdge()) rebuild()
     }
 
     /** 读者是否已经走到窗口靠边的章（再往前一寸就该补窗口了）。 */
@@ -574,17 +629,31 @@ class ReaderViewModel(
         _state.update { it.copy(tapZoneOverlayVisible = false) }
     }
 
-    /** 重试当前窗口里加载失败的章。 */
+    /**
+     * 重试加载失败的章。
+     *
+     * 关键是**先把失败结论从 `loaded` 里摘掉**：`loadOne` 会把"已经有结论"（含失败）的章
+     * 直接跳过，不摘掉的话这里点了重试也不会真的重来。失败章可能已经不在当前窗口里
+     * （读者翻过去了），所以按 `loaded` 里所有失败项来重试，而不是只扫窗口。
+     */
     fun retryFailedChapters() {
         val snapshot = _state.value
         val treeUri = snapshot.sourceTreeUri ?: return
         val list = snapshot.chapterList
-        for (chapter in snapshot.chapters?.window.orEmpty()) {
-            if (chapter.state != ViewerChapter.LoadState.FAILED) continue
-            loadJobs.remove(chapter.chapterId)
-            val record = list.firstOrNull { it.chapterId == chapter.chapterId } ?: continue
+        val failed = linkedSetOf<String>()
+        loaded.forEach { (id, chapter) ->
+            if (chapter.state == ViewerChapter.LoadState.FAILED) failed += id
+        }
+        snapshot.chapters?.window.orEmpty().forEach { chapter ->
+            if (chapter.state == ViewerChapter.LoadState.FAILED) failed += chapter.chapterId
+        }
+        for (id in failed) {
+            loaded.remove(id)
+            loadJobs.remove(id)?.cancel()
+            val record = list.firstOrNull { it.chapterId == id } ?: continue
             loadOne(record, treeUri)
         }
+        rebuild()
     }
 
     // ------------------------------------------------------------ 设置
