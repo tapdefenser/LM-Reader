@@ -42,6 +42,7 @@ import com.lmreader.core.model.ReadingMode
 import com.lmreader.core.model.TapInvert
 import com.lmreader.core.model.TapZones
 import com.lmreader.core.model.ZoomStart
+import com.lmreader.ui.common.LabeledSlider
 
 /**
  * 阅读设置对话框（Mihon `ReaderSettingsDialog` 的三个分页）。
@@ -270,33 +271,11 @@ private fun GeneralPage(settings: ReaderSettings, onUpdate: ((ReaderSettings) ->
     ToggleRow("显示章节过渡页", settings.showChapterTransitions) { value ->
         onUpdate { it.copy(showChapterTransitions = value) }
     }
-    Spacer(Modifier.height(12.dp))
-    LabeledSlider(
-        label = "预载页数",
-        value = settings.preloadPages.toFloat(),
-        range = ReaderSettings.PRELOAD_PAGES_MIN.toFloat()..ReaderSettings.PRELOAD_PAGES_MAX.toFloat(),
-        steps = (ReaderSettings.PRELOAD_PAGES_MAX - ReaderSettings.PRELOAD_PAGES_MIN - 1).coerceAtLeast(0),
-        display = "${settings.preloadPages} 页",
-    ) { value -> onUpdate { it.copy(preloadPages = value.toInt()) } }
-    Spacer(Modifier.height(12.dp))
-    // 「缓存章节数」= 当前章前后各保留多少章的**页清单**。
-    // 它决定"往回翻/往回跳章要不要重新枚举目录"，也顺带决定显示窗口有多大
-    // （窗口 = 已缓存的章，见 `ReaderViewModel.fillWindow`）。
-    LabeledSlider(
-        label = "缓存章节数（前后各）",
-        value = settings.cachedChaptersPerSide.toFloat(),
-        range = ReaderSettings.CACHED_CHAPTERS_MIN.toFloat()..ReaderSettings.CACHED_CHAPTERS_MAX.toFloat(),
-        steps = (ReaderSettings.CACHED_CHAPTERS_MAX - ReaderSettings.CACHED_CHAPTERS_MIN - 1)
-            .coerceAtLeast(0),
-        display = "${settings.cachedChaptersPerSide} 章",
-    ) { value -> onUpdate { it.copy(cachedChaptersPerSide = value.toInt()) } }
-    Text(
-        text = "缓存越大，往回翻得越顺；占的是内存里的页清单（几十 KB 量级）。" +
-            "调小后会按「离当前章最远」的顺序释放，当前章与相邻章永不清除。",
-        style = MaterialTheme.typography.labelSmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.padding(top = 4.dp),
-    )
+    Spacer(Modifier.height(8.dp))
+    // 「预载页数」与「缓存章节数」**不在这里**：它们只在打开阅读器之前生效（分别决定
+    // 预取多少字节、缓存多少章的页清单），放进阅读中的设置面板会让人以为改了就立刻生效。
+    // 入口在 设置 → 阅读器，这里只留一句指路。
+    LabeledText("预载页数与缓存章节数在「设置 → 阅读器」里调整，改动在下次打开阅读器时生效")
 }
 
 /**
@@ -408,24 +387,4 @@ private fun ToggleRow(title: String, checked: Boolean, onChange: (Boolean) -> Un
         Text(title, style = MaterialTheme.typography.bodyMedium)
         Switch(checked = checked, onCheckedChange = onChange)
     }
-}
-
-@Composable
-private fun LabeledSlider(
-    label: String,
-    value: Float,
-    range: ClosedFloatingPointRange<Float>,
-    steps: Int,
-    display: String,
-    onChange: (Float) -> Unit,
-) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween,
-    ) {
-        Text(label, style = MaterialTheme.typography.bodyMedium)
-        Text(display, style = MaterialTheme.typography.bodySmall)
-    }
-    Slider(value = value, onValueChange = onChange, valueRange = range, steps = steps)
 }

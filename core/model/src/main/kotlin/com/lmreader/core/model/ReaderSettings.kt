@@ -363,14 +363,21 @@ data class ReaderSettings(
         /** [preloadPages] 的默认预算：一章的量级，够盖住一次翻页的等待。 */
         const val PRELOAD_PAGES_DEFAULT = 9
 
-        /** [preloadPages] 的上下限。下限 2 见字段说明；上限 19 让"两侧各 9 页"仍在合理范围。 */
-        const val PRELOAD_PAGES_MIN = 2
-        const val PRELOAD_PAGES_MAX = 19
+        /**
+         * [preloadPages] 的上下限。
+         *
+         * 下限 4 而不是更小：保留的已解码页数按 `preloadPages / 4`（上限 2）算，
+         * 4 正好对应"两侧各留一页"，再小就退化成 0——落页那一刻会露出一张还没解码完的
+         * 页（横向与竖向分页都有这个问题，见 `PagerReader.adjacentPagesAlive`）。
+         * 上限 20 让"两侧各 10 页"恰好封顶。
+         */
+        const val PRELOAD_PAGES_MIN = 4
+        const val PRELOAD_PAGES_MAX = 20
 
         /** [cachedChaptersPerSide] 的默认值与上下限。理由见字段说明。 */
         const val CACHED_CHAPTERS_DEFAULT = 10
         const val CACHED_CHAPTERS_MIN = 4
-        const val CACHED_CHAPTERS_MAX = 50
+        const val CACHED_CHAPTERS_MAX = 15
     }
 }
 

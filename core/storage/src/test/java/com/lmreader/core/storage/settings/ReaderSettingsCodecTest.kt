@@ -129,7 +129,7 @@ class ReaderSettingsCodecTest {
             keepScreenOn = true,
             showChapterTransitions = false,
             preloadPages = 17,
-            cachedChaptersPerSide = 23,
+            cachedChaptersPerSide = 12,
             showTapZoneOverlayOnStart = true,
             showTapZoneOverlayOnce = false,
             showReadingMode = false,

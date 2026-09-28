@@ -36,6 +36,7 @@ import androidx.compose.ui.unit.dp
 @Composable
 fun SettingsHomeScreen(
     onOpenPaths: () -> Unit,
+    onOpenReader: () -> Unit,
     onBack: () -> Unit,
 ) {
     Scaffold(
@@ -71,9 +72,9 @@ fun SettingsHomeScreen(
             )
             SettingsEntry(
                 title = "阅读器",
-                subtitle = "方向、连续模式、缩放、裁白边、音量键（P2）",
-                enabled = false,
-                onClick = {},
+                subtitle = "预载页数、缓存章节数（只在打开阅读器前生效）",
+                enabled = true,
+                onClick = onOpenReader,
             )
             SettingsEntry(
                 title = "翻译配置",

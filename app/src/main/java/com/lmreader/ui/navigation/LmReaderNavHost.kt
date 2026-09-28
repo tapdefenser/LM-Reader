@@ -28,6 +28,7 @@ import com.lmreader.ui.library.LibraryScreen
 import com.lmreader.ui.reader.ReaderScreen
 import com.lmreader.ui.reader.ReaderViewModel
 import com.lmreader.ui.settings.SettingsHomeScreen
+import com.lmreader.ui.settings.reader.ReaderSettingsScreen
 import com.lmreader.ui.settings.paths.GalleryPathsScreen
 import com.lmreader.ui.settings.paths.GalleryPathsSettingsScreen
 import kotlinx.coroutines.flow.first
@@ -40,6 +41,7 @@ object Routes {
     const val BOOKSHELF = "bookshelf"
     const val SETTINGS = "settings"
     const val SETTINGS_PATHS = "settings/paths"
+    const val SETTINGS_READER = "settings/reader"
     const val MANGA_DETAIL = "manga/{mangaId}"
     const val READER = "reader/{mangaId}/{chapterId}?page={page}"
     const val TRANSLATION_QUEUE = "queue/translation"
@@ -183,12 +185,20 @@ fun LmReaderNavHost(
                 composable(Routes.SETTINGS) {
                     SettingsHomeScreen(
                         onOpenPaths = { navController.navigateSingleTop(Routes.SETTINGS_PATHS) },
+                        onOpenReader = { navController.navigateSingleTop(Routes.SETTINGS_READER) },
                         onBack = { navController.popBackStack() },
                     )
                 }
 
                 composable(Routes.SETTINGS_PATHS) {
                     GalleryPathsSettingsScreen(
+                        container = container,
+                        onBack = { navController.popBackStack() },
+                    )
+                }
+
+                composable(Routes.SETTINGS_READER) {
+                    ReaderSettingsScreen(
                         container = container,
                         onBack = { navController.popBackStack() },
                     )
