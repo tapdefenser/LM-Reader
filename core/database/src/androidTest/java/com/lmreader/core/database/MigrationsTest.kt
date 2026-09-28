@@ -5,6 +5,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -224,6 +225,52 @@ class MigrationsTest {
         db.query("SELECT COUNT(*) FROM manga_glossary WHERE source = 'Yuu-kun'").use { cursor ->
             cursor.moveToFirst()
             assertEquals(1, cursor.getInt(0))
+        }
+
+        db.close()
+    }
+
+    @Test
+    fun `v8到v9加滚动计数两列且不动既有章节数`() {
+        helper.createDatabase(TEST_DB, 8).use { db ->
+            db.execSQL(
+                "INSERT INTO mangas (mangaId, anchorDocumentId, sourceId, sourceKind, layoutMode, " +
+                    "displayName, sortKey, sourceOrderIndex, author, hasMetadata, summary, " +
+                    "coverDocumentId, coverChapterId, chapterCount, chapterCountKnown, availability, " +
+                    "discoveryGeneration, discoveredAt, updatedAt, translationAutoDetectSource) " +
+                    "VALUES ('m1', '/lib/A', 's1', 'IMAGE_DIRECTORY', 'MULTI_CHAPTER', 'A', 'a', 0, " +
+                    "NULL, 0, NULL, NULL, NULL, 1, 0, 'AVAILABLE', 1, 0, 0, 0)",
+            )
+        }
+
+        val db = helper.runMigrationsAndValidate(TEST_DB, 9, true, Migrations.MIGRATION_8_9)
+
+        // 升级后：两列存在且为空（"从未数过"），而章节数那一对**一个字节都不变**——
+        // 那一位是同步逻辑删除章节行的闸门，滚动计数绝不能顺手把它打开。
+        db.query(
+            "SELECT chapterCount, chapterCountKnown, countedChapterCount, countedChapterCountAt " +
+                "FROM mangas WHERE mangaId = 'm1'",
+        ).use { cursor ->
+            assertTrue(cursor.moveToFirst())
+            assertEquals(1, cursor.getInt(0))
+            assertEquals(0, cursor.getInt(1))
+            assertTrue(cursor.isNull(2))
+            assertTrue(cursor.isNull(3))
+        }
+
+        // 新列可写，且写它们不影响 `chapterCountKnown`。
+        db.execSQL(
+            "UPDATE mangas SET countedChapterCount = 12, countedChapterCountAt = 99 " +
+                "WHERE mangaId = 'm1'",
+        )
+        db.query(
+            "SELECT chapterCountKnown, countedChapterCount, countedChapterCountAt " +
+                "FROM mangas WHERE mangaId = 'm1'",
+        ).use { cursor ->
+            assertTrue(cursor.moveToFirst())
+            assertEquals("滚动计数不得打开删除闸门", 0, cursor.getInt(0))
+            assertEquals(12, cursor.getInt(1))
+            assertEquals(99, cursor.getLong(2))
         }
 
         db.close()

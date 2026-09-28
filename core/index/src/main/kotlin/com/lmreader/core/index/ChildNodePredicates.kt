@@ -25,8 +25,12 @@ fun ChildNode.isSupportedImage(): Boolean {
 /**
  * 归档/PDF 判定（开发文档 5.2）。扩展名不区分大小写；扩展名缺失时用 MIME 兜底，
  * 因为部分提供方对 CBZ 报 `application/x-zip-compressed` 甚至不报扩展名。
+ *
+ * 与 [isSupportedImage] 同理必须是 public：滚动时的章节计数（`core:storage` 的
+ * `ChapterCounter`）要给出与扫描器**同一个**判定，否则"扫描说这是 3 章、卡片说 5 章"
+ * 这类分叉会以"数字对不上"的形式出现，而且没有任何报错。
  */
-internal fun ChildNode.isArchiveFile(): Boolean {
+fun ChildNode.isArchiveFile(): Boolean {
     if (isDirectory) return false
     val extension = MimeTypes.extensionOf(name)
     if (extension != null && extension in MimeTypes.ARCHIVE_EXTENSIONS) return true

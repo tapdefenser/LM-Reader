@@ -273,6 +273,27 @@ object Migrations {
         }
     }
 
+    /**
+     * v8 → v9：漫画行加"滚动计数"两列。
+     *
+     * 只加列、不改语义：多章节漫画的发现阶段只探测一个章节，`chapterCount` 因此长期是
+     * 下限 1，界面上会显示"已发现 1 章，更新中"——用户口径认为这有歧义，改成**滚动/搜索
+     * 到可见时**真的数一次（与封面同一套懒加载）。
+     *
+     * 为什么不直接写 `chapterCount`：它和 `chapterCountKnown` 是一对，而后者同时是同步
+     * 逻辑"可以删掉多余章节行"的闸门（`MangaRepositoryImpl.incomingIsComplete`）。滚动
+     * 计数**没有**枚举并落库章节清单，因此绝不能打开那个闸门——分开两列，各写各的。
+     *
+     * 两列都可空：`countedChapterCountAt` 为 null = 从未数过；`countedChapterCount` 为
+     * null 而时间非 null = 数过但没数出可读章节（照样不再数第二次，理由同封面）。
+     */
+    val MIGRATION_8_9 = object : Migration(8, 9) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("ALTER TABLE mangas ADD COLUMN countedChapterCount INTEGER")
+            db.execSQL("ALTER TABLE mangas ADD COLUMN countedChapterCountAt INTEGER")
+        }
+    }
+
     val ALL: Array<Migration> =
         arrayOf(
             MIGRATION_1_2,
@@ -282,5 +303,6 @@ object Migrations {
             MIGRATION_5_6,
             MIGRATION_6_7,
             MIGRATION_7_8,
+            MIGRATION_8_9,
         )
 }

@@ -52,7 +52,7 @@ import com.lmreader.core.model.StyleMode
         DirectorySnapshotEntity::class,
         ScanRunEntity::class,
     ],
-    version = 8,
+    version = 9,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)

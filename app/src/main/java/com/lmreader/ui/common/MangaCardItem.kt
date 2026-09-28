@@ -199,19 +199,27 @@ fun MangaGridItem(
 }
 
 /**
- * 章节状态文案；未知总数不伪造成确定值（开发文档 5.1、8.1）。
+ * 章节状态文案。
  *
- * 返回 null = **不显示**：单章节模式的卡片刻意不写章节数（用户口径："共一章的就不要显示
- * 章节数了"）——那种卡片旁边已经有「单章节」徽标，再跟一句"共 1 章"是同一件事说两遍。
+ * 三种取值，只有前两种会显示：
  *
- * 只吃掉"已经知道就是 1 章"这一种情况，"更新中 / 待更新"照旧显示：那两个状态是**可行动**的
- * 信息（索引还没补齐），跟"确切地只有一章"不是一回事。
+ * 1. **章节清单完整**（用户点过「更新章节」，或单章节模式的结构定义）→ `共 N 章`；
+ * 2. **滚动/搜索时数过**（`countedChapterCount`）→ 也是 `共 N 章`：它是一次真实目录列举
+ *    的结果，与完整清单的区别只在于没有落库章节行；有完整值时优先用完整值（更准）；
+ * 3. 其余（还没数到、或数不出可读章节）→ **null，什么都不显示**。
+ *
+ * 第 3 条是用户口径：多章节漫画发现阶段只探测一个章节，`chapterCount` 长期是下限 1，
+ * 把它显示成「已发现 1 章，更新中」有歧义（"到底是 1 章还是正在数？"）。
+ * 既然章节数现在会随滚动/搜索自动补上，那就在补上之前干脆不写。
+ *
+ * 不复用 `chapterCountKnown` 之外的判断：那个标志同时是同步逻辑删除章节行的闸门，
+ * 与显示无关（见 `MangaCard.countedChapterCount`）。
  */
 internal fun chapterLabel(card: MangaCard): String? = when {
-    card.layoutMode == LayoutMode.SINGLE_CHAPTER && card.chapterCountKnown -> null
+    card.layoutMode == LayoutMode.SINGLE_CHAPTER -> null
     card.chapterCountKnown && card.chapterCount != null -> "共 ${card.chapterCount} 章"
-    card.chapterCount != null -> "已发现 ${card.chapterCount} 章，更新中"
-    else -> "章节待更新"
+    card.countedChapterCount != null -> "共 ${card.countedChapterCount} 章"
+    else -> null
 }
 
 @Composable

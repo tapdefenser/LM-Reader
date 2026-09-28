@@ -10,6 +10,7 @@ import com.lmreader.core.database.entity.toEntity
 import com.lmreader.core.index.ChapterOrdering
 import com.lmreader.core.model.BookshelfSort
 import com.lmreader.core.model.ChapterRecord
+import com.lmreader.core.model.ChapterCountProbeTarget
 import com.lmreader.core.model.CoverProbeTarget
 import com.lmreader.core.model.MangaAvailability
 import com.lmreader.core.model.MangaBackfillTarget
@@ -150,7 +151,7 @@ internal class MangaRepositoryImpl(
      */
     override suspend fun coverProbeTargets(mangaIds: List<String>): List<CoverProbeTarget> {
         if (mangaIds.isEmpty()) return emptyList()
-        val rows = mangaDao.coverTargets(mangaIds)
+        val rows = mangaDao.probeTargets(mangaIds)
         if (rows.isEmpty()) return emptyList()
         val firstChapters = chapterDao.getByMangas(rows.map { it.mangaId })
             .groupBy { it.mangaId }
@@ -164,6 +165,30 @@ internal class MangaRepositoryImpl(
                 firstChapter = firstChapters[row.mangaId],
             )
         }
+    }
+
+    /**
+     * 章节计数的探测输入：**只查一次**（不需要章节表）。
+     *
+     * 与 [coverProbeTargets] 的差别就在这儿：封面要"第一章是哪一章"，而数章节数只要
+     * 打开锚点目录列一遍子项，因此这次多出来的第二次查询可以省掉。
+     */
+    override suspend fun chapterCountProbeTargets(
+        mangaIds: List<String>,
+    ): List<ChapterCountProbeTarget> {
+        if (mangaIds.isEmpty()) return emptyList()
+        return mangaDao.probeTargets(mangaIds).map { row ->
+            ChapterCountProbeTarget(
+                mangaId = row.mangaId,
+                anchorDocumentId = row.anchorDocumentId,
+                layoutMode = row.layoutMode,
+                sourceTreeUri = row.sourceTreeUri,
+            )
+        }
+    }
+
+    override suspend fun markChapterCounted(mangaId: String, count: Int?, at: Long) {
+        mangaDao.markChapterCounted(mangaId, count, at)
     }
 
     override suspend fun updateChapterPageInfo(

@@ -120,6 +120,26 @@ interface MangaRepository {
     suspend fun coverProbeTargets(mangaIds: List<String>): List<CoverProbeTarget>
 
     /**
+     * 批量取**章节计数**探测输入（漫画 + 锚点目录 + 布局模式 + 来源树 URI）。
+     *
+     * 与 [coverProbeTargets] 同源同规则（都只返回存在且来源仍有效的卡片），只是服务
+     * 另一件事：滚动/搜索到可见时数一次章节数（用户口径："滚动+搜索结果时加载，
+     * 不要做成扫描时加载"）。
+     */
+    suspend fun chapterCountProbeTargets(mangaIds: List<String>): List<ChapterCountProbeTarget>
+
+    /**
+     * 写入一次章节计数结果。
+     *
+     * `count = null` 表示"数过但没数出可读章节"，同样要落库标记时间——否则每次滚动
+     * 都会对同一批必然失败的卡片重来一遍。
+     *
+     * **不得触碰 `chapterCount`/`chapterCountKnown`**：那是章节清单完整性的声明，
+     * 也是同步逻辑删除多余章节行的闸门，而这里并没有落库章节清单。
+     */
+    suspend fun markChapterCounted(mangaId: String, count: Int?, at: Long)
+
+    /**
      * 取补全阶段需要的工作投影（开发文档 6.1 第 2 步）。
      *
      * 返回 null 表示漫画行已不存在（例如用户刚删掉了整个来源）。

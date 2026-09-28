@@ -94,6 +94,24 @@ data class MangaEntity(
     val coverChapterId: String?,
     val chapterCount: Int?,
     val chapterCountKnown: Boolean,
+    /**
+     * 滚动/搜索时**只数数量**得到的章节数；null = 数过但没数出可读章节。
+     *
+     * 为什么不复用 [chapterCount]：那个列与 [chapterCountKnown] 是一对，后者同时是
+     * 同步逻辑"可以删掉多余章节行"的闸门。滚动计数只列了一次锚点目录、**没有**枚举
+     * 并落库章节清单，所以绝不能把闸门打开；两者分开之后各写各的，互不影响。
+     *
+     * 取数时机与封面一致（用户口径："滚动 + 搜索结果时加载，不要做成扫描时加载"）。
+     */
+    val countedChapterCount: Int? = null,
+    /**
+     * 滚动计数的时间；null = 从未数过。
+     *
+     * 与 [countedChapterCount] 的分工和封面那对一样：后者是**结果**（可能为 null =
+     * 没数出章节），本列是**过程**（数过一次就不再数，失败也算数过，否则每次滚动都会
+     * 对同一批必然失败的卡片重来一遍）。
+     */
+    val countedChapterCountAt: Long? = null,
     val availability: MangaAvailability,
     val discoveryGeneration: Long,
     val discoveredAt: Long,

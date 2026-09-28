@@ -16,11 +16,14 @@ import com.lmreader.core.model.ResolvedCover
 import com.lmreader.core.model.ShelfRepository
 import com.lmreader.core.model.SourceRepository
 import com.lmreader.core.model.StyleMode
+import com.lmreader.core.model.needsChapterCountProbe
 import com.lmreader.core.storage.cover.CoverMetadataWriter
 import com.lmreader.core.storage.cover.CoverResolver
+import com.lmreader.core.storage.scan.ChapterCounter
 import com.lmreader.core.storage.scan.ChapterSyncOutcome
 import com.lmreader.core.storage.scan.MangaChapterSyncer
 import com.lmreader.core.storage.settings.AppPreferences
+import com.lmreader.ui.common.ChapterCountProbeQueue
 import com.lmreader.ui.common.CoverProbeQueue
 import com.lmreader.ui.paging.PageSlice
 import com.lmreader.ui.paging.PagingState
@@ -48,6 +51,7 @@ class BookshelfViewModel(
     private val preferences: AppPreferences,
     private val coverResolver: CoverResolver,
     private val coverMetadataWriter: CoverMetadataWriter,
+    private val chapterCounter: ChapterCounter,
 ) : ViewModel() {
 
     private val paging = PagingState<MangaCard>(idOf = { it.mangaId })
@@ -63,6 +67,15 @@ class BookshelfViewModel(
         // 与图库同一条落库路径：写封面的同时更新简介（用户要求）。
         persist = { mangaId, cover, at -> coverMetadataWriter.write(mangaId, cover, at) },
         onResolved = ::onCoverResolved,
+    )
+
+    /** 章节计数懒加载队列（与图库同一套：滚动/搜索到可见时数一次，取过就不再数）。 */
+    private val chapterCounts = ChapterCountProbeQueue(
+        scope = viewModelScope,
+        probeTargets = mangaRepository::chapterCountProbeTargets,
+        count = chapterCounter::count,
+        persist = { mangaId, count, at -> mangaRepository.markChapterCounted(mangaId, count, at) },
+        onCounted = ::onChapterCounted,
     )
 
     /** 防抖用的查询流；见 [onQueryChange]。 */
@@ -382,10 +395,11 @@ class BookshelfViewModel(
     private fun resetSession() {
         paging.reset()
         coverProbes.clear()
+        chapterCounts.clear()
     }
 
     /**
-     * 上报当前可见的卡片下标（与图库同一套规则：滚动到可见才取封面）。
+     * 上报当前可见的卡片下标（与图库同一套规则：滚动到可见才取封面 / 才数章节数）。
      *
      * 书架通常只有几十项，但"取过一次就不再取"的收益是一样的：一份 300 部的收藏
      * 若每次打开都重取，代价就是 300 次目录枚举。
@@ -393,13 +407,17 @@ class BookshelfViewModel(
     fun onCardsVisible(indices: List<Int>) {
         if (indices.isEmpty()) return
         val items = paging.items
-        val needsProbe = ArrayList<String>(indices.size)
+        val needsCover = ArrayList<String>(indices.size)
+        val needsCount = ArrayList<String>(indices.size)
         for (index in indices) {
             val card = items.getOrNull(index) ?: continue
-            if (card.coverDocumentId != null || card.coverProbedAt != null) continue
-            needsProbe += card.mangaId
+            if (card.coverDocumentId == null && card.coverProbedAt == null) {
+                needsCover += card.mangaId
+            }
+            if (card.needsChapterCountProbe) needsCount += card.mangaId
         }
-        coverProbes.request(needsProbe)
+        coverProbes.request(needsCover)
+        chapterCounts.request(needsCount)
     }
 
     /** 封面探测完成：就地刷新那一张卡片，不重建分页会话（重建会打回第一页）。 */
@@ -410,6 +428,14 @@ class BookshelfViewModel(
                 coverChapterId = cover?.coverChapterId,
                 coverProbedAt = at,
             )
+        }
+        if (updated) _state.update { it.copy(items = paging.items.toList()) }
+    }
+
+    /** 章节计数完成：同样就地刷新那一张（用户口径：滚动到可见时加载，与封面同规则）。 */
+    private fun onChapterCounted(mangaId: String, count: Int?, at: Long) {
+        val updated = paging.updateItem(mangaId) { card ->
+            card.copy(countedChapterCount = count, countedChapterCountAt = at)
         }
         if (updated) _state.update { it.copy(items = paging.items.toList()) }
     }
@@ -435,6 +461,7 @@ class BookshelfViewModel(
                     preferences = container.preferences,
                     coverResolver = container.coverResolver,
                     coverMetadataWriter = container.coverMetadataWriter,
+                    chapterCounter = container.chapterCounter,
                 )
             }
         }

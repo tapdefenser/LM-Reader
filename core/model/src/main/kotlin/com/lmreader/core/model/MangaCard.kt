@@ -37,6 +37,17 @@ data class MangaCard(
     val layoutMode: LayoutMode,
     val chapterCount: Int?,
     val chapterCountKnown: Boolean,
+    /**
+     * 滚动/搜索时数出来的章节数（只数数量，不落章节清单）；null = 还没数过或没数出章节。
+     *
+     * 为什么卡片需要它：多章节漫画的发现阶段只探测一个章节，`chapterCount` 因此长期是
+     * "下限 1"。把这个下限当章节数显示会产生歧义（用户口径："不要做成已发现一章，
+     * 更新中，这会产生歧义"），于是改成**滚动到可见时**真的去数一次（与封面同一套懒加载），
+     * 数出来之前干脆不显示章节数。
+     */
+    val countedChapterCount: Int? = null,
+    /** 计数时间；null = 从未数过（取过一次就不再取，与 [coverProbedAt] 同规则）。 */
+    val countedChapterCountAt: Long? = null,
     val inShelf: Boolean,
     val availability: MangaAvailability,
     /**
@@ -71,6 +82,33 @@ data class CoverProbeTarget(
      * 第一章（见 `StructureScanner` 的偏离记录），封面必须是第一页（开发文档 7.2）。
      */
     val firstChapter: ChapterRecord?,
+)
+
+/**
+ * 这张卡片该不该在滚动/搜索到可见时去数一次章节数。
+ *
+ * 两个条件缺一不可：
+ * - **章节清单还不完整**（`chapterCountKnown == false`）：完整清单里的 `chapterCount`
+ *   本来就是准确值，再数一次纯属浪费（那正是用户点过「更新章节」的卡片）；
+ * - **从未数过**（`countedChapterCountAt == null`）：数过一次就由时间戳记住，
+ *   与封面 `coverProbedAt` 同规则——失败也算数过。
+ */
+val MangaCard.needsChapterCountProbe: Boolean
+    get() = !chapterCountKnown && countedChapterCountAt == null
+
+/**
+ * 一次**章节计数**探测所需的最小信息（图库/书架滚动懒加载）。
+ *
+ * 与 [CoverProbeTarget] 分开命名、字段却几乎相同：两者要做的事不同（一个找首图，
+ * 一个数章节数），只是恰好都需要"打开这个漫画的锚点目录"。共用的是查询，不是语义。
+ */
+data class ChapterCountProbeTarget(
+    val mangaId: String,
+    /** 漫画锚点目录；多章节下是作品的根目录，单章节下就是唯一那一章的目录。 */
+    val anchorDocumentId: String,
+    val layoutMode: LayoutMode,
+    /** 该卡片所属来源的授权树 URI。 */
+    val sourceTreeUri: String,
 )
 
 /**

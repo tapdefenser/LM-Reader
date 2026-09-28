@@ -14,6 +14,7 @@ import com.lmreader.core.storage.cover.CoverMetadataWriter
 import com.lmreader.core.storage.cover.CoverResolver
 import com.lmreader.core.storage.saf.SafTreeAccess
 import com.lmreader.core.storage.scan.LibraryScanCoordinator
+import com.lmreader.core.storage.scan.ChapterCounter
 import com.lmreader.core.storage.scan.MangaChapterSyncer
 import com.lmreader.core.storage.scan.MetadataBackfillWorker
 import com.lmreader.core.storage.scan.SourceScanRunner
@@ -161,6 +162,15 @@ class AppContainer(private val application: Application) {
             metadataBackfill = backfillWorker,
         )
     }
+
+    /**
+     * 滚动/搜索时的章节计数（只数数量，不落章节清单）。
+     *
+     * 与封面懒加载同一套形状与触发时机（用户口径："滚动+搜索结果时加载，不要做成扫描时
+     * 加载"）。它写的是 `countedChapterCount` 那一对列，**不碰** `chapterCountKnown`
+     * ——那一位是同步逻辑删除多余章节行的闸门（见 `MangaEntity.countedChapterCount`）。
+     */
+    val chapterCounter by lazy { ChapterCounter(treeAccess) }
 
     val mangaChapterSyncer by lazy {
         MangaChapterSyncer(

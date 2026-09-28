@@ -82,6 +82,15 @@ data class MangaRecord(
     /** null = 已发现 ≥1 章但未枚举完（开发文档 5.1）。 */
     val chapterCount: Int?,
     val chapterCountKnown: Boolean,
+    /**
+     * 滚动/搜索时**只数数量**得到的章节数；null = 数过但没数出可读章节，或还没数过。
+     *
+     * 与 [chapterCount]/[chapterCountKnown] 分工见 `MangaEntity.countedChapterCount`：
+     * 后者属于"章节清单是否完整"的同步语义，这一对只服务于显示，且**永不**打开删除闸门。
+     */
+    val countedChapterCount: Int? = null,
+    /** 滚动计数的时间；null = 从未数过（取过一次就不再取，与封面同规则）。 */
+    val countedChapterCountAt: Long? = null,
     val availability: MangaAvailability,
     val discoveryGeneration: Long,
     val discoveredAt: Long,

@@ -36,6 +36,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -46,6 +47,9 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.lmreader.core.model.LibraryDisplayMode
@@ -100,6 +104,34 @@ fun LibraryScreen(
 
     val listState = rememberLazyListState()
     val gridState = rememberLazyGridState()
+
+    /**
+     * 从详情页返回时，把**刚看过的那张卡片**重新读一遍（用户口径：退出详情页要在图库页
+     * 更新这一对应卡片）。
+     *
+     * 详情页会改这张卡片的数据：「更新章节」把章节清单与 `chapterCountKnown` 落成准确值、
+     * 强取封面与简介、按需回填页数。用户在详情页里看到的是新数据，返回图库却还看着旧卡片，
+     * 会以为"更新章节没生效"。
+     *
+     * 用 ON_RESUME 而不是"导航回调"：返回是系统返回键、手势返回、导航栈弹出三条路径共用的
+     * 结果，只有生命周期事件能一次覆盖。只查一行、只替换一行，不重建分页会话
+     * （重建会把滚动位置打回第一页）。
+     */
+    val lastOpenedMangaId = remember { mutableStateOf<String?>(null) }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, viewModel) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                lastOpenedMangaId.value?.let { viewModel.refreshCard(it) }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    val openManga: (String) -> Unit = { mangaId ->
+        lastOpenedMangaId.value = mangaId
+        onOpenManga(mangaId)
+    }
 
     // 触底追加：只增加额度，不重扫（开发文档 8.1「底部加载」）。
     LaunchedEffect(listState, state.displayMode) {
@@ -298,7 +330,7 @@ fun LibraryScreen(
                                         if (state.selectionMode) {
                                             viewModel.toggleSelection(card.mangaId)
                                         } else {
-                                            onOpenManga(card.mangaId)
+                                            openManga(card.mangaId)
                                         }
                                     },
                                     // 长按进入选择态并选中该卡片（用户要求）。
@@ -330,7 +362,7 @@ fun LibraryScreen(
                                         if (state.selectionMode) {
                                             viewModel.toggleSelection(card.mangaId)
                                         } else {
-                                            onOpenManga(card.mangaId)
+                                            openManga(card.mangaId)
                                         }
                                     },
                                     onLongClick = { viewModel.startSelection(card.mangaId) },
@@ -502,3 +534,4 @@ private fun rememberSourceTreeUris(container: AppContainer): Map<String, String>
  * 中间会闪一次加载指示；提前 6 项让追加在滚动停止前完成。
  */
 private const val PREFETCH_DISTANCE = 6
+

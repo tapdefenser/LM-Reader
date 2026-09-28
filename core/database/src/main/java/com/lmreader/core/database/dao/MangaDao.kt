@@ -30,6 +30,18 @@ data class CardQueryRow(
     val layoutMode: LayoutMode,
     val chapterCount: Int?,
     val chapterCountKnown: Boolean,
+    /**
+     * 滚动时数出来的章节数（只数数量，不落章节清单）。
+     *
+     * 与 [chapterCount] 分开是**必须**的：`chapterCountKnown` 同时是同步逻辑的
+     * "可以删掉多余章节行"闸门，而滚动时的计数并没有真的枚举并落库章节清单，
+     * 因此那一位必须保持 0（见 `MangaRepositoryImpl` 里 `incomingIsComplete` 的说明）。
+     * 这两个计数列互不干扰：全量同步写 `chapterCount/chapterCountKnown`，滚动计数
+     * 写 `countedChapterCount/countedChapterCountAt`。
+     */
+    val countedChapterCount: Int?,
+    /** 计数时间；null = 从未数过（照 `coverProbedAt` 的"取过就不再取"语义）。 */
+    val countedChapterCountAt: Long?,
     val availability: MangaAvailability,
     /**
      * 这张卡片的章节里是否有归档章节（CBZ/ZIP/PDF）。
@@ -51,16 +63,17 @@ data class SourceVisibleCountRow(
 )
 
 /**
- * 封面探测的输入投影（图库滚动懒加载）。
+ * 懒加载探测的输入投影（图库/书架滚动时，封面与章节计数共用）。
  *
- * 与 [CardQueryRow] 分开的理由：卡片投影每批都要读，而探测输入只对"还没有封面且
+ * 与 [CardQueryRow] 分开的理由：卡片投影每批都要读，而探测输入只对"还没取到、且
  * 从未探测过"的少数卡片需要，且必须带上锚点目录与来源树 URI（卡片上没有这两个字段）。
+ * 两种探测需要的字段恰好相同（都要打开锚点目录），因此共用一条查询、一个行类型。
  */
-data class CoverTargetRow(
+data class ProbeTargetRow(
     val mangaId: String,
     val anchorDocumentId: String,
     val layoutMode: LayoutMode,
-    /** 来源的授权树 URI；封面只能按「树 URI + documentId」组合打开（开发文档 4.1）。 */
+    /** 来源的授权树 URI；目录只能按「树 URI + documentId」组合打开（开发文档 4.1）。 */
     val sourceTreeUri: String,
 )
 
@@ -139,6 +152,8 @@ interface MangaDao {
                m.layoutMode AS layoutMode,
                m.chapterCount AS chapterCount,
                m.chapterCountKnown AS chapterCountKnown,
+               m.countedChapterCount AS countedChapterCount,
+               m.countedChapterCountAt AS countedChapterCountAt,
                m.availability AS availability,
                EXISTS(
                    SELECT 1 FROM chapters AS c
@@ -175,6 +190,8 @@ interface MangaDao {
                m.layoutMode AS layoutMode,
                m.chapterCount AS chapterCount,
                m.chapterCountKnown AS chapterCountKnown,
+               m.countedChapterCount AS countedChapterCount,
+               m.countedChapterCountAt AS countedChapterCountAt,
                m.availability AS availability,
                EXISTS(
                    SELECT 1 FROM chapters AS c
@@ -234,6 +251,8 @@ interface MangaDao {
                m.layoutMode AS layoutMode,
                m.chapterCount AS chapterCount,
                m.chapterCountKnown AS chapterCountKnown,
+               m.countedChapterCount AS countedChapterCount,
+               m.countedChapterCountAt AS countedChapterCountAt,
                m.availability AS availability,
                EXISTS(
                    SELECT 1 FROM chapters AS c
@@ -302,6 +321,8 @@ interface MangaDao {
                m.layoutMode AS layoutMode,
                m.chapterCount AS chapterCount,
                m.chapterCountKnown AS chapterCountKnown,
+               m.countedChapterCount AS countedChapterCount,
+               m.countedChapterCountAt AS countedChapterCountAt,
                m.availability AS availability,
                EXISTS(
                    SELECT 1 FROM chapters AS c
@@ -338,6 +359,8 @@ interface MangaDao {
                m.layoutMode AS layoutMode,
                m.chapterCount AS chapterCount,
                m.chapterCountKnown AS chapterCountKnown,
+               m.countedChapterCount AS countedChapterCount,
+               m.countedChapterCountAt AS countedChapterCountAt,
                m.availability AS availability,
                EXISTS(
                    SELECT 1 FROM chapters AS c
@@ -378,6 +401,8 @@ interface MangaDao {
                m.layoutMode AS layoutMode,
                m.chapterCount AS chapterCount,
                m.chapterCountKnown AS chapterCountKnown,
+               m.countedChapterCount AS countedChapterCount,
+               m.countedChapterCountAt AS countedChapterCountAt,
                m.availability AS availability,
                EXISTS(
                    SELECT 1 FROM chapters AS c
@@ -423,6 +448,8 @@ interface MangaDao {
                m.layoutMode AS layoutMode,
                m.chapterCount AS chapterCount,
                m.chapterCountKnown AS chapterCountKnown,
+               m.countedChapterCount AS countedChapterCount,
+               m.countedChapterCountAt AS countedChapterCountAt,
                m.availability AS availability,
                EXISTS(
                    SELECT 1 FROM chapters AS c
@@ -456,6 +483,8 @@ interface MangaDao {
                m.layoutMode AS layoutMode,
                m.chapterCount AS chapterCount,
                m.chapterCountKnown AS chapterCountKnown,
+               m.countedChapterCount AS countedChapterCount,
+               m.countedChapterCountAt AS countedChapterCountAt,
                m.availability AS availability,
                EXISTS(
                    SELECT 1 FROM chapters AS c
@@ -574,11 +603,13 @@ interface MangaDao {
     suspend fun getBySource(sourceId: String): List<MangaEntity>
 
     /**
-     * 批量取封面探测输入：漫画的锚点目录 + 布局模式 + 来源树 URI。
+     * 批量取懒加载探测输入：漫画的锚点目录 + 布局模式 + 来源树 URI。
      *
      * 用 JOIN 一次取齐而不是分三次查：滚动时这个动作每批都要做，而每张卡片三次往返
-     * 会让"边滚边取封面"自己变成卡顿的来源。来源行不存在（孤儿卡片）时该行直接不返回，
-     * 调用方因此不会把"来源没了"误标成"探测过了、只是没有封面"。
+     * 会让"边滚边取"自己变成卡顿的来源。来源行不存在（孤儿卡片）时该行直接不返回，
+     * 调用方因此不会把"来源没了"误标成"探测过了、只是没有结果"。
+     *
+     * 封面与章节计数共用本查询（两者需要的字段相同）。
      */
     @Query(
         """
@@ -591,7 +622,25 @@ interface MangaDao {
         WHERE m.mangaId IN (:mangaIds)
         """,
     )
-    suspend fun coverTargets(mangaIds: List<String>): List<CoverTargetRow>
+    suspend fun probeTargets(mangaIds: List<String>): List<ProbeTargetRow>
+
+    /**
+     * 写入"滚动时数出来的章节数"。
+     *
+     * **只写 [countedChapterCount] 那一对，绝不动 `chapterCount`/`chapterCountKnown`**：
+     * 后者是同步逻辑"可以删掉多余章节行"的闸门，而这里并没有枚举并落库章节清单。
+     * 数不出章节时也写时间（`count = null`）——那正是"不再数第二次"的载体，与
+     * `coverProbedAt` 的失败也落库同理。
+     */
+    @Query(
+        """
+        UPDATE mangas
+        SET countedChapterCount = :count,
+            countedChapterCountAt = :at
+        WHERE mangaId = :mangaId
+        """,
+    )
+    suspend fun markChapterCounted(mangaId: String, count: Int?, at: Long)
 
     /**
      * 待补全**简介**（ComicInfo）的漫画。

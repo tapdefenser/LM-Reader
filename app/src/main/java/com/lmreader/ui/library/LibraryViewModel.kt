@@ -10,14 +10,17 @@ import com.lmreader.core.model.MangaAvailability
 import com.lmreader.core.model.MangaCard
 import com.lmreader.core.model.LibrarySource
 import com.lmreader.core.model.MangaRepository
+import com.lmreader.core.model.needsChapterCountProbe
 import com.lmreader.core.model.ResolvedCover
 import com.lmreader.core.model.ShelfRepository
 import com.lmreader.core.model.SourceRepository
 import com.lmreader.core.storage.cover.CoverMetadataWriter
 import com.lmreader.core.storage.cover.CoverResolver
+import com.lmreader.core.storage.scan.ChapterCounter
 import com.lmreader.core.storage.scan.LibraryScanCoordinator
 import com.lmreader.core.storage.scan.ScanReason
 import com.lmreader.core.storage.settings.AppPreferences
+import com.lmreader.ui.common.ChapterCountProbeQueue
 import com.lmreader.ui.common.CoverProbeQueue
 import com.lmreader.ui.common.ScreenState
 import com.lmreader.ui.paging.PageSlice
@@ -48,6 +51,7 @@ class LibraryViewModel(
     private val preferences: AppPreferences,
     private val coverResolver: CoverResolver,
     private val coverMetadataWriter: CoverMetadataWriter,
+    private val chapterCounter: ChapterCounter,
 ) : ViewModel() {
 
     private val paging = PagingState<MangaCard>(idOf = { it.mangaId })
@@ -69,6 +73,20 @@ class LibraryViewModel(
         // 在所有更新封面的时候也要更新简介）。两者读的是同一批目录。
         persist = { mangaId, cover, at -> coverMetadataWriter.write(mangaId, cover, at) },
         onResolved = ::onCoverResolved,
+    )
+
+    /**
+     * 章节计数懒加载队列（用户口径：**滚动 + 搜索结果时**加载，不要做成扫描时加载）。
+     *
+     * 与封面队列同形、同样与 `loadMore()` 解耦。它只写 `countedChapterCount` 那一对列，
+     * 不落章节清单、不碰 `chapterCountKnown`（见 `ChapterCounter` 的说明）。
+     */
+    private val chapterCounts = ChapterCountProbeQueue(
+        scope = viewModelScope,
+        probeTargets = mangaRepository::chapterCountProbeTargets,
+        count = chapterCounter::count,
+        persist = { mangaId, count, at -> mangaRepository.markChapterCounted(mangaId, count, at) },
+        onCounted = ::onChapterCounted,
     )
 
     private val queryFlow = MutableStateFlow("")
@@ -309,6 +327,7 @@ class LibraryViewModel(
     private fun resetSession() {
         paging.reset()
         coverProbes.clear()
+        chapterCounts.clear()
     }
 
     /** 顶部刷新按钮/下拉刷新：这是用户显式要求扫描的入口（开发文档 6.3）。 */
@@ -316,6 +335,7 @@ class LibraryViewModel(
         viewModelScope.launch {
             paging.reset()
             coverProbes.clear()
+            chapterCounts.clear()
             loadMore()
             scanCoordinator.rescanAll(ScanReason.REFRESH)
         }
@@ -324,20 +344,24 @@ class LibraryViewModel(
     /**
      * 上报当前可见的卡片下标（列表与网格共用）。
      *
-     * 只上报"还没有封面且从未探测过"的那些 id：这一步是纯内存过滤，真正的目录枚举
-     * 由 [CoverProbeQueue] 按批、按并发上限去做。用**下标**而不是 id 是因为列表状态
+     * 只上报"还没有封面/还没数过章节数、且从未探测过"的那些 id：这一步是纯内存过滤，
+     * 真正的目录枚举由两个队列按批、按并发上限去做。用**下标**而不是 id 是因为列表状态
      * 是唯一的真相来源，界面上拿到的本来就只有下标。
      */
     fun onCardsVisible(indices: List<Int>) {
         if (indices.isEmpty()) return
         val items = paging.items
-        val needsProbe = ArrayList<String>(indices.size)
+        val needsCover = ArrayList<String>(indices.size)
+        val needsCount = ArrayList<String>(indices.size)
         for (index in indices) {
             val card = items.getOrNull(index) ?: continue
-            if (card.coverDocumentId != null || card.coverProbedAt != null) continue
-            needsProbe += card.mangaId
+            if (card.coverDocumentId == null && card.coverProbedAt == null) {
+                needsCover += card.mangaId
+            }
+            if (card.needsChapterCountProbe) needsCount += card.mangaId
         }
-        coverProbes.request(needsProbe)
+        coverProbes.request(needsCover)
+        chapterCounts.request(needsCount)
     }
 
     /**
@@ -355,6 +379,38 @@ class LibraryViewModel(
             )
         }
         if (updated) _state.update { it.copy(items = paging.items.toList()) }
+    }
+
+    /**
+     * 一张卡片的章节计数完成：同样就地更新，不重建分页会话。
+     *
+     * `count = null`（数不出可读章节）也要把时间写进卡片：否则这张卡在用户眼里
+     * 永远是"还没数过"，而队列每次滚动都会再排一次（持久层已经记下了，内存这张也得跟上）。
+     */
+    private fun onChapterCounted(mangaId: String, count: Int?, at: Long) {
+        val updated = paging.updateItem(mangaId) { card ->
+            card.copy(countedChapterCount = count, countedChapterCountAt = at)
+        }
+        if (updated) _state.update { it.copy(items = paging.items.toList()) }
+    }
+
+    /**
+     * 刷新一张卡片（图库页从详情页返回时调用）。
+     *
+     * 为什么需要：详情页会改这张卡片的数据——「更新章节」把章节清单与 `chapterCountKnown`
+     * 落成准确值、强取封面与简介、按需回填页数。用户返回图库时若还看着旧的那张卡片，
+     * 就会以为"更新章节没生效"（用户口径：退出详情页要在图库页更新这一对应卡片）。
+     *
+     * 只查一行、只替换一行：重建分页会话会把用户滚动的位置打回第一页。
+     */
+    fun refreshCard(mangaId: String) {
+        viewModelScope.launch {
+            val card = runCatching { mangaRepository.getCards(listOf(mangaId)) }.getOrNull()
+                ?.firstOrNull()
+                ?: return@launch
+            val updated = paging.updateItem(mangaId) { card }
+            if (updated) _state.update { it.copy(items = paging.items.toList()) }
+        }
     }
 
     /**
@@ -488,6 +544,7 @@ class LibraryViewModel(
                     preferences = container.preferences,
                     coverResolver = container.coverResolver,
                     coverMetadataWriter = container.coverMetadataWriter,
+                    chapterCounter = container.chapterCounter,
                 )
             }
         }
