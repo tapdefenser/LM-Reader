@@ -184,7 +184,13 @@ class ReaderViewModel(
             val items = state.items
             val first = items.indexOfFirstPageOfChapter(record.chapterId).coerceAtLeast(0)
             val target = (first + page).coerceIn(0, (items.size - 1).coerceAtLeast(0))
-            state.copy(loading = false, currentPageIndex = target, error = null)
+            state.copy(
+                loading = false,
+                currentPageIndex = target,
+                // 位置真相是身份；下标只是它的派生量。两者必须一起写。
+                positionKey = items.getOrNull(target)?.key.orEmpty(),
+                error = null,
+            )
         }
         val opened = _state.value
         mangaRepository.updateChapterPageInfo(
@@ -324,6 +330,7 @@ class ReaderViewModel(
      * 项列表就一定等价，没有任何理由让分页器重排。
      */
     private fun writeItems(chapters: ViewerChapters) {
+        var identityLost = false
         _state.update { state ->
             val sameWindow = state.chapters?.window?.map { it.chapterId } ==
                 chapters.window.map { it.chapterId }
@@ -339,13 +346,32 @@ class ReaderViewModel(
                     showTransitions = state.settings.showChapterTransitions,
                     isFinalChapter = { id -> state.chapterList.lastOrNull()?.chapterId == id },
                 )
-                val newIndex = reanchorIndex(state.items, state.currentPageIndex, items)
+                // **位置真相是身份**：窗口前滚会把整整一章从列表前端放掉，于是下标整体平移
+                // （平移量 = 那一章的页数 + 1 个过渡页）。按下标"重锚"迟早会漏——分页器与
+                // 状态机各自持有一份数字，任何一次没对上就是"偏一整章"。身份则不受平移影响。
+                val byIdentity = items.indexOfKey(state.positionKey)
+                val newIndex = if (byIdentity >= 0) {
+                    byIdentity
+                } else {
+                    // 身份不在新列表里：理论上不该发生（窗口永远含当前章及其相邻章）。
+                    // 落回按下标重锚，并让调用方记一条日志——走到这里意味着窗口策略被破坏了。
+                    identityLost = true
+                    reanchorIndex(state.items, state.currentPageIndex, items)
+                }
                 state.copy(
                     chapters = chapters,
                     items = items,
                     currentPageIndex = newIndex,
+                    positionKey = items.getOrNull(newIndex)?.key ?: state.positionKey,
                 )
             }
+        }
+        if (identityLost) {
+            android.util.Log.w(
+                "LMR-POS",
+                "positionKey 在新窗口里找不到，已退化为按下标重锚（窗口策略被破坏）",
+            )
+            identityLost = false
         }
     }
 
@@ -465,9 +491,11 @@ class ReaderViewModel(
     private fun settleAt(absoluteIndex: Int) {
         val snapshot = _state.value
         if (absoluteIndex !in snapshot.items.indices) return
-        if (absoluteIndex == snapshot.currentPageIndex) return
-        _state.update { it.copy(currentPageIndex = absoluteIndex) }
         val item = snapshot.items[absoluteIndex]
+        // 下标与身份都对得上才算"没动"：只比下标的话，窗口重排后"同一个下标指向了另一项"
+        // 会被误判成没动，位置就悄悄留在错的项上。
+        if (absoluteIndex == snapshot.currentPageIndex && item.key == snapshot.positionKey) return
+        _state.update { it.copy(currentPageIndex = absoluteIndex, positionKey = item.key) }
         // 当前章由"当前项属于哪一章"反推——不再有提升动作。
         // [chapterEnteredBy] 说明为什么**过渡项不算换章**，以及少了这条判定会怎样。
         val entered = chapterEnteredBy(item)
@@ -802,6 +830,16 @@ data class ReaderUiState(
     val items: List<ReaderItem> = emptyList(),
     /** 在 [items] 中的绝对下标。 */
     val currentPageIndex: Int = 0,
+    /**
+     * 读者位置的**真相**：当前项的身份（`pageId` 或 `transition:from->to`）。
+     *
+     * [currentPageIndex] 只是它在 [items] 里的**派生量**。窗口前滚会把整整一章从列表前端
+     * 放掉，下标因此整体平移（平移量 = 那一章的页数 + 1 个过渡页）——按下标记位置时，
+     * 只要有一次没和分页器对上，读者就会偏掉一整章。身份不受平移影响。
+     *
+     * 不变量：`items.getOrNull(currentPageIndex)?.key == positionKey`。
+     */
+    val positionKey: String = "",
     /**
      * 控制栏是否可见；默认**隐藏**：阅读器一打开就应该是内容
      * （Mihon 的 `ReaderActivity` 同样以隐藏态进入）。

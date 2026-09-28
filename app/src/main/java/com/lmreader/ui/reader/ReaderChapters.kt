@@ -298,8 +298,14 @@ internal fun buildWindow(
 /**
  * 项列表重建后按项身份把读者放回原来的位置。
  *
+ * ⚠️ **这已经不是主路径了**：正常情况下请用 [indexOfKey]（身份定位）。
+ * 本函数只在"身份在新列表里找不到"时兜底——那意味着窗口策略被破坏了
+ * （窗口必须永远包含当前章及其相邻章），因此调用方**必须记日志**，不要让它静默发生。
+ *
+ * 兜底为什么危险：它保留**旧下标**（`coerceIn`），而窗口前滚让下标平移了一整章，
+ * 于是它会静默把读者放到另一页——不报错、只是位置错了，是最难查的一类失败。
+ *
  * 窗口扩张会把新章插到列表前面或后面，于是绝对下标平移；不重新定位读者就会跳到别的页。
- * **这是"补窗口时画面不跳"的唯一保证**，因此每次重建都必须经过它。
  */
 internal fun reanchorIndex(
     oldItems: List<ReaderItem>,
@@ -326,6 +332,18 @@ internal fun List<ReaderItem>.indexOfFirstPageOfChapter(chapterId: String): Int 
 /** 当前项属于哪一章；列表为空时返回 null。 */
 internal fun List<ReaderItem>.chapterIdAt(index: Int): String? =
     getOrNull(index)?.chapterId
+
+/**
+ * 按**项身份**在列表里定位；找不到返回 -1。
+ *
+ * 这是阅读器唯一正确的定位方式。窗口前滚会从列表前端放掉一整章，于是所有项的下标
+ * 整体平移（平移量 = 那一章的页数 + 1 个过渡页），而身份不受影响。
+ * 按下标"重锚"（[reanchorIndex]）只在身份确实消失时才允许作为兜底。
+ */
+internal fun List<ReaderItem>.indexOfKey(key: String): Int {
+    if (key.isEmpty()) return -1
+    return indexOfFirst { it.key == key }
+}
 
 /**
  * 落页到 [item] 时**真正进入了**哪一章；`null` = 没有换章。

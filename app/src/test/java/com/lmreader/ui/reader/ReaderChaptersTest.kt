@@ -10,6 +10,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -72,6 +73,59 @@ class ReaderChaptersTest {
         return ViewerChapters(window = list, currentIndex = list.indexOfFirst { it.chapterId == current })
     }
 
+    // ---------------------------------------------------------------- 预算窗口夹具
+    //
+    // 下面三个辅助函数复现"真机参数下的窗口与项列表"，供位置相关的用例共用：
+    // 6 章、每章 3 页、全部已加载、「预载页数」默认 9（往后 4 / 往前 5 格预算）。
+
+    private val budgetRecords = (1..6).map { record("c$it", pageCount = 3) }
+    private val budgetLoaded = (1..6).associate { "c$it" to chapter("c$it", 3) }
+
+    /**
+     * 当前章为 `records[currentIndex]` 时的项列表。
+     *
+     * 计划与 `ReaderViewModel.planFor` 对同样输入算出的结果一致，只是把私有逻辑搬到这里：
+     * 预算用 [PreloadPlan.compute]，再补上"边界章也要收进来"的那一格。
+     */
+    private fun budgetWindowItems(currentIndex: Int): List<ReaderItem> {
+        val plan = PreloadPlan.compute(
+            chapterCount = budgetRecords.size,
+            currentIndex = currentIndex,
+            budget = 4,
+            maxChapters = 3,
+            backBudget = 5,
+            pagesOf = { 3 },
+        )
+        val next = plan.nextIndices.toMutableList()
+        val previous = plan.previousIndices.toMutableList()
+        val nextFrontier = (next.lastOrNull() ?: currentIndex) + 1
+        val previousFrontier = (previous.firstOrNull() ?: currentIndex) - 1
+        if (nextFrontier in budgetRecords.indices && next.size < 3) next += nextFrontier
+        if (previousFrontier in budgetRecords.indices && previous.size < 3) previous += previousFrontier
+        val (window, current) = buildWindow(
+            chapterList = budgetRecords,
+            currentChapterId = budgetRecords[currentIndex].chapterId,
+            plan = PreloadPlan(previousIndices = previous, nextIndices = next),
+            existing = budgetLoaded,
+        )
+        return ViewerChapters(window = window, currentIndex = current)
+            .items(showTransitions = true, isFinalChapter = { false })
+    }
+
+    /** 某一章第一页的项身份；该章不在列表里时抛错（用例前提没满足应当立刻暴露）。 */
+    private fun firstPageKeyOf(chapterId: String, items: List<ReaderItem>): String =
+        items.filterIsInstance<ReaderItem.PageItem>()
+            .first { it.chapter.chapterId == chapterId }
+            .key
+
+    /**
+     * `from -> to` 那个过渡项的项身份。
+     *
+     * 必须显式判类型：过渡项的 `chapterId` **归后一章**，只用 chapterId 找会抓到过渡项而非页。
+     */
+    private fun transitionKeyOf(to: String, items: List<ReaderItem>): String =
+        items.first { it is ReaderItem.Transition && it.chapterId == to }.key
+
     /**
      * **窗口前端放掉一章，会让已有项的下标整体平移——这是"翻页后跳到别的页"的根源。**
      *
@@ -95,65 +149,64 @@ class ReaderChaptersTest {
      */
     @Test
     fun `窗口前端放掉一章会让项下标整体平移 4 格`() {
-        val records = (1..6).map { record("c$it", pageCount = 3) }
-        val existing = (1..6).associate { "c$it" to chapter("c$it", 3) }
-
-        // 与 planFor 对同样输入算出的计划一致（每章 3 页已知、预载 9 → 后 4 / 前 5）。
-        fun planFor(currentIndex: Int) = PreloadPlan.compute(
-            chapterCount = records.size,
-            currentIndex = currentIndex,
-            budget = 4,
-            maxChapters = 3,
-            backBudget = 5,
-            pagesOf = { 3 },
-        )
-
-        fun itemsFor(currentIndex: Int): List<ReaderItem> {
-            val plan = planFor(currentIndex)
-            // 边界章规则：规划覆盖不到的那一章也要收进来。
-            val next = plan.nextIndices.toMutableList()
-            val previous = plan.previousIndices.toMutableList()
-            val nextFrontier = (next.lastOrNull() ?: currentIndex) + 1
-            val previousFrontier = (previous.firstOrNull() ?: currentIndex) - 1
-            if (nextFrontier in records.indices && next.size < 3) next += nextFrontier
-            if (previousFrontier in records.indices && previous.size < 3) previous += previousFrontier
-            val (window, current) = buildWindow(
-                chapterList = records,
-                currentChapterId = records[currentIndex].chapterId,
-                plan = PreloadPlan(previousIndices = previous, nextIndices = next),
-                existing = existing,
-            )
-            return ViewerChapters(window = window, currentIndex = current)
-                .items(showTransitions = true, isFinalChapter = { false })
-        }
-
-        val before = itemsFor(currentIndex = 2) // 当前 = c3
-        val after = itemsFor(currentIndex = 3) // 当前 = c4
+        val before = budgetWindowItems(currentIndex = 2) // 当前 = c3
+        val after = budgetWindowItems(currentIndex = 3) // 当前 = c4
 
         assertEquals(5, before.count { it is ReaderItem.PageItem } / 3) // 窗口 5 章
         assertEquals(5, after.count { it is ReaderItem.PageItem } / 3)
 
-        fun indexOf(items: List<ReaderItem>, key: String) = items.indexOfFirst { it.key == key }
-
         // 锚点一：c4 的**第一页**。12 → 8，偏 4。
-        val firstPageKey = before.filterIsInstance<ReaderItem.PageItem>()
-            .first { it.chapter.chapterId == "c4" }.key
-        assertEquals(12, indexOf(before, firstPageKey))
-        assertEquals(8, indexOf(after, firstPageKey))
+        val firstPageKey = firstPageKeyOf("c4", before)
+        assertEquals(12, before.indexOfKey(firstPageKey))
+        assertEquals(8, after.indexOfKey(firstPageKey))
 
         // 锚点二：c3→c4 那个**过渡项**（它的 chapterId 归后一章 c4，所以别用 chapterId 找它）。
         // 11 → 7，同样偏 4。分页器停在旧的 11 上时，新列表下标 11 处已经是**另一个过渡项**
         // （c4→c5）——这正是"同一张过渡页出现了两次"的由来：两张过渡页长得几乎一样。
-        val transitionKey = before.first { it is ReaderItem.Transition && it.chapterId == "c4" }.key
-        assertEquals(11, indexOf(before, transitionKey))
-        assertEquals(7, indexOf(after, transitionKey))
+        val transitionKey = transitionKeyOf("c4", before)
+        assertEquals(11, before.indexOfKey(transitionKey))
+        assertEquals(7, after.indexOfKey(transitionKey))
 
         assertEquals(
             4,
-            indexOf(before, firstPageKey) - indexOf(after, firstPageKey),
+            before.indexOfKey(firstPageKey) - after.indexOfKey(firstPageKey),
             "前端放掉「3 页 + 1 过渡页」= 4 项，下标就整体减 4；" +
                 "分页器若停在旧下标上，读者会正好偏掉一格过渡页的量",
         )
+    }
+
+    /**
+     * **按身份定位时，窗口前滚不会让读者换到别的项；按下标会。**
+     *
+     * 这是本次修复的核心断言：同一份数据、同一次窗口变化，
+     * 两种定位方式给出不同结果——而"按下标"给出的那个结果是错的。
+     */
+    @Test
+    fun `按身份定位时窗口前滚不会让读者换到别的项`() {
+        val before = budgetWindowItems(currentIndex = 2) // 当前 = c3
+        val after = budgetWindowItems(currentIndex = 3) // 当前 = c4
+
+        // 读者站在 c3→c4 的过渡项上。
+        val positionKey = transitionKeyOf("c4", before)
+        val staleIndex = before.indexOfKey(positionKey)
+        assertEquals(11, staleIndex)
+
+        // ① 身份定位：仍然是同一个过渡项（正确）。
+        val byIdentity = after.indexOfKey(positionKey)
+        assertEquals(positionKey, after[byIdentity].key)
+
+        // ② 下标定位（旧做法）：下标 11 在新列表里已经是**另一个**过渡项——读者会看到一张
+        //    新的过渡页，而他并没有翻页。
+        assertNotEquals(positionKey, after[staleIndex].key)
+        assertTrue(after[staleIndex] is ReaderItem.Transition)
+    }
+
+    /** 身份不在列表里时返回 -1，调用方据此走兜底并记日志（不允许静默）。 */
+    @Test
+    fun `身份不在列表里时定位返回 -1`() {
+        val items = budgetWindowItems(currentIndex = 2)
+        assertEquals(-1, items.indexOfKey("p_不存在的页"))
+        assertEquals(-1, items.indexOfKey(""))
     }
 
     /**
