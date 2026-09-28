@@ -132,6 +132,7 @@ internal fun PagerReader(
                     source = item.chapter.source,
                     page = item.page,
                     settings = settings,
+                    isSelected = pagerState.settledPage == index,
                     onSingleTap = onTap,
                     onLongPress = if (settings.longTapActions) onLongPress else null,
                     prefetcher = prefetcher,

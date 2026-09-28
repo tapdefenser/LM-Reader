@@ -181,9 +181,16 @@ private fun GeneralPage(settings: ReaderSettings, onUpdate: ((ReaderSettings) ->
 
     Spacer(Modifier.height(20.dp))
     SectionTitle("分页")
+    val paged = !settings.readingMode.continuous
+    if (!paged) {
+        Text("仅在分页模式生效；条漫固定适合宽度，请使用下方条漫设置。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
     ChipRow(
         options = ImageScaleType.entries,
         selected = settings.imageScaleType,
+        enabled = paged,
         label = { it.label },
         onSelect = { scale -> onUpdate { it.copy(imageScaleType = scale) } },
     )
@@ -192,13 +199,14 @@ private fun GeneralPage(settings: ReaderSettings, onUpdate: ((ReaderSettings) ->
     ChipRow(
         options = ZoomStart.entries,
         selected = settings.zoomStart,
+        enabled = paged,
         label = { it.label },
         onSelect = { start -> onUpdate { it.copy(zoomStart = start) } },
     )
-    ToggleRow("裁白边", settings.cropBorders) { value ->
+    ToggleRow("裁白边", settings.cropBorders, enabled = paged) { value ->
         onUpdate { it.copy(cropBorders = value) }
     }
-    ToggleRow("自动放大宽图", settings.landscapeZoom) { value ->
+    ToggleRow("自动放大宽图", settings.landscapeZoom, enabled = paged) { value ->
         onUpdate { it.copy(landscapeZoom = value) }
     }
 
@@ -360,6 +368,7 @@ private fun <T> ChipRow(
     selected: T,
     label: (T) -> String,
     onSelect: (T) -> Unit,
+    enabled: Boolean = true,
 ) {
     Row(
         modifier = Modifier
@@ -369,6 +378,7 @@ private fun <T> ChipRow(
     ) {
         for (option in options) {
             FilterChip(
+                enabled = enabled,
                 selected = option == selected,
                 onClick = { onSelect(option) },
                 label = {
@@ -380,14 +390,14 @@ private fun <T> ChipRow(
 }
 
 @Composable
-private fun ToggleRow(title: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+private fun ToggleRow(title: String, checked: Boolean, enabled: Boolean = true, onChange: (Boolean) -> Unit) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
         Text(title, style = MaterialTheme.typography.bodyMedium)
-        Switch(checked = checked, onCheckedChange = onChange)
+        Switch(checked = checked, onCheckedChange = onChange, enabled = enabled)
     }
 }
 

@@ -60,9 +60,9 @@ import kotlin.math.abs
  * | [ImageScaleType.FIT_SCREEN] | `SCALE_TYPE_CENTER_INSIDE` |
  * | [ImageScaleType.FIT_WIDTH] | `SCALE_TYPE_FIT_WIDTH` |
  * | [ImageScaleType.FIT_HEIGHT] | `SCALE_TYPE_FIT_HEIGHT` |
- * | [ImageScaleType.ORIGINAL_SIZE] | `SCALE_TYPE_CENTER_INSIDE` + 最小缩放 1（见下） |
- * | [ImageScaleType.STRETCH] | `SCALE_TYPE_FIT_XY` |
- * | [ImageScaleType.SMART_FIT] | 库没有对应值；按方向选宽度或高度（见 [smartFitScaleType]） |
+ * | [ImageScaleType.ORIGINAL_SIZE] | `SCALE_TYPE_ORIGINAL_SIZE` |
+ * | [ImageScaleType.STRETCH] | `SCALE_TYPE_CENTER_CROP`（与 Mihon 的第二项一致） |
+ * | [ImageScaleType.SMART_FIT] | `SCALE_TYPE_SMART_FIT` |
  */
 @Composable
 internal fun EnginePageView(
@@ -73,23 +73,28 @@ internal fun EnginePageView(
     onSingleTap: (x: Float, y: Float) -> Unit,
     onLongPress: (() -> Unit)? = null,
     onReady: () -> Unit = {},
+    /** Offscreen preloaded pages must not finish their landscape animation before being selected. */
+    isSelected: Boolean = true,
     /** 页面字节的预取缓存；命中时不必再过一次 SAF。 */
     prefetcher: PagePrefetcher? = null,
 ) {
     val latestSettings by rememberUpdatedState(settings)
     val latestLongPress by rememberUpdatedState(onLongPress)
+    val imageConfig = settings.imageConfig()
     // 视图实例随页面身份重建：库内部持有解码状态与瓦片缓存，复用实例会让上一页的
     // 缩放位置与瓦片残留到下一页（Mihon 在 `ReaderPageImageView.recycle()` 里显式清理
     // 同一个实例，我们选择更简单且不会串页的做法）。
     var retryAttempt by remember(page.pageId) { mutableIntStateOf(0) }
-    var view by remember(page.pageId, retryAttempt) {
+    var view by remember(page.pageId, retryAttempt, imageConfig) {
         mutableStateOf<TapAwareSubsamplingImageView?>(null)
     }
-    var decodeFailed by remember(page.pageId, retryAttempt) { mutableStateOf(false) }
-    var imageReady by remember(page.pageId, retryAttempt) { mutableStateOf(false) }
+    var decodeFailed by remember(page.pageId, retryAttempt, imageConfig) { mutableStateOf(false) }
+    var imageReady by remember(page.pageId, retryAttempt, imageConfig) { mutableStateOf(false) }
 
     Box(modifier = modifier.fillMaxSize()) {
-        key(page.pageId, retryAttempt) { AndroidView(
+        // Mihon's PagerViewer.refreshAdapter recreates image holders on these property changes,
+        // preserving the current page. Only recreate this image, never the pager/chapter window.
+        key(page.pageId, retryAttempt, imageConfig) { AndroidView(
         factory = { context ->
             TapAwareSubsamplingImageView(
                 context = context,
@@ -103,10 +108,7 @@ internal fun EnginePageView(
                 // 不给底色的话，那一瞬间看到的是**下层内容透出来**（看起来就是"闪一下"）。
                 // 给一个与阅读背景同色的不透明底色，同一帧里就是一块纯色，而不是穿帮。
                 created.setBackgroundColor(settings.theme.engineBackgroundColor())
-                configure(created, settings, onReady = {
-                    created.setMinimumScaleType(latestSettings.imageScaleType.toLibraryScaleType())
-                    applyWebtoonMinimumScale(created, latestSettings)
-                    applyZoomStart(created, latestSettings)
+                configure(created, imageConfig, settings.doubleTapAnimMillis, onReady = {
                     imageReady = true
                     onReady()
                 }, onError = { decodeFailed = true })
@@ -149,35 +151,27 @@ internal fun EnginePageView(
 
     // 固定本次组合的实例快照；不要让 null-key effect 在 apply 后读到刚写入的新实例。
     val targetView = view
-    LaunchedEffect(targetView, settings.imageScaleType, settings.effectiveCropBorders,
-        settings.doubleTapAnimMillis, settings.zoomStart, settings.readingMode,
-        settings.webtoonDisableZoomOut) {
+    LaunchedEffect(targetView, settings.doubleTapAnimMillis) {
         targetView?.let { target ->
-            target.setMinimumScaleType(settings.imageScaleType.toLibraryScaleType())
-            if (target.isReady) applyWebtoonMinimumScale(target, settings)
-            target.setCropBorders(settings.effectiveCropBorders)
             target.setDoubleTapZoomDuration(settings.doubleTapAnimMillis.coerceAtLeast(1))
-            applyZoomStart(target, settings)
         }
     }
 
-    LaunchedEffect(targetView, imageReady, settings.landscapeZoom, settings.imageScaleType,
-        settings.readingMode, settings.zoomStart) {
+    LaunchedEffect(targetView, imageReady, imageConfig, isSelected) {
         val target = targetView ?: return@LaunchedEffect
-        if (!imageReady || !settings.landscapeZoom || settings.readingMode.continuous ||
-            settings.imageScaleType != ImageScaleType.FIT_SCREEN || target.sWidth <= target.sHeight
+        if (!imageReady || !isSelected || !imageConfig.landscapeZoom ||
+            imageConfig.scaleType != ImageScaleType.FIT_SCREEN || target.sWidth <= target.sHeight
         ) return@LaunchedEffect
         if (target.height <= 0 || target.sHeight <= 0) return@LaunchedEffect
-        val originalScale = target.scale
-        val originalCenter = target.center ?: return@LaunchedEffect
-        val desiredScale = (target.height.toFloat() / target.sHeight).coerceAtMost(target.maxScale)
-        if (desiredScale <= originalScale * 1.02f) return@LaunchedEffect
         delay(500)
-        val centerNow = target.center ?: return@LaunchedEffect
-        if (view !== target || abs(target.scale - originalScale) > originalScale * 0.01f ||
-            abs(centerNow.x - originalCenter.x) > 1f || abs(centerNow.y - originalCenter.y) > 1f
+        // setupZoom sets a pending center which is applied on the next draw. Comparing the center
+        // captured before that frame falsely treats initial right/left alignment as a user gesture.
+        if (view !== target || !target.isReady ||
+            abs(target.scale - target.minScale) > target.minScale * 0.01f
         ) return@LaunchedEffect
-        val zoomCenter = when (settings.zoomStart.resolve(settings.readingMode)) {
+        val desiredScale = (target.height.toFloat() / target.sHeight).coerceAtMost(target.maxScale)
+        if (desiredScale <= target.scale * 1.02f) return@LaunchedEffect
+        val zoomCenter = when (imageConfig.zoomStart) {
             ZoomStart.LEFT -> PointF(0f, 0f)
             ZoomStart.RIGHT -> PointF(target.sWidth.toFloat(), 0f)
             ZoomStart.CENTER, ZoomStart.AUTOMATIC ->
@@ -186,6 +180,7 @@ internal fun EnginePageView(
         target.animateScaleAndCenter(desiredScale, zoomCenter)
             ?.withDuration(500)
             ?.withEasing(SubsamplingScaleImageView.EASE_IN_OUT_QUAD)
+            ?.withInterruptible(true)
             ?.start()
     }
 
@@ -342,7 +337,8 @@ internal fun sampleSizeForEdge(longest: Int, maximum: Int): Int {
  */
 private fun configure(
     view: SubsamplingScaleImageView,
-    settings: ReaderSettings,
+    config: ReaderImageConfig,
+    doubleTapAnimMillis: Int,
     onReady: () -> Unit,
     onError: () -> Unit,
 ) {
@@ -354,11 +350,11 @@ private fun configure(
     // （565 下约 9MB），而真机上已经出现过解码期 OOM。2048 把峰值压到约 4MB，
     // 代价只是每页多几次区域解码。
     view.setMaxTileSize(MAX_TILE_PX)
-    view.setMinimumScaleType(settings.imageScaleType.toLibraryScaleType())
+    view.setMinimumScaleType(config.scaleType.toLibraryScaleType())
     // 裁白边是 fork 相对上游 SSIV 的新增能力，也是我们唯一无法自己等价实现的一项
     // （纯 Compose 只能裁掉溢出部分，做不到按内容裁白）。
-    view.setCropBorders(settings.effectiveCropBorders)
-    view.setDoubleTapZoomDuration(settings.doubleTapAnimMillis.coerceAtLeast(1))
+    view.setCropBorders(config.cropBorders)
+    view.setDoubleTapZoomDuration(doubleTapAnimMillis.coerceAtLeast(1))
     view.setOnImageEventListener(
         object : SubsamplingScaleImageView.DefaultOnImageEventListener() {
             override fun onReady() {
@@ -367,8 +363,8 @@ private fun configure(
                 val base = view.scale
                 view.maxScale = base * MAX_ZOOM_SCALE
                 view.setDoubleTapZoomScale(base * DOUBLE_TAP_ZOOM_FACTOR)
-                applyWebtoonMinimumScale(view, settings)
-                applyZoomStart(view, settings)
+                applyWebtoonMinimumScale(view, config)
+                applyZoomStart(view, config)
 
                 onReady()
             }
@@ -380,8 +376,8 @@ private fun configure(
     )
 }
 
-private fun applyWebtoonMinimumScale(view: SubsamplingScaleImageView, settings: ReaderSettings) {
-    if (!settings.readingMode.continuous || !settings.webtoonDisableZoomOut) return
+private fun applyWebtoonMinimumScale(view: SubsamplingScaleImageView, config: ReaderImageConfig) {
+    if (!config.disableZoomOut) return
     // 自定义最小缩放取当前“适应宽度”比例；否则 setMinScale 对内建缩放类型不生效。
     val fitWidth = view.minScale
     if (fitWidth > 0f && fitWidth.isFinite()) {
@@ -398,10 +394,10 @@ private fun applyWebtoonMinimumScale(view: SubsamplingScaleImageView, settings: 
  * 左右两种默认值让读者先看到该先看的那一半。因为库设了 `PAN_LIMIT_INSIDE`，
  * 请求的中心会被夹回合法范围。
  */
-private fun applyZoomStart(view: SubsamplingScaleImageView, settings: ReaderSettings) {
+private fun applyZoomStart(view: SubsamplingScaleImageView, config: ReaderImageConfig) {
     if (!view.isReady) return
     val scale = view.scale
-    val target = when (settings.zoomStart.resolve(settings.readingMode)) {
+    val target = when (config.zoomStart) {
         ZoomStart.LEFT -> PointF(0f, 0f)
         ZoomStart.RIGHT -> PointF(view.sWidth.toFloat(), 0f)
         ZoomStart.CENTER, ZoomStart.AUTOMATIC ->
@@ -426,10 +422,8 @@ private fun applyZoomStart(view: SubsamplingScaleImageView, settings: ReaderSett
  * | [ImageScaleType.SMART_FIT] | `SCALE_TYPE_SMART_FIT` |
  * | [ImageScaleType.STRETCH] | `SCALE_TYPE_CENTER_CROP` |
  *
- * `STRETCH`（"拉伸填满"）是本组里唯一的近似：库没有"不保持比例地拉伸"这一项，
- * `CENTER_CROP` 是"填满并使短边对齐、超出部分裁掉"。两者都会铺满视口，差别在于
- * 是否变形。之所以不自己算矩阵去实现真拉伸：那会绕开库的分块绘制路径，
- * 在超大图上反而丢掉内存保护。
+ * Mihon 直接把 1 基偏好传给库；它的第二项同样是 CENTER_CROP（保持比例填满），
+ * 并非 FIT_XY。名称容易让人误以为要变形，实际行为以这个引擎常量为准。
  */
 private fun ImageScaleType.toLibraryScaleType(): Int = when (this) {
     ImageScaleType.FIT_SCREEN -> SubsamplingScaleImageView.SCALE_TYPE_CENTER_INSIDE
