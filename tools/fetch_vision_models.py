@@ -73,8 +73,9 @@ def prepare():
         chars = yaml.safe_load(config.read_text(encoding="utf-8"))["PostProcess"]["character_dict"]
         if not all(isinstance(char, str) and char and "\n" not in char for char in chars):
             raise ValueError("Invalid character dictionary")
-        # write_bytes 保证 Windows 下也使用 LF；字典按模型顺序保存，不自行排序。
-        (ASSETS / (name + ".txt")).write_bytes(("\n".join(chars) + "\n").encode("utf-8"))
+        # The pinned APK hashes include CRLF. Write those exact bytes on every OS;
+        # preserve model order instead of relying on checkout/newline conversion.
+        (ASSETS / (name + ".txt")).write_bytes(("\r\n".join(chars) + "\r\n").encode("utf-8"))
     verify()
 
 
