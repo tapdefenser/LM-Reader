@@ -97,7 +97,7 @@ gh release create v0.1.0 --verify-tag --draft --prerelease \
 
 Debug/Release 构建和双变体 lint 本机通过；全模块 JVM 测试 **407 项通过、1 项跳过、0 项失败**（Debug 与 Release 的同组测试不重复计数）。MuMu Android 15 的语言 3 项和可靠性 14 项共 **17 项通过**。语言测试包含日、韩、法、阿拉伯语与繁中资源回退，简中资源及手动优先。
 
-lint 无 Fatal/Error，Debug 有 83 条、Release 有 79 条 Warning；这不是零警告构建。打包复核了 22 个 native 库、六个模型和清单中的 37 份文件；公开文档链接已校验，GitHub 工作流已通过 YAML 静态解析。
+lint 无 Fatal/Error，Debug 有 83 条、Release 有 79 条 Warning；这不是零警告构建。打包复核了 35 个 Android native 库、7 个 Hexagon DSP 文件、六个模型和清单中的 40 份文件；公开文档链接已校验，GitHub 工作流已通过 YAML 静态解析。
 
 构建日志：`.scratch/release-preparation-build.log` 和 `.scratch/release-preparation-final-build.log`；设备日志：`.scratch/release-preparation-device-tests.log`。最新 APK 大小/hash、ABI 和 ELF 对齐值由候选 `release-metadata.json` 记录，汇总在 `.scratch/release-preparation-verification.json`。
 
