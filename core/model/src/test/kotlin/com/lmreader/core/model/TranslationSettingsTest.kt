@@ -48,13 +48,10 @@ class TranslationSettingsTest {
     }
 
     @Test
-    fun `目标语言漫画优先否则用应用语言`() {
-        assertEquals("英语", resolveTargetLanguage(MangaTranslationSettings(targetLanguage = "英语"), "简体中文"))
-        assertEquals("简体中文", resolveTargetLanguage(MangaTranslationSettings(), "简体中文"))
-        // 空串与空白都算"没设"，回退应用语言。
-        assertEquals("日语", resolveTargetLanguage(MangaTranslationSettings(targetLanguage = "  "), "日语"))
-        // 即使两边都给不出东西，也不会返回空：目标语言永远有值（用户口径）。
-        assertEquals(DEFAULT_TRANSLATION_TARGET, resolveTargetLanguage(MangaTranslationSettings(), "  "))
+    fun `目标语言必须明确填写`() {
+        assertEquals("英语", resolveTargetLanguage(MangaTranslationSettings(targetLanguage = " 英语 ")))
+        assertEquals(null, resolveTargetLanguage(MangaTranslationSettings()))
+        assertEquals(null, resolveTargetLanguage(MangaTranslationSettings(targetLanguage = "  ")))
     }
 
     @Test
@@ -72,30 +69,24 @@ class TranslationSettingsTest {
     }
 
     @Test
-    fun `翻译选项完整性的判据只看原文语言`() {
-        // 源语言要么填了、要么显式选了自动识别。
-        assertTrue(translationSetupComplete(sourceLanguage = "日语", autoDetectSource = false))
-        assertTrue(translationSetupComplete(sourceLanguage = null, autoDetectSource = true))
-        assertFalse(translationSetupComplete(sourceLanguage = null, autoDetectSource = false))
-        assertFalse(translationSetupComplete(sourceLanguage = "  ", autoDetectSource = false))
+    fun `入队要求明确的源语言和目标语言`() {
+        assertTrue(translationSetupComplete("日语", "简体中文", false))
+        assertFalse(translationSetupComplete("日语", null, false))
+        assertFalse(translationSetupComplete(null, "简体中文", false))
+        assertFalse(translationSetupComplete("日语", "简体中文", true))
     }
 
     @Test
-    fun `应用语言标签映射到目标语言名`() {
-        assertEquals("简体中文", translationTargetForLanguageTag("zh-Hans-CN"))
-        assertEquals("简体中文", translationTargetForLanguageTag("zh-CN"))
-        assertEquals("简体中文", translationTargetForLanguageTag("zh"))
-        assertEquals("繁体中文", translationTargetForLanguageTag("zh-Hant-TW"))
-        assertEquals("繁体中文", translationTargetForLanguageTag("zh-HK"))
-        assertEquals("日语", translationTargetForLanguageTag("ja-JP"))
-        assertEquals("英语", translationTargetForLanguageTag("en-US"))
-        assertEquals("韩语", translationTargetForLanguageTag("ko"))
-        assertEquals("俄语", translationTargetForLanguageTag("ru-RU"))
-        assertEquals("巴西葡语", translationTargetForLanguageTag("pt-BR"))
-        // 下划线形式（部分 ROM 会给 `zh_CN`）也要认。
-        assertEquals("简体中文", translationTargetForLanguageTag("zh_CN"))
-        // 认不出来就回退到界面语言（应用文案目前只有中文）。
-        assertEquals(DEFAULT_TRANSLATION_TARGET, translationTargetForLanguageTag("ar-EG"))
-        assertEquals(DEFAULT_TRANSLATION_TARGET, translationTargetForLanguageTag(""))
+    fun `入队请求不能绕过语言和快照校验`() {
+        fun rejects(source: String?, target: String, auto: Boolean, snapshot: String?) {
+            val result = runCatching { TranslationRequest(target, source, auto, snapshot, 1L) }
+            assertTrue(result.exceptionOrNull() is IllegalArgumentException)
+        }
+        rejects(null, "简体中文", false, "{}")
+        rejects("日语", "", false, "{}")
+        rejects("日语", "简体中文", true, "{}")
+        rejects("日语", "简体中文", false, null)
+        assertEquals("日语", TranslationRequest("简体中文", "日语", false, "{}", 1L).sourceLanguage)
     }
+
 }

@@ -79,6 +79,9 @@ class ReaderViewModel(
 ) : ViewModel() {
     private val _state = MutableStateFlow(ReaderUiState())
     val state: StateFlow<ReaderUiState> = _state.asStateFlow()
+    /** Installed by the reader's draft editor; absent in ordinary reading and unit tests. */
+    var navigationGuard: (((() -> Unit)) -> Boolean)? = null
+    var navigationBlocked: () -> Boolean = { false }
 
     private var savedProgress: ReadingProgress? = null
     private val progressSaveMutex = Mutex()
@@ -576,13 +579,18 @@ class ReaderViewModel(
      * 我们它到哪了"，那条路径**绝不能**反过来去驱动分页器。
      */
     private fun moveTo(absoluteIndex: Int) {
-        settleAt(absoluteIndex)
-        requestPositionSync()
+        val key = _state.value.items.getOrNull(absoluteIndex)?.key ?: return
+        if (key == _state.value.positionKey) return
+        guardedNavigation {
+            val index = _state.value.items.indexOfFirst { it.key == key }
+            if (index >= 0) { settleAt(index); requestPositionSync() }
+        }
     }
+    private fun guardedNavigation(action: () -> Unit) = navigationGuard?.invoke(action) ?: run { action(); true }
 
     /** 请求一次归位：分页器会把当前位置挪到 [ReaderUiState.positionKey] 所在的下标。 */
-    private fun requestPositionSync() {
-        _state.update { it.copy(positionSyncToken = it.positionSyncToken + 1) }
+    private fun requestPositionSync(force: Boolean = false) {
+        _state.update { it.copy(positionSyncToken = it.positionSyncToken + 1, forcePositionSync = force) }
     }
 
     /** 「上一章 / 下一章」按钮：同样是移动一格，只是移动的是整章的量。 */
@@ -592,7 +600,7 @@ class ReaderViewModel(
         val index = list.indexOfFirst { it.chapterId == state.chapters?.currentChapterId ?: "" }
         val target = if (forward) index + 1 else index - 1
         if (index < 0 || target !in list.indices) return
-        viewModelScope.launch {
+        guardedNavigation { viewModelScope.launch {
             try {
                 openAt(target, 0)
             } catch (cancelled: CancellationException) {
@@ -600,7 +608,7 @@ class ReaderViewModel(
             } catch (error: Exception) {
                 _state.update { it.copy(loading = false, error = error.message ?: "无法打开章节") }
             }
-        }
+        } }
     }
 
     private fun settleAt(absoluteIndex: Int) {
@@ -643,9 +651,25 @@ class ReaderViewModel(
         moveTo(first + localPageIndex)
     }
 
+    fun focusPage(pageId: String) {
+        val index = _state.value.items.indexOfFirst { it is ReaderItem.PageItem && it.page.pageId == pageId }
+        if (index >= 0) moveTo(index)
+    }
+
     /** 分页器或条带落到了第 [absoluteIndex] 项。 */
     fun onItemSettled(absoluteIndex: Int) {
-        settleAt(absoluteIndex)
+        if (navigationBlocked()) return
+        val key = _state.value.items.getOrNull(absoluteIndex)?.key ?: return
+        if (key == _state.value.positionKey) return
+        var deferred = false
+        if (!guardedNavigation {
+            val index = _state.value.items.indexOfFirst { it.key == key }
+            if (index >= 0) {
+                settleAt(index)
+                // The editor may execute this after a blocked swipe was restored to the old page.
+                if (deferred) requestPositionSync(force = true)
+            }
+        }) { deferred = true; requestPositionSync(force = true) }
     }
 
     /**
@@ -968,6 +992,7 @@ data class ReaderUiState(
      * 滑到前面的分页器**拽回**状态记得的旧位置（真机反馈：快滑时位置来回跳）。
      */
     val positionSyncToken: Int = 0,
+    val forcePositionSync: Boolean = false,
     /**
      * 控制栏是否可见；默认**隐藏**：阅读器一打开就应该是内容
      * （Mihon 的 `ReaderActivity` 同样以隐藏态进入）。

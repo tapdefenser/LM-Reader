@@ -17,6 +17,8 @@ import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
 import com.lmreader.core.model.ReaderSettings
 import com.lmreader.core.model.ReadingDirection
+import com.lmreader.core.model.BubbleRenderSettings
+import com.lmreader.ui.reader.translation.ReaderTranslationUiState
 
 /**
  * 分页阅读器：承载 Mihon 的三种 Pager 模式
@@ -67,6 +69,9 @@ internal fun PagerReader(
     onTransitionAction: (ReaderItem.Transition) -> Unit,
     /** 页面字节的预取缓存；命中时不必再过一次 SAF。 */
     prefetcher: PagePrefetcher? = null,
+    translations: ReaderTranslationUiState = ReaderTranslationUiState(),
+    renderSettings: BubbleRenderSettings = BubbleRenderSettings(),
+    onBubbleSelected: (String, String?) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier,
 ) {
     if (items.isEmpty()) return
@@ -167,6 +172,14 @@ internal fun PagerReader(
                     settings = settings,
                     onSingleTap = onTap,
                     prefetcher = prefetcher,
+                    translation = translations.pages[item.page.pageId],
+                    regions = translations.draft?.takeIf { it.saved.pageId==item.page.pageId }?.regions
+                        ?: translations.pages[item.page.pageId]?.regions.orEmpty(),
+                    renderSettings = renderSettings,
+                    showingOriginal = item.page.pageId in translations.originals,
+                    editing = translations.editing && translations.progress==null,
+                    selectedBubble = translations.draft?.takeIf { it.saved.pageId==item.page.pageId }?.selectedId,
+                    onBubbleSelected = { onBubbleSelected(item.page.pageId,it) },
                 )
 
                 is ReaderItem.Transition -> ChapterTransitionView(

@@ -24,6 +24,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import com.lmreader.ui.i18n.localizedContentDescription
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
@@ -140,7 +141,7 @@ fun EndSideDrawer(
                 modifier = Modifier
                     .fillMaxSize()
                     .background(Color.Black.copy(alpha = progress * 0.32f))
-                    .semantics { contentDescription = "关闭面板" }
+                    .localizedContentDescription("关闭面板")
                     .clickable(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null,

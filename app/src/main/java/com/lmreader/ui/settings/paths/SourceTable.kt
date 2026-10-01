@@ -27,10 +27,11 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
+import com.lmreader.ui.i18n.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
+import com.lmreader.ui.i18n.Text
+import com.lmreader.ui.i18n.localizedContentDescription
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -104,7 +105,7 @@ fun SourceTable(
             // 每表一个 +：打开系统目录选择器，选完立即加入列表（用户要求）。
             FilledTonalIconButton(
                 onClick = onAdd,
-                modifier = Modifier.semantics { contentDescription = "增加${table.title}路径" },
+                modifier = Modifier.localizedContentDescription("增加${table.title}路径"),
             ) {
                 Icon(Icons.Filled.Add, contentDescription = null)
             }
@@ -245,7 +246,7 @@ private fun SourceTableRow(
             Box(
                 modifier = dragHandleModifier
                     .size(DRAG_HANDLE_WIDTH)
-                    .semantics { contentDescription = "拖动排序" },
+                    .localizedContentDescription("拖动排序"),
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(
@@ -281,6 +282,7 @@ private fun SourceTableRow(
             Text(
                 // 有自定义名称时主标题是名称，系统路径作为副标题；没有名称时只显示路径。
                 text = row.title,
+                localize = false,
                 style = MaterialTheme.typography.bodyMedium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -359,7 +361,7 @@ private fun SourceTableRow(
             Checkbox(
                 checked = row.recursive,
                 onCheckedChange = onToggleRecursive,
-                modifier = Modifier.semantics { contentDescription = "迭代搜索该路径下的漫画" },
+                modifier = Modifier.localizedContentDescription("迭代搜索该路径下的漫画"),
             )
         }
 
@@ -374,7 +376,7 @@ private fun SourceTableRow(
         Box(modifier = Modifier.width(DELETE_COLUMN_WIDTH), contentAlignment = Alignment.Center) {
             IconButton(
                 onClick = onDelete,
-                modifier = Modifier.semantics { contentDescription = "删除该路径" },
+                modifier = Modifier.localizedContentDescription("删除该路径"),
             ) {
                 Icon(Icons.Filled.Close, contentDescription = null, modifier = Modifier.size(18.dp))
             }
@@ -410,9 +412,7 @@ private fun LayoutModeDropdown(
             onClick = { expanded = true },
             enabled = enabled,
             contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
-            modifier = Modifier.semantics {
-                contentDescription = "解释方式：${selected.displayName()}，点击切换"
-            },
+            modifier = Modifier.localizedContentDescription("解释方式：${selected.displayName()}，点击切换"),
         ) {
             Text(
                 text = selected.shortName(),

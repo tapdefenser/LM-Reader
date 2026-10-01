@@ -7,14 +7,17 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.lmreader.core.model.MangaRepository
 import com.lmreader.core.model.MangaTranslationSettings
+import com.lmreader.core.model.BubbleRenderSettings
+import com.lmreader.core.model.BubbleFillMode
+import com.lmreader.core.model.TranslationPageMode
 import com.lmreader.core.model.ShelfRepository
 import com.lmreader.core.model.StyleMode
 import com.lmreader.core.model.resolveSourceLanguage
 import com.lmreader.core.model.resolveTargetLanguage
 import com.lmreader.core.model.resolveTranslationStyle
 import com.lmreader.core.model.translationSetupComplete
-import com.lmreader.core.model.translationTargetForLanguageTag
 import com.lmreader.core.storage.settings.AppPreferences
+import com.lmreader.core.storage.settings.BubbleRenderPreferences
 import com.lmreader.di.AppContainer
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -22,6 +25,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * **翻译选项**（漫画级：一个页面装下语言、文风与译名入口；用户口径）。
@@ -39,17 +44,19 @@ import kotlinx.coroutines.launch
  *
  * - **原文语言必填、且没有全局默认**（用户口径："每个新的漫画都必须得手动选"）。
  *   因此 [TranslationOptionsUiState.sourceConfigured] 为 false 时详情页会拦住翻译。
- * - **目标语言不必填**：全局默认就是应用现在使用的语言，漫画这一层只是覆盖。
+ * - **目标语言必填**：与源语言一样，必须为每部漫画明确填写。
  */
 class TranslationOptionsViewModel(
     private val mangaId: String,
     private val mangaRepository: MangaRepository,
     private val shelfRepository: ShelfRepository,
     private val preferences: AppPreferences,
+    private val legacyBubble: BubbleRenderPreferences,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(TranslationOptionsUiState())
     val state: StateFlow<TranslationOptionsUiState> = _state.asStateFlow()
+    private val saveMutex = Mutex()
 
     init {
         viewModelScope.launch { reload() }
@@ -58,15 +65,25 @@ class TranslationOptionsViewModel(
     /**
      * 重新读一遍设置。
      *
-     * 每次回到这一页都要重读：用户可以改应用语言（目标语言的默认因此变了）或改分类文风，
+     * 每次回到这一页都要重读：用户可以改分类文风或漫画级遮盖设置，
      * 那时这张页面上显示的生效值会变，而漫画设置本身没变——只观察
      * [MangaTranslationSettings] 是看不出来的。
      */
     fun reload() {
         viewModelScope.launch {
-            val settings = mangaRepository.translationSettings(mangaId)
+            var settings = mangaRepository.translationSettings(mangaId)
             val globalStyle = preferences.translationGlobalStyle.first()
-            val appTarget = translationTargetForLanguageTag(preferences.appLanguageTag)
+            val legacyRender = legacyBubble.settings.first()
+            val migrated = settings.copy(
+                segThreshold = settings.segThreshold ?: .35f,
+                bubbleFillMode = settings.bubbleFillMode ?: legacyRender.fillMode,
+                bubbleOpacityPercent = settings.bubbleOpacityPercent ?: legacyRender.opacityPercent,
+                bubbleTextPaddingPercent = settings.bubbleTextPaddingPercent ?: legacyRender.textPaddingPercent,
+            )
+            if (migrated != settings) {
+                mangaRepository.updateTranslationSettings(mangaId, migrated)
+                settings = migrated
+            }
             val categoryId = shelfRepository.categoryIdOf(mangaId)
             val category = categoryId?.let { id ->
                 shelfRepository.observeCategories().first().firstOrNull { it.categoryId == id }
@@ -75,7 +92,7 @@ class TranslationOptionsViewModel(
                 it.copy(
                     loading = false,
                     settings = settings,
-                    appTargetLanguage = appTarget,
+                    legacyRender = legacyRender,
                     globalStyle = globalStyle,
                     categoryName = category?.name,
                     categoryStyle = category?.customStyle?.takeIf { text -> text.isNotBlank() },
@@ -105,7 +122,7 @@ class TranslationOptionsViewModel(
         update { it.copy(autoDetectSource = enabled) }
     }
 
-    /** 目标语言；空串 = 用应用当前语言（这是默认，不是"未设置"）。 */
+    /** 目标语言；空串 = 未选，禁止入队。 */
     fun setTargetLanguage(language: String) {
         val trimmed = language.trim()
         update { it.copy(targetLanguage = trimmed.takeIf { it.isNotEmpty() }) }
@@ -121,11 +138,23 @@ class TranslationOptionsViewModel(
         update { it.copy(styleMode = StyleMode.CUSTOM, customStyle = text) }
     }
 
+    fun setWorkflow(id: String?) = update { it.copy(workflowId = id) }
+    fun setPageMode(mode: TranslationPageMode?) = update { it.copy(pageMode = mode) }
+    fun setSegThreshold(value: Float) = update { it.copy(segThreshold = value.coerceIn(0f, 1f)) }
+    fun setBubbleFill(mode: BubbleFillMode) = update { it.copy(bubbleFillMode = mode) }
+    fun setBubbleOpacity(value: Int) = update { it.copy(bubbleOpacityPercent = value.coerceIn(0, 100)) }
+    fun setBubblePadding(value: Int) = update { it.copy(bubbleTextPaddingPercent = value.coerceIn(0, 20)) }
+    fun setBubbleFont(value: com.lmreader.core.model.BubbleFont) = update { it.copy(bubbleFont = value) }
+    fun setBubbleFontScale(value: Int) = update { it.copy(bubbleFontScalePercent = value.coerceIn(50, 150)) }
+    fun setBubbleBold(value: Boolean) = update { it.copy(bubbleBold = value) }
+
     private fun update(transform: (MangaTranslationSettings) -> MangaTranslationSettings) {
         val next = transform(_state.value.settings)
         _state.update { it.copy(settings = next) }
         viewModelScope.launch {
-            runCatching { mangaRepository.updateTranslationSettings(mangaId, next) }
+            runCatching { saveMutex.withLock {
+                mangaRepository.updateTranslationSettings(mangaId, _state.value.settings)
+            } }
                 .onFailure { error ->
                     _state.update { it.copy(message = error.message ?: "保存失败") }
                 }
@@ -145,6 +174,7 @@ class TranslationOptionsViewModel(
                         mangaRepository = container.mangaRepository,
                         shelfRepository = container.shelfRepository,
                         preferences = container.preferences,
+                        legacyBubble = container.bubbleRenderPreferences,
                     )
                 }
             }
@@ -154,9 +184,8 @@ class TranslationOptionsViewModel(
 data class TranslationOptionsUiState(
     val loading: Boolean = true,
     val settings: MangaTranslationSettings = MangaTranslationSettings(),
-    /** 应用当前语言映射出来的目标语言；漫画没设时生效的就是它。 */
-    val appTargetLanguage: String = "",
     val globalStyle: String = "",
+    val legacyRender: BubbleRenderSettings = BubbleRenderSettings(),
     /** 这部作品所在分类的名字；null = 不在书架，没有分类这一层。 */
     val categoryName: String? = null,
     /** 分类那一层的文风；null = 分类没设，继续回退全局。 */
@@ -172,14 +201,15 @@ data class TranslationOptionsUiState(
     val autoDetectSource: Boolean
         get() = resolveSourceLanguage(settings).second
 
-    /** 生效的目标语言；**总有值**（漫画覆盖 → 应用语言）。 */
+    /** 生效的目标语言；未选时为空字符串。 */
     val effectiveTarget: String
-        get() = resolveTargetLanguage(settings, appTargetLanguage)
+        get() = resolveTargetLanguage(settings).orEmpty()
 
     /** 原文语言是否已经选到"可以开始翻译"的程度，决定详情页是否要拦住翻译。 */
     val sourceConfigured: Boolean
         get() = translationSetupComplete(
             sourceLanguage = settings.sourceLanguage,
+            targetLanguage = settings.targetLanguage,
             autoDetectSource = autoDetectSource,
         )
 
@@ -200,11 +230,8 @@ data class TranslationOptionsUiState(
         get() = effectiveSource ?: "未选"
 
     val targetLabel: String
-        get() = effectiveTarget
+        get() = effectiveTarget.ifEmpty { "未选" }
 
-    /** 目标语言是否来自应用语言（而不是这部作品的覆盖）。 */
-    val targetFromAppLanguage: Boolean
-        get() = settings.targetLanguage.isNullOrBlank()
 }
 
 /** 自动识别在界面上的显示名（它不是一种语言，因此不能和语言名混在一列里）。 */

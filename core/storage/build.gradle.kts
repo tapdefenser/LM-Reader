@@ -10,6 +10,7 @@ android {
 
 dependencies {
     api(project(":core:model"))
+    implementation(project(":core:api"))
     // 存储层要驱动结构扫描（StructureScanner/ScanRequest）与元数据解析
     // （ComicInfoParser），因此显式依赖 core:index；仍不依赖 core:database，
     // 落库通过 core:model 的仓储接口完成（开发文档 15.2 的模块边界）。

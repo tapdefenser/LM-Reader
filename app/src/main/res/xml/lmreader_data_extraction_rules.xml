@@ -1,10 +1,24 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
   Android 12+ 备份/迁移规则。
-  TODO(P4)：开发文档 14「存储与备份」要求备份不含 API Key 与可重建缓存；
-  引入密钥存储后必须在此排除，恢复后目录需重新授权。
+  API 密文与设备 Keystore 绑定，不随备份迁移。
+  导出发布日志只用于同一安装，不能脱离 noBackup 快照迁移。
 -->
 <data-extraction-rules>
-    <cloud-backup />
-    <device-transfer />
+    <cloud-backup>
+        <exclude domain="file" path="datastore/api_profiles.preferences_pb" />
+        <exclude domain="file" path="api-request-logs/" />
+        <exclude domain="file" path="export-queue.json" />
+        <exclude domain="file" path="export-queue.json.part" />
+        <exclude domain="file" path="export-queue.json.bak" />
+        <exclude domain="file" path="export-queue.json.new" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="file" path="datastore/api_profiles.preferences_pb" />
+        <exclude domain="file" path="api-request-logs/" />
+        <exclude domain="file" path="export-queue.json" />
+        <exclude domain="file" path="export-queue.json.part" />
+        <exclude domain="file" path="export-queue.json.bak" />
+        <exclude domain="file" path="export-queue.json.new" />
+    </device-transfer>
 </data-extraction-rules>

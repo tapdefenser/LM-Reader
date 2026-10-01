@@ -2,6 +2,8 @@ package com.lmreader.ui.reader
 
 import android.graphics.BitmapFactory
 import android.graphics.PointF
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.CancellationException
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -19,10 +21,17 @@ import com.davemorrissey.labs.subscaleview.SubsamplingScaleImageView
 import com.lmreader.core.model.ImageScaleType
 import com.lmreader.core.model.ReaderSettings
 import com.lmreader.core.model.ZoomStart
+import com.lmreader.core.model.BubbleRenderSettings
+import com.lmreader.core.model.PageTranslatedRegion
+import com.lmreader.core.model.renderGeometry
+import com.lmreader.core.vision.BubbleOverlaySource
+import com.lmreader.ui.reader.translation.ReaderPageTranslation
 import com.lmreader.core.storage.reader.PageSource
 import com.lmreader.core.storage.reader.ReaderPage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
 
 /**
  * 一页的渲染视口：由 Mihon 使用的图片引擎承担缩放、平移、分块解码与裁白边。
@@ -62,6 +71,13 @@ internal fun EnginePageView(
     onReady: () -> Unit = {},
     /** 页面字节的预取缓存；命中时不必再过一次 SAF。 */
     prefetcher: PagePrefetcher? = null,
+    translation: ReaderPageTranslation? = null,
+    regions: List<PageTranslatedRegion> = translation?.regions.orEmpty(),
+    renderSettings: BubbleRenderSettings = BubbleRenderSettings(),
+    showingOriginal: Boolean = false,
+    editing: Boolean = false,
+    selectedBubble: String? = null,
+    onBubbleSelected: (String?) -> Unit = {},
 ) {
     // 视图实例随页面身份重建：库内部持有解码状态与瓦片缓存，复用实例会让上一页的
     // 缩放位置与瓦片残留到下一页（Mihon 在 `ReaderPageImageView.recycle()` 里显式清理
@@ -71,6 +87,8 @@ internal fun EnginePageView(
         mutableStateOf<TapAwareSubsamplingImageView?>(null)
     }
     var decodeFailed by remember(page.pageId) { mutableStateOf(false) }
+    var overlaySource by remember(page.pageId) { mutableStateOf<BubbleOverlaySource?>(null) }
+    val geometryRegions = translation?.regions?.map { it.region.renderGeometry() }
 
     // 解码目标（长边）：屏幕短边 × 4/3，与 EhViewer 同口径（见 [ReaderImageSampling]）。
     // 用屏幕尺寸而不是视图尺寸，是为了不必等布局——布局还没发生时就需要决定解码计划，
@@ -110,7 +128,15 @@ internal fun EnginePageView(
         // `setImage: 001.jpg view=0x0`，而库的瓦片初始化依赖视图尺寸。
         // 在那之前载图既可能白跑一次（随后尺寸变化还要重来），也是"同一页被解码
         // 多次"的一个来源，而每次解码都要一整张图的 ByteBuffer（见下）。
-        update = { created -> view = created },
+        update = { created ->
+            view = created
+            created.onSingleTap = onSingleTap
+            created.onBubbleSelected = onBubbleSelected
+            created.editing = editing && translation != null
+            created.selectedBubble = selectedBubble
+            created.showTranslation = !showingOriginal
+            created.invalidate()
+        },
     )
 
     // 载入这一页的图像流。
@@ -123,24 +149,67 @@ internal fun EnginePageView(
     //    上一版这段直接跑在组合的主线程上，真机实测翻页单帧 2300~3700ms。
     //
     // 流在协程里先准备好，布局回调只负责 `setImage`。
-    LaunchedEffect(page.pageId, source, prefetcher, targetLongEdge) {
+    LaunchedEffect(view, page.pageId, source, prefetcher, targetLongEdge, geometryRegions, translation?.sourceSha256, settings.effectiveCropBorders) {
         val target = view ?: return@LaunchedEffect
+        val baseTag = "${page.pageId}|$targetLongEdge|${settings.effectiveCropBorders}"
+        val loadTag = baseTag + if (settings.effectiveCropBorders) "|${geometryRegions.hashCode()}|${translation?.sourceSha256}" else ""
+        target.setTag(IMAGE_REQUESTED_TAG,loadTag)
         decodeFailed = false
-        val imageSource = withContext(Dispatchers.IO) {
-            runCatching { buildImageSource(source, page, prefetcher, targetLongEdge) }.getOrNull()
-        }
-        if (imageSource == null) {
-            decodeFailed = true
-            return@LaunchedEffect
-        }
-        target.doOnLayout {
+        var prepared: PreparedOverlayPage? = null
+        var attached = false
+        try {
+            if (target.getTag(IMAGE_LOADED_TAG) == loadTag && !settings.effectiveCropBorders) {
+                if (translation == null) {
+                    target.overlay = null; overlaySource = null; target.invalidate()
+                } else {
+                    val seed = withContext(Dispatchers.IO) { prepareOverlaySource(context, source, page, translation) }
+                    ensureActive()
+                    target.overlayGeometry = com.lmreader.ui.reader.translation.ReaderOverlayGeometry(translation.width, translation.height,
+                        com.lmreader.core.model.PixelRect(0f, 0f, translation.width.toFloat(), translation.height.toFloat()))
+                    overlaySource = seed
+                }
+                return@LaunchedEffect
+            }
+            overlaySource = null
+            target.overlay = null
+            val imageSource = withContext(Dispatchers.IO) {
+                if (translation != null) {
+                    prepareOverlayPage(context, source, page, translation, targetLongEdge, settings.effectiveCropBorders)
+                        .also { prepared = it }.imageSource
+                } else buildImageSource(source, page, prefetcher, targetLongEdge)
+            }
+            ensureActive()
+            if (imageSource == null) { decodeFailed = true; return@LaunchedEffect }
+            if (target.width == 0 || target.height == 0) suspendCancellableCoroutine<Unit> { continuation ->
+                target.doOnLayout { if (continuation.isActive) continuation.resume(Unit) }
+            }
             // tag 带上解码策略：同一页在**同一策略下**只 setImage 一次（避免重组触发第二次
             // 整图解码），但用户切换「加载原图」时必须让它重新载一次——那就是这个开关的意义。
-            val loadTag = "${page.pageId}|$targetLongEdge"
-            if (target.getTag(IMAGE_LOADED_TAG) == loadTag) return@doOnLayout
+            if(target.getTag(IMAGE_REQUESTED_TAG)!=loadTag) return@LaunchedEffect
+            if (target.getTag(IMAGE_LOADED_TAG) == loadTag) return@LaunchedEffect
+            if(target.isReady && target.minScale>0f && target.sWidth>0 && target.sHeight>0) {
+                target.center?.let {center ->target.pendingViewport=PageViewport(target.scale/target.minScale,
+                    center.x/target.sWidth,center.y/target.sHeight)}
+            }
             target.setTag(IMAGE_LOADED_TAG, loadTag)
+            target.overlayGeometry = prepared?.geometry
+            // Cropping translated pages is performed once above with explicit offsets.
+            target.setCropBorders(translation == null && settings.effectiveCropBorders)
             target.setImage(imageSource)
-        }
+            attached = true
+            overlaySource = prepared?.overlay
+        } catch(cancelled:CancellationException) { throw cancelled }
+        catch(_:Exception) { decodeFailed = true }
+        finally { if (!attached) prepared?.bitmap?.recycle() }
+    }
+
+    LaunchedEffect(overlaySource, regions, renderSettings, translation?.preview) {
+        val target = view ?: return@LaunchedEffect
+        val seed = overlaySource ?: return@LaunchedEffect
+        val overlay = withContext(Dispatchers.Default) { seed.layout(regions, renderSettings, hideEmpty = translation?.preview == true) }
+        ensureActive()
+        target.overlay = overlay
+        target.invalidate()
     }
 
     DisposableEffect(page.pageId) {
@@ -154,6 +223,8 @@ internal fun EnginePageView(
             // 已经销毁的节点）。
             target?.setOnImageEventListener(null)
             target?.setTag(IMAGE_LOADED_TAG, null)
+            target?.setTag(IMAGE_REQUESTED_TAG, null)
+            target?.overlay = null
             target?.recycle()
             view = null
         }
@@ -162,6 +233,7 @@ internal fun EnginePageView(
 
 /** 标记"这一页已经载图"，防止重组时重复整图解码。见上面的载图分支。 */
 private const val IMAGE_LOADED_TAG = -0x4C4D52 // 负数，避开库与框架可能使用的正数 tag key
+private const val IMAGE_REQUESTED_TAG = -0x4C4D53
 
 /**
  * 构造交给引擎的图源，必要时先降采样。
@@ -305,10 +377,14 @@ private fun configure(
             override fun onReady() {
                 // 缩放上限与双击目标必须在图片就绪后设置：它们都以当前初始缩放为基准，
                 // 而初始缩放要等库算出适配比例才存在（Mihon 的 `setupZoom` 同理）。
-                val base = view.scale
+                val base = view.minScale
                 view.maxScale = base * MAX_ZOOM_SCALE
                 view.setDoubleTapZoomScale(base * DOUBLE_TAP_ZOOM_FACTOR)
-                applyZoomStart(view, settings)
+                val saved=(view as? TapAwareSubsamplingImageView)?.pendingViewport
+                if(saved!=null) {
+                    (view as TapAwareSubsamplingImageView).pendingViewport=null
+                    view.setScaleAndCenter((base*saved.zoom).coerceIn(base,view.maxScale),PointF(saved.centerX*view.sWidth,saved.centerY*view.sHeight))
+                } else applyZoomStart(view, settings)
 
                 onReady()
             }

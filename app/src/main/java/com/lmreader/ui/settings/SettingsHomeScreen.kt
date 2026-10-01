@@ -12,31 +12,31 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
+import com.lmreader.ui.i18n.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
+import com.lmreader.ui.i18n.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
+import com.lmreader.R
 import androidx.compose.ui.unit.dp
 
-/**
- * 设置首页（开发文档 14「多级设置」）。
- *
- * 本步只接通「图库与路径」一项——它是第一步的产品要求，也是引导页的同一页面
- * （开发文档 4 段首："此页既是首次引导，也是设置中的同一个页面，不维护两份逻辑"）。
- *
- * 其余分组按开发文档 14 的导航摘要列出，但**如实标注为未实现**：显示一个会打开
- * 空白页的设置项，比暂时不显示更糟——用户会以为自己配置错了。
- */
+/** 设置首页；尚未接入的功能显示明确状态。 */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsHomeScreen(
     onOpenPaths: () -> Unit,
     onOpenReader: () -> Unit,
+    onOpenApi: () -> Unit,
+    onOpenGeneral: () -> Unit,
+    onOpenExport: () -> Unit,
+    onOpenBackup: () -> Unit,
+    onOpenTasks: () -> Unit,
+    onOpenAbout: () -> Unit,
     onBack: () -> Unit,
 ) {
     Scaffold(
@@ -58,17 +58,22 @@ fun SettingsHomeScreen(
                 .verticalScroll(rememberScrollState()),
         ) {
             SettingsEntry(
+                title = "通用",
+                subtitle = "应用语言与主题",
+                enabled = true,
+                onClick = onOpenGeneral,
+            )
+            SettingsEntry(
+                title = "API 与翻译引擎",
+                subtitle = "LLM、机翻语言包、OCR 与 SEG（并发、加速、预处理缓存）",
+                enabled = true,
+                onClick = onOpenApi,
+            )
+            SettingsEntry(
                 title = "图库与路径",
                 subtitle = "两张路径表、子目录与类型、强制重新扫描索引",
                 enabled = true,
                 onClick = onOpenPaths,
-            )
-            HorizontalDivider()
-            SettingsEntry(
-                title = "图库与书架显示",
-                subtitle = "排序与卡片字段（P1）",
-                enabled = false,
-                onClick = {},
             )
             SettingsEntry(
                 title = "阅读器",
@@ -77,37 +82,14 @@ fun SettingsHomeScreen(
                 onClick = onOpenReader,
             )
             SettingsEntry(
-                // 应用级叫「翻译设置」，漫画级叫「翻译选项」（详情页 ⋮）——用户要求两者分开叫，
-                // 这样"翻译设置"就不会在两层之间来回指代。
-                title = "翻译设置",
-                subtitle = "主 AI、OCR、三种翻译模式、全局文风、遮罩与字体（P3）",
-                enabled = false,
-                onClick = {},
+                title = "导出设置",
+                subtitle = "多章节与单章节导出路径",
+                enabled = true,
+                onClick = onOpenExport,
             )
-            SettingsEntry(
-                title = "导出",
-                subtitle = "默认格式、目标目录、质量、缺页策略（P4）",
-                enabled = false,
-                onClick = {},
-            )
-            SettingsEntry(
-                title = "存储与备份",
-                subtitle = "缓存上限、清缓存、用户数据备份恢复（P4）",
-                enabled = false,
-                onClick = {},
-            )
-            SettingsEntry(
-                title = "外观与语言",
-                subtitle = "当前跟随系统深浅色；粉彩/深海/自定义颜色与应用语言在 P5",
-                enabled = false,
-                onClick = {},
-            )
-            SettingsEntry(
-                title = "关于",
-                subtitle = "版本 0.1.0-m1 · 开源许可与项目链接待补",
-                enabled = false,
-                onClick = {},
-            )
+            SettingsEntry("备份与恢复", "设置、书架、进度、译文和人工编辑", true, onOpenBackup)
+            SettingsEntry("后台任务与通知", "后台运行、中断恢复与临时文件清理", true, onOpenTasks)
+            SettingsEntry("关于", "版本、GitHub 与检查更新", true, onOpenAbout)
         }
     }
 }

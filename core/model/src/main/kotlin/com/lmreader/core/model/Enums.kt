@@ -70,9 +70,16 @@ enum class TranslationState {
     /** 翻译中（P3 的调度器接上后才会出现）。 */
     RUNNING,
 
+    /** In the queue but explicitly suspended by the user. */
+    PAUSED,
+
     /** 有译文。 */
     DONE,
 
     /** 上次失败，[ChapterTranslation.failure] 里有原因。 */
     FAILED,
+    /** Process ended while this chapter was running; user can retry failed or remaining pages. */
+    INTERRUPTED,
+    /** User explicitly removed this chapter from the active queue. */
+    CANCELLED,
 }

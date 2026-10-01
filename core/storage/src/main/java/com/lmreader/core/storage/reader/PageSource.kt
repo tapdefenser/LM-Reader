@@ -72,14 +72,18 @@ sealed interface PageSourceOpenResult {
 
 class PageSourceFactory(
     private val treeAccess: TreeAccess,
+    private val archiveCache: java.io.File? = null,
 ) {
     fun open(treeUri: String, chapter: ChapterRecord): PageSourceOpenResult = when (chapter.kind) {
         ChapterKind.IMAGE_DIRECTORY -> PageSourceOpenResult.Ready(
             ImageDirectoryPageSource(treeAccess, treeUri, chapter),
         )
-        ChapterKind.ARCHIVE -> PageSourceOpenResult.Unsupported(
-            "归档与 PDF 阅读尚未接入，请选择图片目录章节",
-        )
+        ChapterKind.ARCHIVE -> when (MimeTypes.extensionOf(chapter.documentId)
+            ?: treeAccess.mimeType(treeUri, chapter.documentId)?.let { if (it == MimeTypes.PDF) "pdf" else if (it in MimeTypes.ARCHIVE_MIME_TYPES) "zip" else null }) {
+            "zip", "cbz" -> PageSourceOpenResult.Ready(ZipChapterPageSource(treeAccess, treeUri, chapter, archiveCache))
+            "pdf" -> PageSourceOpenResult.Ready(PdfChapterPageSource(treeAccess, treeUri, chapter))
+            else -> PageSourceOpenResult.Unsupported("不支持的归档格式")
+        }
     }
 }
 

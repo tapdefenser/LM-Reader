@@ -1,5 +1,6 @@
 package com.lmreader.ui.settings.paths
 
+import com.lmreader.ui.i18n.showLocalizedSnackbar
 import android.content.Intent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -26,7 +27,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
+import com.lmreader.ui.i18n.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -36,7 +37,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
-import androidx.compose.material3.Text
+import com.lmreader.ui.i18n.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -97,7 +98,7 @@ fun GalleryPathsScreen(
 
     LaunchedEffect(state.hint) {
         val hint = state.hint ?: return@LaunchedEffect
-        snackbarHostState.showSnackbar(hint)
+        snackbarHostState.showLocalizedSnackbar(context, hint)
         viewModel.consumeHint()
     }
 
@@ -304,7 +305,7 @@ fun GalleryPathsScreen(
                         val removed = viewModel.confirmDelete()
                         if (removed != null) {
                             scope.launch {
-                                val result = snackbarHostState.showSnackbar(
+                                val result = snackbarHostState.showLocalizedSnackbar(context,
                                     message = "已移除路径（未删除任何文件）",
                                     actionLabel = "撤销",
                                 )

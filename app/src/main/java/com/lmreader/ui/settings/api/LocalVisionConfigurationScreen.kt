@@ -1,0 +1,105 @@
+package com.lmreader.ui.settings.api
+
+import com.lmreader.ui.i18n.Text
+
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.lmreader.di.AppContainer
+import com.lmreader.core.model.OcrBackend
+import com.lmreader.core.model.InferenceEngineKind
+import androidx.compose.ui.platform.testTag
+import kotlinx.coroutines.launch
+
+@Composable
+fun LocalVisionConfigurationScreen(container: AppContainer, seg: Boolean, onTest: () -> Unit, onBack: () -> Unit) {
+    val prefs by container.visionExecutionPreferences.settings.collectAsStateWithLifecycle()
+    val messages by container.localVision.accelerationMessages.collectAsStateWithLifecycle()
+    val resources by container.localVision.loadedResources.collectAsStateWithLifecycle()
+    val cacheLimit by container.translationCachePreferences.megabytes.collectAsStateWithLifecycle()
+    val cacheUsed by container.translationQueue.cacheBytes.collectAsStateWithLifecycle()
+    var cacheDraft by remember(cacheLimit) { mutableFloatStateOf(cacheLimit.toFloat()) }
+    val count = if (seg) prefs.segConcurrency else prefs.ocrConcurrency
+    val actual = if (seg) container.localVision.segConcurrency else container.localVision.ocrConcurrency
+    var menu by remember { mutableStateOf(false) }
+    var backendMenu by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val title = if (seg) "SEG 配置" else "本地 OCR 配置"
+    Scaffold(topBar = { ApiTopBar(title, onBack) }) { padding ->
+        Column(Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(if (seg) "本地气泡分割模型" else "本地 OCR 模型", style = MaterialTheme.typography.titleMedium)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Text("并发数")
+                Box {
+                    OutlinedButton(onClick = { menu = true }) { Text(if (count == 0) "0（自动）" else "$count") }
+                    DropdownMenu(menu, { menu = false }) { (0..8).forEach { option ->
+                        DropdownMenuItem(text = { Text(if (option == 0) "0（自动）" else "$option") }, onClick = {
+                            scope.launch { container.visionExecutionPreferences.update {
+                                if (seg) it.copy(segConcurrency = option) else it.copy(ocrConcurrency = option)
+                            } }; menu = false
+                        })
+                    } }
+                }
+            }
+            Text("当前并发上限 $actual；自动模式根据 CPU 与可用内存决定。", style = MaterialTheme.typography.bodySmall)
+            if (seg) {
+                Text("预处理缓存上限 ${cacheDraft.toInt()} MB · 当前 ${cacheUsed / 1_048_576} MB")
+                Slider(cacheDraft, { cacheDraft = it }, valueRange = 32f..1024f, steps = 30,
+                    onValueChangeFinished = { scope.launch { container.translationCachePreferences.setMegabytes(cacheDraft.toInt()) } })
+                Text("缓存同一漫画的预处理位图；缓存满时停止预处理新页，释放后继续。调整立即生效，已占用部分随处理完成释放。模型自身内存不计入此上限。",
+                    style = MaterialTheme.typography.bodySmall)
+            }
+            if (seg) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Text("GPU 加速")
+                    Switch(prefs.segGpu, { checked -> scope.launch {
+                        container.visionExecutionPreferences.update { it.copy(segGpu = checked) }
+                    } })
+                }
+                Text("LiteRT GPU 后端，设备支持时使用 GPU，初始化或推理失败时回退 CPU。", style = MaterialTheme.typography.bodySmall)
+            } else {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Text("OCR 加速方式")
+                    Box {
+                        OutlinedButton(onClick = { backendMenu = true }, modifier = Modifier.testTag("ocr-backend-selector")) {
+                            Text(prefs.ocrBackend.label())
+                        }
+                        DropdownMenu(backendMenu, { backendMenu = false }) {
+                            OcrBackend.entries.forEach { option ->
+                                DropdownMenuItem(text = { Text(option.label()) }, onClick = {
+                                    scope.launch { container.visionExecutionPreferences.update { it.copy(ocrBackend = option) } }
+                                    backendMenu = false
+                                }, modifier = Modifier.testTag("ocr-backend-${option.name}"))
+                            }
+                        }
+                    }
+                }
+                Text(when (prefs.ocrBackend) {
+                    OcrBackend.AUTO -> "自动依次尝试 QNN → NNAPI → CPU。QNN 用于高通设备；NNAPI 取决于系统 GPU/NPU 驱动。"
+                    OcrBackend.QNN -> "使用高通 QNN，优先尝试 NPU，再尝试 GPU；不可用或运行失败时回退 CPU。"
+                    OcrBackend.NNAPI -> "使用系统 NNAPI GPU/NPU 驱动；不可用或运行失败时回退 CPU。"
+                    OcrBackend.CPU -> "使用 ONNX Runtime CPU。"
+                }, style = MaterialTheme.typography.bodySmall)
+                Text("不支持的运算和超长文字行由 CPU 执行。首次使用硬件加速需要编译模型。", style = MaterialTheme.typography.bodySmall)
+                val backends = resources.filter { it.kind == InferenceEngineKind.OCR }.map { it.backend }.distinct()
+                Text(if (backends.isEmpty()) "实际后端：尚未加载" else "实际后端：${backends.joinToString("；")}", style = MaterialTheme.typography.bodySmall)
+            }
+            Text("已加载引擎会保留；修改加速方式在全部暂停卸载后，下次加载时生效。", style = MaterialTheme.typography.bodySmall)
+            messages.filter { it.startsWith(if (seg) "Seg" else "OCR") }.forEach { Text(it, color = MaterialTheme.colorScheme.error) }
+            TextButton(onClick = onTest) { Text(if (seg) "测试 Seg" else "测试本地 OCR") }
+        }
+    }
+}
+
+private fun OcrBackend.label() = when (this) {
+    OcrBackend.AUTO -> "自动"
+    OcrBackend.QNN -> "QNN（高通）"
+    OcrBackend.NNAPI -> "NNAPI（系统）"
+    OcrBackend.CPU -> "CPU"
+}

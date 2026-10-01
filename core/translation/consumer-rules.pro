@@ -1,0 +1,1 @@
+-keep class com.lmreader.core.translation.BergamotNative { *; }

@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="420" viewBox="0 0 1200 420" role="img" aria-labelledby="title desc">
+  <title id="title">LM-Reader — Your stories. Your language.</title>
+  <desc id="desc">Original vector illustration of an open book, comic panels and connected translation steps.</desc>
+  <defs>
+    <linearGradient id="paper" x2="1" y2="1"><stop stop-color="#f8f3e8"/><stop offset="1" stop-color="#e9f0ef"/></linearGradient>
+    <linearGradient id="night" x2="0" y2="1"><stop stop-color="#244759"/><stop offset="1" stop-color="#102c3b"/></linearGradient>
+    <pattern id="grid" width="28" height="28" patternUnits="userSpaceOnUse"><path d="M28 0H0V28" fill="none" stroke="#214b57" stroke-opacity=".045"/></pattern>
+    <filter id="shadow" x="-30%" y="-30%" width="170%" height="170%"><feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#183846" flood-opacity=".13"/></filter>
+    <clipPath id="scene"><rect x="808" y="105" width="228" height="133" rx="10"/></clipPath>
+  </defs>
+  <rect width="1200" height="420" rx="24" fill="url(#paper)"/>
+  <rect width="1200" height="420" rx="24" fill="url(#grid)"/>
+  <circle cx="1048" cy="68" r="178" fill="#9acacb" opacity=".16"/>
+  <circle cx="748" cy="376" r="128" fill="#e7a683" opacity=".13"/>
+  <g font-family="Arial,Helvetica,sans-serif">
+    <rect x="62" y="55" width="48" height="48" rx="14" fill="#183b4c"/>
+    <path d="M73 67l12 4v21l-12-4z" fill="#fff9ef"/>
+    <path d="M99 67l-12 4v21l12-4z" fill="#b9e4f2"/>
+    <path d="M85 71h2v21h-2z" fill="#fff9ef"/>
+    <text x="129" y="85" font-size="13" font-weight="700" letter-spacing="3" fill="#426470">ANDROID · LOCAL COMICS</text>
+    <text x="58" y="188" font-size="74" font-weight="700" letter-spacing="-3" fill="#173748">LM-Reader</text>
+    <text x="63" y="236" font-size="28" fill="#365865">Your stories. Your language.</text>
+    <text x="64" y="278" font-size="16" fill="#58717a">A home for reading, translation and creative workflows.</text>
+    <g font-size="12" font-weight="700" letter-spacing="1.5">
+      <rect x="63" y="322" width="86" height="32" rx="16" fill="#173748"/><text x="86" y="343" fill="#fff9ef">READ</text>
+      <rect x="161" y="322" width="135" height="32" rx="16" fill="#d7e8e5"/><text x="180" y="343" fill="#214f5c">TRANSLATE</text>
+      <rect x="308" y="322" width="104" height="32" rx="16" fill="#f2d9c7"/><text x="331" y="343" fill="#875039">CREATE</text>
+    </g>
+  </g>
+  <g transform="rotate(7 939 211)" filter="url(#shadow)">
+    <rect x="778" y="59" width="288" height="300" rx="18" fill="#fffcf5" stroke="#c9d9d8"/>
+    <rect x="797" y="79" width="248" height="14" rx="7" fill="#e6eeea"/>
+    <rect x="808" y="105" width="228" height="133" rx="10" fill="url(#night)"/>
+    <g clip-path="url(#scene)">
+      <circle cx="985" cy="137" r="19" fill="#f5dfab"/>
+      <path d="M795 232l64-86 44 60 40-49 94 81z" fill="#477582"/>
+      <path d="M803 238l88-68 55 68 47-38 63 38z" fill="#799998"/>
+      <path d="M815 238h226l-78-27-46 9-32-11z" fill="#bdcbc1"/>
+      <path d="M913 237l13-24 17-14" fill="none" stroke="#f7ede0" stroke-width="3"/>
+    </g>
+    <rect x="798" y="251" width="113" height="84" rx="9" fill="#e4efeb"/>
+    <rect x="925" y="251" width="113" height="84" rx="9" fill="#f3d8c6"/>
+    <path d="M816 271h74v32h-44l-11 9v-9h-19z" fill="#fffdf8" stroke="#afc8c3"/>
+    <path d="M941 271h80v32h-43l-12 9v-9h-25z" fill="#fffdf8" stroke="#d4af98"/>
+    <path d="M829 283h47m-47 9h32" stroke="#547d80" stroke-width="3" stroke-linecap="round"/>
+    <path d="M953 283h48m-48 9h35" stroke="#b27959" stroke-width="3" stroke-linecap="round"/>
+  </g>
+  <g filter="url(#shadow)">
+    <rect x="700" y="285" width="253" height="82" rx="18" fill="#183b4c"/>
+    <path d="M746 326h121" stroke="#507383" stroke-width="2"/>
+    <circle cx="748" cy="326" r="17" fill="#b6d9d7"/>
+    <circle cx="813" cy="326" r="17" fill="#edc6a7"/>
+    <circle cx="879" cy="326" r="17" fill="#f7f0df"/>
+    <path d="M742 326h12m-6-6v12" stroke="#335d67" stroke-width="2" stroke-linecap="round"/>
+    <path d="M807 329l6-7 6 7" fill="none" stroke="#925d3a" stroke-width="2" stroke-linecap="round"/>
+    <path d="M873 326l4 4 8-9" fill="none" stroke="#477d79" stroke-width="2" stroke-linecap="round"/>
+    <path d="M924 313v19m-7-6 7 7 7-7" fill="none" stroke="#aecbcb" stroke-width="2" stroke-linecap="round"/>
+  </g>
+</svg>

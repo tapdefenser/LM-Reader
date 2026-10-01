@@ -1,0 +1,25 @@
+LM-Reader dedicated offline neural machine translation component
+
+Models originate from Mozilla Firefox Translations. Model project license:
+MPL-2.0; https://github.com/mozilla/firefox-translations-models
+Current model registry:
+https://storage.googleapis.com/moz-fx-translations-data--303e-prod-translations-data/db/models.json
+Pinned paths, raw hashes and sizes: translation/catalog.json (2026-09-29).
+The community copy TiberiuCristianLeon/Bergamot at Hugging Face declares
+CC-BY-4.0 in its model card; this attribution does not replace upstream notices.
+https://huggingface.co/TiberiuCristianLeon/Bergamot
+Mirror revision: 18008da9d2922dde09dae47f5fee71cac4253701
+HF-Mirror is a separate community-operated delivery service.
+
+Native source archives and SHA-256 are recorded in tools/translation_sources.lock.json.
+Prepare sources using tools/fetch_translation_sources.py. Its compatibility
+changes to MIT-licensed Marian/Pathie are public in that script. Bergamot MPL
+inference source files are unmodified. LM-Reader JNI and CMake are separate
+source files under core/translation/src/main/cpp.
+
+Bergamot (niedev Android adaptation): MPL-2.0
+Marian, ssplit-cpp, intgemm, cpuinfo: MIT
+SentencePiece, Ruy, onnxjs: Apache-2.0
+simd_utils: BSD-2-Clause; PCRE2: BSD-3-Clause
+Bundled dependency notices accompany this file; refer to their full text.
+Source code and notices must remain available when distributing covered code.

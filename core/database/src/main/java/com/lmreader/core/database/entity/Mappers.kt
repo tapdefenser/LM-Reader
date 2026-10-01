@@ -8,6 +8,8 @@ import com.lmreader.core.model.LibrarySource
 import com.lmreader.core.model.MangaCard
 import com.lmreader.core.model.MangaRecord
 import com.lmreader.core.model.MangaTranslationSettings
+import com.lmreader.core.model.TranslationPageMode
+import com.lmreader.core.model.BubbleFillMode
 import com.lmreader.core.model.MetadataRecord
 import com.lmreader.core.model.ReaderOrientation
 import com.lmreader.core.model.ReadingMode
@@ -96,6 +98,15 @@ internal fun MangaEntity.toDomain(): MangaRecord = MangaRecord(
             StyleMode.entries.firstOrNull { it.name == stored }
         },
         customStyle = translationCustomStyle,
+        workflowId = translationWorkflowId,
+        pageMode = translationPageMode?.let { name -> TranslationPageMode.entries.firstOrNull { it.name == name } },
+        segThreshold = translationSegThreshold?.takeIf { it.isFinite() && it in 0f..1f },
+        bubbleFillMode = translationBubbleFillMode?.let { name -> BubbleFillMode.entries.firstOrNull { it.name == name } },
+        bubbleOpacityPercent = translationBubbleOpacity?.takeIf { it in 0..100 },
+        bubbleTextPaddingPercent = translationBubblePadding?.takeIf { it in 0..20 },
+        bubbleFont = translationBubbleFont?.let { name -> com.lmreader.core.model.BubbleFont.entries.firstOrNull { it.name == name } },
+        bubbleFontScalePercent = translationBubbleFontScale?.takeIf { it in 50..150 },
+        bubbleBold = translationBubbleBold,
     ),
 )
 
@@ -130,6 +141,15 @@ internal fun MangaRecord.toEntity(sourceOrderIndex: Int): MangaEntity = MangaEnt
     translationTargetLanguage = translationSettings.targetLanguage,
     translationStyleMode = translationSettings.styleMode?.name,
     translationCustomStyle = translationSettings.customStyle,
+    translationWorkflowId = translationSettings.workflowId,
+    translationPageMode = translationSettings.pageMode?.name,
+    translationSegThreshold = translationSettings.segThreshold,
+    translationBubbleFillMode = translationSettings.bubbleFillMode?.name,
+    translationBubbleOpacity = translationSettings.bubbleOpacityPercent,
+    translationBubblePadding = translationSettings.bubbleTextPaddingPercent,
+    translationBubbleFont = translationSettings.bubbleFont?.name,
+    translationBubbleFontScale = translationSettings.bubbleFontScalePercent,
+    translationBubbleBold = translationSettings.bubbleBold,
 )
 
 internal fun ChapterEntity.toDomain(): ChapterRecord = ChapterRecord(

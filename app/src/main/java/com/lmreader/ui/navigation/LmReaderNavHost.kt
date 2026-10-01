@@ -22,6 +22,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.lmreader.core.storage.settings.AppPreferences
+import com.lmreader.core.model.ApiProfileKind
 import com.lmreader.di.AppContainer
 import com.lmreader.ui.bookshelf.BookshelfScreen
 import com.lmreader.ui.detail.MangaDetailScreen
@@ -29,6 +30,7 @@ import com.lmreader.ui.library.LibraryScreen
 import com.lmreader.ui.reader.ReaderScreen
 import com.lmreader.ui.reader.ReaderViewModel
 import com.lmreader.ui.settings.SettingsHomeScreen
+import com.lmreader.ui.settings.api.*
 import com.lmreader.ui.settings.reader.ReaderSettingsScreen
 import com.lmreader.ui.settings.paths.GalleryPathsScreen
 import com.lmreader.ui.settings.paths.GalleryPathsSettingsScreen
@@ -43,11 +45,27 @@ object Routes {
     const val LIBRARY = "library"
     const val BOOKSHELF = "bookshelf"
     const val SETTINGS = "settings"
+    const val SETTINGS_GENERAL = "settings/general"
+    const val SETTINGS_ABOUT = "settings/about"
     const val SETTINGS_PATHS = "settings/paths"
     const val SETTINGS_READER = "settings/reader"
+    const val SETTINGS_EXPORT = "settings/export"
+    const val SETTINGS_BACKUP = "settings/backup"
+    const val SETTINGS_TASKS = "settings/tasks"
+    const val SETTINGS_API = "settings/api"
+    const val SETTINGS_API_LLM = "settings/api/llm"
+    const val SETTINGS_API_OCR = "settings/api/ocr"
+    const val SETTINGS_API_SEG = "settings/api/seg"
+    const val SETTINGS_API_OCR_LOCAL = "settings/api/ocr/local"
+    const val SETTINGS_API_LOCAL = "settings/api/local"
+    const val SETTINGS_LOCAL_VISION = "settings/api/ocr/local-test"
+    const val SETTINGS_API_EDITOR = "settings/api/editor/{kind}/{profileId}"
+    fun apiEditor(kind: ApiProfileKind, id: String?) = "settings/api/editor/${kind.name}/${id ?: "new"}"
     const val MANGA_DETAIL = "manga/{mangaId}"
     const val READER = "reader/{mangaId}/{chapterId}?page={page}"
     const val TRANSLATION_QUEUE = "queue/translation"
+    const val TRANSLATION_WORKFLOWS = "workflows/translation"
+    const val API_LOGS = "logs/api"
     const val EXPORT_QUEUE = "queue/export"
 
     // 翻译相关的页面全部挂在详情页下（"跟着每部漫画走"，用户口径）。
@@ -98,16 +116,23 @@ object Routes {
 fun LmReaderNavHost(
     container: AppContainer,
     navController: NavHostController = rememberNavController(),
+    requestedQueue: String? = null,
+    onQueueOpened: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val preferences = remember { AppPreferences(context) }
     // 首次组合时同步读一次决策值：DataStore 是异步的，用 null 表示"还没读到"，
     // 在读到之前不渲染任何页面，避免先闪一下书架再跳到引导页。
     var startDestination by remember { mutableStateOf<String?>(null) }
+    var startupFailure by remember { mutableStateOf<String?>(null) }
+    val recoveryRequired by container.backups.recoveryRequired.collectAsStateWithLifecycle()
 
     LaunchedEffect(Unit) {
-        val completed = preferences.onboardingCompleted.first()
-        startDestination = if (completed) Routes.BOOKSHELF else Routes.ONBOARDING
+        try {
+            container.startupReady.await()
+            val completed = preferences.onboardingCompleted.first()
+            startDestination = if (completed) Routes.BOOKSHELF else Routes.ONBOARDING
+        } catch (error: Exception) { startupFailure = "数据恢复未完成，请保留应用数据并重新打开：${error.message}" }
     }
 
     // 主菜单抽屉用框架的 ModalNavigationDrawer：
@@ -122,13 +147,27 @@ fun LmReaderNavHost(
     val scope = rememberCoroutineScope()
     val openMenu: () -> Unit = { scope.launch { drawerState.open() } }
 
-    val destination = startDestination ?: return
+    if (recoveryRequired) {
+        com.lmreader.ui.i18n.Text("数据恢复未完成，请保留应用数据并重新打开应用。")
+        return
+    }
+    val destination = startDestination ?: run {
+        startupFailure?.let { com.lmreader.ui.i18n.Text(it) }
+        return
+    }
+    LaunchedEffect(requestedQueue, destination) {
+        if (requestedQueue != null) {
+            navController.navigate(if (requestedQueue == "export") Routes.EXPORT_QUEUE else Routes.TRANSLATION_QUEUE) { launchSingleTop = true }
+            onQueueOpened()
+        }
+    }
 
     // 侧栏「翻译队列」的角标接真实计数：入队真的会写待翻译记录，数字必须跟着动
     // （开发文档 8.1「队列入口显示活动任务数」；写死 0 就是在骗用户）。
     val pendingTranslations by container.translationRepository
         .observePendingCount()
         .collectAsStateWithLifecycle(initialValue = 0)
+    val exportTasks by container.exportQueue.tasks.collectAsStateWithLifecycle()
 
     ModalNavigationDrawer(
         drawerState = drawerState,
@@ -136,12 +175,16 @@ fun LmReaderNavHost(
         drawerContent = {
             MainMenuSheet(
                 activeTranslationTasks = pendingTranslations,
+                activeExportTasks = exportTasks.count { it.state == "PENDING" || it.state == "RUNNING" || it.state == "PAUSED" },
                 onNavigate = { target ->
                     when (target) {
                         MainDestination.LIBRARY -> navController.navigateSingleTop(Routes.LIBRARY)
                         MainDestination.BOOKSHELF -> navController.navigateSingleTop(Routes.BOOKSHELF)
                         MainDestination.TRANSLATION_QUEUE ->
                             navController.navigateSingleTop(Routes.TRANSLATION_QUEUE)
+                        MainDestination.TRANSLATION_WORKFLOWS ->
+                            navController.navigateSingleTop(Routes.TRANSLATION_WORKFLOWS)
+                        MainDestination.API_LOGS -> navController.navigateSingleTop(Routes.API_LOGS)
 
                         MainDestination.EXPORT_QUEUE ->
                             navController.navigateSingleTop(Routes.EXPORT_QUEUE)
@@ -156,6 +199,7 @@ fun LmReaderNavHost(
     ) {
         Surface(modifier = Modifier.fillMaxSize()) {
             NavHost(navController = navController, startDestination = destination) {
+                composable(Routes.API_LOGS) { ApiLogScreen(container, onBack = { navController.popBackStack() }) }
                 composable(
                     route = Routes.READER,
                     arguments = listOf(
@@ -176,6 +220,9 @@ fun LmReaderNavHost(
                         chapterId = entry.arguments?.getString("chapterId").orEmpty(),
                         startPage = entry.arguments?.getInt("page") ?: ReaderViewModel.NO_START_PAGE,
                         onBack = { navController.popBackStack() },
+                        onOpenTranslationOptions = {
+                            navController.navigate(Routes.translationOptions(entry.arguments?.getString("mangaId").orEmpty()))
+                        },
                     )
                 }
 
@@ -214,8 +261,31 @@ fun LmReaderNavHost(
                     SettingsHomeScreen(
                         onOpenPaths = { navController.navigateSingleTop(Routes.SETTINGS_PATHS) },
                         onOpenReader = { navController.navigateSingleTop(Routes.SETTINGS_READER) },
+                        onOpenApi = { navController.navigate(Routes.SETTINGS_API) { launchSingleTop = true } },
+                        onOpenGeneral = { navController.navigate(Routes.SETTINGS_GENERAL) { launchSingleTop = true } },
+                        onOpenExport = { navController.navigateSingleTop(Routes.SETTINGS_EXPORT) },
+                        onOpenBackup = { navController.navigate(Routes.SETTINGS_BACKUP) },
+                        onOpenTasks = { navController.navigate(Routes.SETTINGS_TASKS) },
+                        onOpenAbout = { navController.navigate(Routes.SETTINGS_ABOUT) },
                         onBack = { navController.popBackStack() },
                     )
+                }
+
+                composable(Routes.SETTINGS_GENERAL) {
+                    com.lmreader.ui.settings.GeneralSettingsScreen(container) { navController.popBackStack() }
+                }
+                composable(Routes.SETTINGS_ABOUT) {
+                    com.lmreader.ui.settings.AboutScreen { navController.popBackStack() }
+                }
+                composable(Routes.SETTINGS_EXPORT) {
+                    com.lmreader.ui.settings.ExportSettingsScreen(container) { navController.popBackStack() }
+                }
+                composable(Routes.SETTINGS_BACKUP) {
+                    com.lmreader.ui.settings.BackupSettingsScreen(container, onBack = { navController.popBackStack() },
+                        onPaths = { navController.navigate(Routes.SETTINGS_PATHS) })
+                }
+                composable(Routes.SETTINGS_TASKS) {
+                    com.lmreader.ui.settings.TaskSettingsScreen(container) { navController.popBackStack() }
                 }
 
                 composable(Routes.SETTINGS_PATHS) {
@@ -228,6 +298,44 @@ fun LmReaderNavHost(
                 composable(Routes.SETTINGS_READER) {
                     ReaderSettingsScreen(
                         container = container,
+                        onBack = { navController.popBackStack() },
+                    )
+                }
+
+                composable(Routes.SETTINGS_API) {
+                    ApiConfigurationHomeScreen(
+                        onLlm = { navController.navigate(Routes.SETTINGS_API_LLM) { launchSingleTop = true } },
+                        onLocal = { navController.navigate(Routes.SETTINGS_API_LOCAL) { launchSingleTop = true } },
+                        onOcr = { navController.navigate(Routes.SETTINGS_API_OCR) { launchSingleTop = true } },
+                        onSeg = { navController.navigateSingleTop(Routes.SETTINGS_API_SEG) },
+                        onBack = { navController.popBackStack() },
+                    )
+                }
+                composable(Routes.SETTINGS_API_LOCAL) {
+                    com.lmreader.ui.settings.translation.LocalTranslationScreen(container) { navController.popBackStack() }
+                }
+                listOf(Routes.SETTINGS_API_LLM to ApiProfileKind.LLM, Routes.SETTINGS_API_OCR to ApiProfileKind.OCR).forEach { (route, kind) ->
+                    composable(route) {
+                        ApiProfilesScreen(container, kind, onEdit = { id -> navController.navigate(Routes.apiEditor(kind, id)) },
+                            onBack = { navController.popBackStack() },
+                            onLocalOcrTest = { navController.navigate(Routes.SETTINGS_LOCAL_VISION) { launchSingleTop = true } },
+                            onLocalOcrConfig = { navController.navigateSingleTop(Routes.SETTINGS_API_OCR_LOCAL) })
+                    }
+                }
+                composable(Routes.SETTINGS_LOCAL_VISION) {
+                    com.lmreader.ui.settings.vision.LocalVisionScreen(container,onBack = { navController.popBackStack() })
+                }
+                listOf(Routes.SETTINGS_API_SEG to true, Routes.SETTINGS_API_OCR_LOCAL to false).forEach { (route, seg) ->
+                    composable(route) {
+                        LocalVisionConfigurationScreen(container, seg,
+                            onTest = { navController.navigateSingleTop(Routes.SETTINGS_LOCAL_VISION) },
+                            onBack = { navController.popBackStack() })
+                    }
+                }
+                composable(Routes.SETTINGS_API_EDITOR) { entry ->
+                    ApiProfileEditorScreen(
+                        container, ApiProfileKind.valueOf(entry.arguments?.getString("kind").orEmpty()),
+                        entry.arguments?.getString("profileId")?.takeUnless { it == "new" },
                         onBack = { navController.popBackStack() },
                     )
                 }
@@ -280,24 +388,17 @@ fun LmReaderNavHost(
 
 
                 composable(Routes.TRANSLATION_QUEUE) {
-                    NotImplementedScreen(
-                        title = "翻译队列",
-                        stage = "第三步（P3）实现",
-                        details = "翻译队列需要模型资产（检测/OCR）、三种翻译模式、译名字典与" +
-                            "持久任务恢复。模型资产尚未登记来源与校验和，因此本步不提供任何" +
-                            "可点击的翻译操作。",
-                        onBack = { navController.popBackStack() },
-                    )
+                    com.lmreader.ui.queue.TranslationQueueScreen(container) { navController.popBackStack() }
+                }
+
+                composable(Routes.TRANSLATION_WORKFLOWS) {
+                    com.lmreader.ui.workflow.TranslationWorkflowScreen(container) { navController.popBackStack() }
                 }
 
                 composable(Routes.EXPORT_QUEUE) {
-                    NotImplementedScreen(
-                        title = "导出队列",
-                        stage = "第四步（P4）实现",
-                        details = "导出需要译文产物、合成渲染与相册/SAF 目标发布。本步没有译文" +
-                            "产物，因此不显示空的导出任务列表。",
+                    com.lmreader.ui.queue.ExportQueueScreen(container,
                         onBack = { navController.popBackStack() },
-                    )
+                        onSettings = { navController.navigateSingleTop(Routes.SETTINGS_EXPORT) })
                 }
             }
         }

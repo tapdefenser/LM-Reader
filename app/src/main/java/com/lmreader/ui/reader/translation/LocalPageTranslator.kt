@@ -1,0 +1,129 @@
+package com.lmreader.ui.reader.translation
+
+import android.content.Context
+import android.graphics.Bitmap
+import android.net.Uri
+import com.lmreader.core.model.*
+import com.lmreader.core.storage.reader.PageSource
+import com.lmreader.core.storage.reader.ReaderPage
+import com.lmreader.core.vision.*
+import kotlinx.coroutines.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import java.io.File
+import java.security.MessageDigest
+
+enum class PageTranslationStage { READING, SEGMENTING, OCR, TRANSLATING, SAVING }
+data class PageTranslationProgress(val stage: PageTranslationStage, val completed: Int = 0, val total: Int = 0)
+
+/** The owned analysis bitmap is released as soon as OCR finishes. */
+class SegmentedPage internal constructor(val page: ReaderPage, val hash: String, val image: Bitmap,
+    val seg: SegResult, val started: Long) : AutoCloseable {
+    override fun close() { if (!image.isRecycled) image.recycle() }
+}
+data class RecognizedPage(val page: ReaderPage, val hash: String, val width: Int, val height: Int,
+    val groups: List<PageTextRegion>, val started: Long)
+
+class LocalPageTranslator(private val context: Context, private val vision: LocalVisionEngine,
+    private val translator: LocalTextTranslator, val artifacts: ReaderPageArtifactStore,
+    private val modelPacks: () -> List<TranslationModelPack>) {
+    /** NMT and publication serialize; Seg/OCR and reader loads have independent locks. */
+    val pageWriteMutex = Mutex()
+    suspend fun segment(pageSource: PageSource, page: ReaderPage, segThreshold: Float,
+        progress: (PageTranslationProgress) -> Unit = {}): SegmentedPage {
+        var returned: SegmentedPage? = null
+        try { return withContext(Dispatchers.IO) {
+        val started = System.nanoTime()
+        val input = File.createTempFile("page-source-", ".image", context.cacheDir)
+        var image: Bitmap? = null
+        try {
+            progress(PageTranslationProgress(PageTranslationStage.READING))
+            val hash = copySource(pageSource, page, input)
+            val decoded = decodePageAnalysisImage(context, input).also { image = it }
+            val seg = vision.segment(page.pageId, decoded, segThreshold) {
+                progress(PageTranslationProgress(PageTranslationStage.SEGMENTING, it.completed, it.total))
+            }
+            ensureActive()
+            SegmentedPage(page, hash, decoded, seg, started).also { returned = it; image = null }
+        } finally { image?.recycle(); input.delete() }
+        } } catch (failure: Throwable) { returned?.close(); throw failure }
+    }
+    suspend fun recognize(segmented: SegmentedPage, source: LocalTranslationLanguage,
+        progress: (PageTranslationProgress) -> Unit = {}): RecognizedPage = withContext(Dispatchers.IO) {
+        try {
+            progress(PageTranslationProgress(PageTranslationStage.OCR))
+            val regions = segmented.seg.regions.map { it.bounds }
+            val ocr = if (regions.isEmpty()) LocalOcrResult(segmented.page.pageId, segmented.image.width,
+                segmented.image.height, ocrLanguage(source), emptyList(), 0)
+            else vision.recognize(segmented.page.pageId, segmented.image, ocrLanguage(source), regions) {
+                progress(PageTranslationProgress(PageTranslationStage.OCR, it.completed, it.total))
+            }
+            ensureActive()
+            RecognizedPage(segmented.page, segmented.hash, segmented.image.width, segmented.image.height,
+                groupPageText(segmented.seg, ocr), segmented.started)
+        } finally { segmented.close() }
+    }
+    /** Caller holds pageWriteMutex, including queue state checks before publication. */
+    suspend fun translateRecognized(page: RecognizedPage, source: LocalTranslationLanguage,
+        target: LocalTranslationLanguage, render: BubbleRenderSettings,
+        progress: (PageTranslationProgress) -> Unit = {}): ReaderPageTranslation = withContext(Dispatchers.IO) {
+        val translated = ArrayList<LocalTranslatedText>(); val used = linkedSetOf<String>()
+        val packSnapshot = modelPacks()
+        for (batch in page.groups.chunked(256)) {
+            ensureActive()
+            val result = translator.translate(source, target, batch.map { LocalTranslationText(it.id, it.sourceText) }) { done, _ ->
+                progress(PageTranslationProgress(PageTranslationStage.TRANSLATING, translated.size + done, page.groups.size))
+            }
+            translated += result.items; used += result.modelPackIds
+        }
+        ensureActive()
+        progress(PageTranslationProgress(PageTranslationStage.SAVING))
+        val job = currentCoroutineContext()
+        artifacts.save(page.page.pageId, page.hash, source, target, page.width, page.height,
+            bindPageTranslations(page.groups, translated), packSnapshot.filter { it.id in used }.map { it.identity },
+            (System.nanoTime() - page.started) / 1_000_000, render, checkCancelled = { job.ensureActive() })
+    }
+    suspend fun translate(pageSource: PageSource, page: ReaderPage, source: LocalTranslationLanguage,
+        target: LocalTranslationLanguage, render: BubbleRenderSettings,
+        mode: TranslationPageMode = TranslationPageMode.BUBBLE, segThreshold: Float = .35f,
+        progress: (PageTranslationProgress) -> Unit = {}): ReaderPageTranslation {
+        val recognized = recognize(segment(pageSource, page, segThreshold, progress), source, progress)
+        return pageWriteMutex.withLock { translateRecognized(recognized, source, target, render, progress) }
+    }
+    suspend fun releaseModels() { vision.releaseModels(); translator.releaseModels() }
+    suspend fun cached(pageSource: PageSource, page: ReaderPage, render: BubbleRenderSettings): ReaderPageTranslation? = withContext(Dispatchers.IO) {
+        artifacts.migrateLegacy()
+        if (!artifacts.has(page.pageId)) return@withContext null
+        val input = File.createTempFile("page-source-", ".image", context.cacheDir)
+        try { artifacts.load(page.pageId, copySource(pageSource, page, input)) } finally { input.delete() }
+    }
+    private suspend fun copySource(source: PageSource, page: ReaderPage, destination: File): String {
+        val hash = MessageDigest.getInstance("SHA-256"); var total = 0L
+        source.open(page).use { input -> destination.outputStream().use { output ->
+            val buffer = ByteArray(65536)
+            while (true) {
+                currentCoroutineContext().ensureActive()
+                val n = input.read(buffer); if (n < 0) break
+                total += n; require(total <= 64_000_000) { "Source image exceeds 64 MB" }
+                hash.update(buffer, 0, n); output.write(buffer, 0, n)
+            }
+        } }
+        return hash.digest().joinToString("") { "%02x".format(it) }
+    }
+    companion object {
+        val ocrSources = listOf(LocalTranslationLanguage.JAPANESE, LocalTranslationLanguage.ENGLISH,
+            LocalTranslationLanguage.CHINESE_SIMPLIFIED, LocalTranslationLanguage.CHINESE_TRADITIONAL, LocalTranslationLanguage.KOREAN)
+        fun ocrLanguage(language: LocalTranslationLanguage) = when (language) {
+            LocalTranslationLanguage.JAPANESE -> LocalOcrLanguage.JAPANESE
+            LocalTranslationLanguage.KOREAN -> LocalOcrLanguage.KOREAN
+            LocalTranslationLanguage.CHINESE_SIMPLIFIED -> LocalOcrLanguage.CHINESE_SIMPLIFIED
+            LocalTranslationLanguage.CHINESE_TRADITIONAL -> LocalOcrLanguage.CHINESE_TRADITIONAL
+            LocalTranslationLanguage.ENGLISH -> LocalOcrLanguage.ENGLISH
+            else -> LocalOcrLanguage.ENGLISH
+        }
+    }
+}
+
+internal fun decodePageAnalysisImage(context: Context, file: File): Bitmap {
+    return VisionImageDecoder.decode(context, Uri.fromFile(file), maxPixels = 4_000_000)
+}

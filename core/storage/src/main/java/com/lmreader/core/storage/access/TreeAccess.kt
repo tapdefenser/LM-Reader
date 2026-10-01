@@ -9,6 +9,7 @@ import com.lmreader.core.storage.fs.SafPathResolver
 import com.lmreader.core.storage.saf.SafContentTree
 import com.lmreader.core.storage.saf.SafTreeAccess
 import android.net.Uri
+import android.os.ParcelFileDescriptor
 import java.io.File
 import java.io.FileInputStream
 import java.io.InputStream
@@ -144,6 +145,18 @@ class TreeAccess(
         val uri = readableUri(treeUri, documentId) ?: return null
         return context.contentResolver.openInputStream(uri)
     }
+
+    /** PDF renderer needs a seekable descriptor, including for SAF documents. */
+    fun openFileDescriptor(treeUri: String, documentId: String): ParcelFileDescriptor? {
+        val file = File(documentId)
+        if (file.isAbsolute && file.isFile && file.canRead())
+            return ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
+        val uri = readableUri(treeUri, documentId) ?: return null
+        return context.contentResolver.openFileDescriptor(uri, "r")
+    }
+
+    fun mimeType(treeUri: String, documentId: String): String? =
+        readableUri(treeUri, documentId)?.let { uri -> runCatching { context.contentResolver.getType(uri) }.getOrNull() }
 
     /** 展示路径：能拿到真实路径就给真实路径。 */
     fun describePath(treeUri: String, fallback: String): String {

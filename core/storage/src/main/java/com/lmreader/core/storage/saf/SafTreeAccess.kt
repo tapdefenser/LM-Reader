@@ -8,7 +8,6 @@ import android.provider.DocumentsContract
 import com.lmreader.core.index.TreeFactory
 import com.lmreader.core.model.ChildNode
 import com.lmreader.core.model.ContentTree
-import java.net.URLDecoder
 
 /**
  * 树 URI 的持久授权与打开（开发文档 4.1）。
@@ -165,7 +164,7 @@ class SafTreeAccess(private val context: Context) {
             treeIndex >= 0 && treeIndex + 1 < path.size -> path[treeIndex + 1]
             else -> DocumentsContract.getTreeDocumentId(uri)
         }
-        return runCatching { URLDecoder.decode(raw, "UTF-8") }.getOrDefault(raw)
+        return raw // Uri.pathSegments has already decoded the segment; plus signs are literal IDs.
     }
 }
 

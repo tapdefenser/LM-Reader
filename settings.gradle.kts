@@ -20,7 +20,7 @@ pluginManagement {
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
-        google()
+        google { content { excludeGroup("com.qualcomm.qti") } }
         mavenCentral()
         // JitPack：只为阅读器的图片引擎 subsampling-scale-image-view 而加。
         //
@@ -50,8 +50,12 @@ include(":app")
 
 // 纯 Kotlin/JVM：领域模型与结构扫描（可脱离设备跑单元测试）
 include(":core:model")
+include(":core:api")
+include(":core:workflow")
 include(":core:index")
 
 // Android 平台层
 include(":core:database")
 include(":core:storage")
+include(":core:vision")
+include(":core:translation")

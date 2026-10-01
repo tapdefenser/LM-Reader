@@ -1,0 +1,58 @@
+name: Verify release candidate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: '2'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+      - name: Prepare Android tools
+        run: |
+          sdkmanager --install 'platforms;android-37.0' 'build-tools;36.0.0' 'ndk;28.2.13676358' 'cmake;3.22.1'
+      - name: Prepare pinned test inputs
+        run: |
+          mkdir -p .scratch
+          python3 -m venv .scratch/ci-python
+          .scratch/ci-python/bin/python -m pip install PyYAML
+          .scratch/ci-python/bin/python tools/fetch_vision_models.py
+          .scratch/ci-python/bin/python tools/fetch_translation_sources.py
+      - name: Build, test and lint
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleDebug :app:lintDebug test --max-workers=2 --no-parallel -Dorg.gradle.jvmargs=-Xmx4g --console=plain
+          ./gradlew :app:assembleRelease :app:lintRelease --max-workers=2 --no-parallel -Dorg.gradle.jvmargs=-Xmx4g --console=plain
+      - name: Upload verification reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: verification-reports
+          retention-days: 7
+          if-no-files-found: warn
+          path: |
+            app/build/reports/
+            app/build/test-results/
+            core/*/build/reports/
+            core/*/build/test-results/
+      # Candidate APKs are prepared locally until signing and model distribution are resolved.

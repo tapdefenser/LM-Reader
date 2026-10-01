@@ -1,0 +1,4 @@
+{
+  global: Java_com_lmreader_core_translation_BergamotNative_*;
+  local: *;
+};

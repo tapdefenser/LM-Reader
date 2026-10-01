@@ -1,26 +1,6 @@
 package com.lmreader.core.model
 
-import java.util.Locale
-
-/**
- * 翻译相关的领域模型（阶段 2 的数据层；引擎本身是 P3）。
- *
- * ## 为什么先有数据层
- *
- * 详情页的多选底栏要放「翻译所选 / 清除翻译文本」，点下去必须有**真实效果**
- * （开发文档 17：不存在仅摆放未接线的核心控件）。这两件事的语义都落在数据上：
- * 入队 = 写入一条待翻译记录（侧栏「翻译队列」的计数因此会动）；
- * 清除 = 删掉译文并在记录上退回「待翻译」。引擎接上来时只要读这些记录就能开工。
- *
- * ## 语言为什么是自由字符串
- *
- * 用户口径："我们要能够甚至支持任意语言的翻译"，且选择列表末尾允许自己输入。
- * 存 `zh`/`ja` 这类代码会迫使我们维护一张语言表，而用户输入的语言名（例如
- * 「乌克兰语」）根本不在任何预设表里。因此这里存**用户看到/输入的那串文字**。
- *
- * 已知代价：目标语言是译名字典的键的一半（[GlossaryEntry]），把语言名改一个字就是
- * 另一套字典。这一步不做归并——静默把两套字典合并比让它们分开更危险。
- */
+/** 每章只有一套译文；新语言选择只影响之后提交的任务。语言选择保存 BCP 47 标签，兼容旧显示名。 */
 
 /** 一章的翻译记录。 */
 data class ChapterTranslation(
@@ -28,20 +8,20 @@ data class ChapterTranslation(
     val mangaId: String,
     val targetLanguage: String,
     val state: TranslationState,
-    /** 入队时的源语言快照；null + [autoDetectSource] = 当时要求自动识别。 */
+    /** 入队时的源语言快照；旧数据可空，新请求必须明确填写。 */
     val sourceLanguage: String?,
     val autoDetectSource: Boolean,
     /** 入队时的有效配置快照（JSON）：队列不因用户之后改设置而改变行为。 */
     val configSnapshot: String?,
     val queuedAt: Long?,
     val translatedAt: Long?,
-    /** 已保存的译文条数；「清除翻译文本」会把它和 [translatedAt] 一起抹掉。 */
+    /** 已保存的页数；「清除翻译文本」会把它和 [translatedAt] 一起抹掉。 */
     val translatedCount: Int,
     val failure: String?,
     val updatedAt: Long,
 ) {
     /** 界面上是否显示「待翻译」徽标。 */
-    val pending: Boolean get() = state == TranslationState.PENDING || state == TranslationState.RUNNING
+    val pending: Boolean get() = state !in listOf(TranslationState.DONE, TranslationState.CANCELLED)
 }
 
 /**
@@ -65,7 +45,7 @@ data class GlossaryEntry(
     /**
      * true = 用户手工录入；false = 自动新增。
      *
-     * 自动流程只能新增或更新 [manual] 为 false 的条目，**人工值不被自动覆盖**（TR09）。
+     * 仅记录来源。所有后来新增的条目均不能覆盖已有原词，与此标记无关。
      */
     val manual: Boolean,
     val updatedAt: Long,
@@ -84,7 +64,13 @@ data class TranslationRequest(
     val autoDetectSource: Boolean,
     val configSnapshot: String?,
     val at: Long,
-)
+) {
+    init {
+        require(!autoDetectSource && !sourceLanguage.isNullOrBlank()) { "原文语言必填" }
+        require(targetLanguage.isNotBlank()) { "目标语言必填" }
+        require(!configSnapshot.isNullOrBlank()) { "翻译配置快照必填" }
+    }
+}
 
 /**
  * 漫画级翻译设置（**「翻译选项」页面上的东西**，跟着漫画走）。
@@ -92,23 +78,31 @@ data class TranslationRequest(
  * 与**应用级**的翻译设置（设置里的那一套：主 AI、OCR、模式、全局文风；P3）区分开：
  * 这一层只回答"这部作品要怎么翻"。
  *
- * 两维语言的规则不同，别把它们写成同一个形状：
- *
- * - **原文语言：没有全局默认这一说**（用户口径："每个新的漫画都必须得手动选"）。
- *   它是这部作品的属性，替用户猜一个默认值等于让整章译文悄悄跑偏。
- * - **目标语言：全局默认就是应用现在使用的语言**（用户口径）。因此它总有值，
- *   漫画这一层只是"我这部想翻成别的"的覆盖。
+ * 原文语言与目标语言都必须由用户为这部作品明确填写；工作流不提供默认语言。
  */
 data class MangaTranslationSettings(
     /** null = 还没为这部作品选过原文语言。**必填**，不继承任何上层。 */
     val sourceLanguage: String? = null,
     /** true = 自动识别原文语言（优先于 [sourceLanguage]，两者互斥）。 */
     val autoDetectSource: Boolean = false,
-    /** null = 用应用当前语言（见 [translationTargetForLanguageTag]）。 */
+    /** null = 尚未选目标语言，禁止入队。 */
     val targetLanguage: String? = null,
     /** null 或非 [StyleMode.CUSTOM] = 不用漫画自己的文风，往下走分类与全局。 */
     val styleMode: StyleMode? = null,
     val customStyle: String? = null,
+    /** null selects the immutable built-in machine workflow. */
+    val workflowId: String? = null,
+    /** null uses the selected workflow's default page mode. */
+    val pageMode: TranslationPageMode? = null,
+    /** A confidence threshold for new Seg runs; rendering changes do not rerun Seg. */
+    val segThreshold: Float? = null,
+    /** Per-manga overlay style; null fields preserve the pre-migration global preference. */
+    val bubbleFillMode: BubbleFillMode? = null,
+    val bubbleOpacityPercent: Int? = null,
+    val bubbleTextPaddingPercent: Int? = null,
+    val bubbleFont: BubbleFont? = null,
+    val bubbleFontScalePercent: Int? = null,
+    val bubbleBold: Boolean? = null,
 )
 
 /**
@@ -135,16 +129,10 @@ fun resolveTranslationStyle(
 }
 
 /**
- * 有效目标语言：漫画没设就用**应用现在使用的语言**（用户口径："目标语言全局默认
- * 直接是应用现在使用的语言"）。
- *
- * 因此它**不会返回 null**：目标语言永远有个可用的值，用户不需要为它做任何设置。
- * （这与原文语言相反——那个必填，见 [resolveSourceLanguage]。）
+ * 目标语言只认漫画上的显式选择；空值返回 null，由入队入口拦截。
  */
-fun resolveTargetLanguage(manga: MangaTranslationSettings, appLanguage: String): String =
-    manga.targetLanguage?.takeIf { it.isNotBlank() }?.trim()
-        ?: appLanguage.takeIf { it.isNotBlank() }?.trim()
-        ?: DEFAULT_TRANSLATION_TARGET
+fun resolveTargetLanguage(manga: MangaTranslationSettings): String? =
+    manga.targetLanguage?.trim()?.takeIf { it.isNotEmpty() }
 
 /**
  * 有效原文语言：自动识别优先；否则只认漫画这一层。
@@ -159,58 +147,10 @@ fun resolveSourceLanguage(manga: MangaTranslationSettings): Pair<String?, Boolea
 }
 
 /**
- * 翻译选项是否完整到可以排队（**只看原文语言**）。
- *
- * 目标语言总有值（[resolveTargetLanguage]），所以这里不再检查它。用户口径是
- * "如果用户要进行翻译，自动弹出翻译选项，然后给一个消息提示，然后手动重新启动翻译"，
- * 因此这里回答的是**能不能开始**：原文语言要么填了、要么显式选了自动识别。
+ * 翻译选项完整性：源语言和目标语言均须明确填写，自动识别不能代替源语言。
  */
 fun translationSetupComplete(
     sourceLanguage: String?,
+    targetLanguage: String?,
     autoDetectSource: Boolean,
-): Boolean = autoDetectSource || !sourceLanguage.isNullOrBlank()
-
-/** 目标语言的兜底值：应用语言无法识别时用它（界面语言是中文，见下）。 */
-const val DEFAULT_TRANSLATION_TARGET = "简体中文"
-
-/**
- * 应用界面语言的 BCP-47 标签 → 翻译目标语言名。
- *
- * 用户口径："目标语言全局默认直接是应用现在使用的语言"。所以这里是一张**小映射表**，
- * 而不是让用户再填一次"我要翻成什么语言"。
- *
- * 两个刻意的选择：
- *
- * 1. 认不出来的标签回退到 [DEFAULT_TRANSLATION_TARGET]（简体中文）：应用的界面文案
- *    目前只有中文，用户看到的就是中文；将来 P5 加了"应用语言"并且真的做了多语言
- *    界面之后，这里改成跟随那个设置，才能名副其实。
- * 2. 只在语言名上与界面预设保持一致（"巴西葡语"而不是"葡萄牙语"），因为这个名字
- *    会直接进翻译请求。
- */
-fun translationTargetForLanguageTag(languageTag: String): String {
-    val normalized = languageTag.replace('_', '-').lowercase(Locale.ROOT)
-    val language = normalized.substringBefore('-')
-    return when (language) {
-        "zh" -> if (
-            normalized.contains("hant") ||
-            normalized.contains("-tw") ||
-            normalized.contains("-hk") ||
-            normalized.contains("-mo")
-        ) {
-            "繁体中文"
-        } else {
-            "简体中文"
-        }
-
-        "ja" -> "日语"
-        "en" -> "英语"
-        "ko" -> "韩语"
-        "ru" -> "俄语"
-        "pt" -> "巴西葡语"
-        "fr" -> "法语"
-        "de" -> "德语"
-        "es" -> "西班牙语"
-        "it" -> "意大利语"
-        else -> DEFAULT_TRANSLATION_TARGET
-    }
-}
+): Boolean = !autoDetectSource && !sourceLanguage.isNullOrBlank() && !targetLanguage.isNullOrBlank()

@@ -20,7 +20,7 @@ import com.lmreader.core.model.TranslationRequest
 import com.lmreader.core.model.resolveSourceLanguage
 import com.lmreader.core.model.resolveTargetLanguage
 import com.lmreader.core.model.translationSetupComplete
-import com.lmreader.core.model.translationTargetForLanguageTag
+import com.lmreader.core.model.resolveTranslationStyle
 import com.lmreader.core.storage.cover.CoverMetadataWriter
 import com.lmreader.core.storage.cover.CoverResolver
 import com.lmreader.core.storage.reader.PageSourceFactory
@@ -28,6 +28,9 @@ import com.lmreader.core.storage.reader.PageSourceOpenResult
 import com.lmreader.core.storage.scan.ChapterSyncOutcome
 import com.lmreader.core.storage.scan.MangaChapterSyncer
 import com.lmreader.core.storage.settings.AppPreferences
+import com.lmreader.core.storage.settings.BubbleRenderPreferences
+import com.lmreader.ui.workflow.TranslationWorkflowStore
+import com.lmreader.ui.workflow.translationTaskSnapshot
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -48,9 +51,14 @@ class MangaDetailViewModel(
     private val progressRepository: ReadingProgressRepository,
     private val pageSourceFactory: PageSourceFactory,
     private val preferences: AppPreferences,
+    private val bubblePreferences: BubbleRenderPreferences,
+    private val workflowStore: TranslationWorkflowStore,
+    private val translationQueue: com.lmreader.ui.queue.TranslationQueueCoordinator,
+    private val installedTranslationCatalog: () -> com.lmreader.core.translation.TranslationModelCatalog,
     private val coverResolver: CoverResolver,
     private val coverMetadataWriter: CoverMetadataWriter,
     private val clock: () -> Long = System::currentTimeMillis,
+    private val apiProfiles: suspend () -> List<com.lmreader.core.model.ApiProfile> = { emptyList() },
 ) : ViewModel() {
     private val _state = MutableStateFlow(MangaDetailUiState())
     val state: StateFlow<MangaDetailUiState> = _state.asStateFlow()
@@ -64,6 +72,12 @@ class MangaDetailViewModel(
     private var pageBackfillStarted = false
 
     init {
+        viewModelScope.launch {
+            translationQueue.items.collect {
+                val records = translationRepository.chapterTranslations(mangaId)
+                _state.update { current -> current.copy(translations = records) }
+            }
+        }
         viewModelScope.launch {
             shelfRepository.ensureUncategorized()
             shelfRepository.observeCategories().collect { categories ->
@@ -403,7 +417,7 @@ class MangaDetailViewModel(
      * 填完之后由用户**自己再点一次**翻译——不自动续跑（用户明确要求"手动重新启动翻译"）：
      * 自动续跑会造出"我刚点了一下，回来发现已经在翻了"这种不可预期的行为。
      *
-     * 目标语言不检查：它总有值（漫画覆盖 → 应用当前语言）。
+     * 源语言与目标语言都检查；工作流不能填补缺失语言。
      *
      * 记录里带**入队那一刻**解析出来的语言与文风快照（见 `TranslationRequest`），
      * 因此用户随后改设置不会让已排队的任务换一种翻法。
@@ -416,23 +430,47 @@ class MangaDetailViewModel(
         viewModelScope.launch {
             val settings = mangaRepository.translationSettings(mangaId)
             val (source, autoDetect) = resolveSourceLanguage(settings)
-            // 目标语言总有值：漫画没设就是应用当前语言（用户口径）。
-            val target = resolveTargetLanguage(settings, appTargetLanguage())
-            if (!translationSetupComplete(source, autoDetect)) {
+            // 目标语言只来自本漫画的显式设置。
+            val target = resolveTargetLanguage(settings)
+            if (!translationSetupComplete(source, target, autoDetect)) {
                 // 提示语不在这里给：由「翻译选项」页弹自己的 snackbar（见 showSetupPrompt）。
                 // 详情页的 snackbar 会随导航把本页移出组合而立刻消失，用户看不到。
                 _state.update { it.copy(openTranslationOptions = true) }
                 return@launch
             }
+            val configuredTarget = target ?: return@launch
+            val workflow = workflowStore.find(settings.workflowId)
+            if (workflow == null) {
+                _state.update { it.copy(message = "所选翻译工作流已删除，请重新选择") }
+                return@launch
+            }
+            val configuredSource = source ?: return@launch
+            val catalog = installedTranslationCatalog()
+            val sourceLanguage = com.lmreader.ui.translation.matchEngineLanguage(configuredSource, catalog.languages)
+            val targetLanguage = com.lmreader.ui.translation.matchEngineLanguage(configuredTarget, catalog.languages)
+            if (workflow.program.uses(com.lmreader.core.model.WorkflowKind.TRANSLATE) &&
+                (sourceLanguage == null || targetLanguage == null || sourceLanguage == targetLanguage ||
+                runCatching { catalog.route(sourceLanguage, targetLanguage) }.isFailure)) {
+                _state.update { it.copy(openTranslationOptions = true) }
+                return@launch
+            }
+            val globalStyle = preferences.translationGlobalStyle.first()
+            val categoryId = shelfRepository.categoryIdOf(mangaId)
+            val categoryStyle = categoryId?.let { id ->
+                shelfRepository.observeCategories().first().firstOrNull { it.categoryId == id }?.customStyle
+            }
+            val snapshot = runCatching { translationTaskSnapshot(workflow, settings, configuredSource, configuredTarget,
+                resolveTranslationStyle(settings, categoryStyle, globalStyle), bubblePreferences.settings.first(), apiProfiles()) }
+                .getOrElse { failure -> _state.update { it.copy(message = failure.message ?: "工作流配置无效") }; return@launch }
             val queued = runCatching {
                 translationRepository.enqueue(
                     mangaId = mangaId,
                     chapterIds = chapterIds,
                     request = TranslationRequest(
-                        targetLanguage = target,
+                        targetLanguage = configuredTarget,
                         sourceLanguage = source,
                         autoDetectSource = autoDetect,
-                        configSnapshot = null,
+                        configSnapshot = snapshot,
                         at = clock(),
                     ),
                 )
@@ -459,31 +497,20 @@ class MangaDetailViewModel(
         _state.update { it.copy(openTranslationOptions = false) }
     }
 
-    /** 应用当前语言映射出来的翻译目标语言（用户口径：目标语言的全局默认就是它）。 */
-    private fun appTargetLanguage(): String =
-        translationTargetForLanguageTag(preferences.appLanguageTag)
-
-    /**
-     * 清除翻译文本：取消排队 + 删掉译文，状态回到「待翻译」（用户口径）。
-     *
-     * 与入队分开是因为它**真的删东西**（译文条数与完成时间），而用户可能只是想重翻。
-     * 它**不检查语言设置**：清除是把已有记录退回去，语言没配时本来就没有记录可清。
-     */
+    /** 清除现有译文并取消排队；无需填写翻译语言，清除后显示未翻译。 */
     fun clearSelectionTranslations() {
         val ids = _state.value.selection.toList()
         if (ids.isEmpty()) return
         viewModelScope.launch {
-            val settings = mangaRepository.translationSettings(mangaId)
-            val target = resolveTargetLanguage(settings, appTargetLanguage())
             val affected = runCatching {
-                translationRepository.clearTranslations(mangaId, ids, target)
+                translationQueue.clearTranslations(mangaId, ids)
             }.getOrElse { error ->
                 _state.update { it.copy(message = error.message ?: "清除失败") }
                 return@launch
             }
             clearSelection()
             loadDetail(showLoading = false)
-            _state.update { it.copy(message = "已清除 $affected 章的译文，并重新排队") }
+            _state.update { it.copy(message = "已清除 $affected 章的译文") }
         }
     }
 
@@ -502,13 +529,9 @@ class MangaDetailViewModel(
             // 的自然序：封面与简介要自然序第一章，章节列表要用户排的顺序，两者不同源。
             val chapters = mangaRepository.getChaptersInDisplayOrder(mangaId)
             val readMarks = mangaRepository.chapterReadMarks(mangaId)
-            // 翻译状态按**生效目标语言**取：换语言等于换一套记录，徽标必须跟着换。
-            // 目标语言总有值（漫画覆盖 → 应用当前语言），所以这里不再有"未设置"的分支。
-            val targetLanguage = resolveTargetLanguage(
-                mangaRepository.translationSettings(mangaId),
-                appTargetLanguage(),
-            )
-            val translations = translationRepository.chapterTranslations(mangaId, targetLanguage)
+            // 章节状态与当前语言选择无关，每章只有一套记录。
+            val targetLanguage = resolveTargetLanguage(mangaRepository.translationSettings(mangaId)).orEmpty()
+            val translations = translationRepository.chapterTranslations(mangaId)
             _state.update {
                 it.copy(
                     loading = false,
@@ -551,8 +574,13 @@ class MangaDetailViewModel(
                     progressRepository = container.readingProgressRepository,
                     pageSourceFactory = container.pageSourceFactory,
                     preferences = container.preferences,
+                    bubblePreferences = container.bubbleRenderPreferences,
+                    workflowStore = container.translationWorkflows,
+                    translationQueue = container.translationQueue,
+                    installedTranslationCatalog = { container.translationModels.installedCatalog() },
                     coverResolver = container.coverResolver,
                     coverMetadataWriter = container.coverMetadataWriter,
+                    apiProfiles = { container.apiProfiles.profiles.first() },
                 )
             }
         }

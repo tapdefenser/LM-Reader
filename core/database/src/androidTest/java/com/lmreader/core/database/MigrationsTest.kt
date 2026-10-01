@@ -34,6 +34,43 @@ class MigrationsTest {
     )
 
     @Test
+    fun `v10到v11每章保留最新一套翻译并保留已保存页数`() {
+        helper.createDatabase(TEST_DB, 10).use { db ->
+            db.execSQL("INSERT INTO mangas (mangaId, anchorDocumentId, sourceId, sourceKind, layoutMode, displayName, sortKey, sourceOrderIndex, hasMetadata, chapterCountKnown, availability, discoveryGeneration, discoveredAt, updatedAt, translationAutoDetectSource) VALUES ('m1', '/fixture', 's1', 'IMAGE_DIRECTORY', 'MULTI_CHAPTER', 'fixture', 'fixture', 0, 0, 1, 'AVAILABLE', 1, 0, 0, 0)")
+            db.execSQL("INSERT INTO chapters (chapterId, mangaId, documentId, kind, title, sortKey, position, contentRevision, discoveredAt) VALUES ('c1', 'm1', '/fixture/chapter', 'IMAGE_DIRECTORY', 'chapter', 'chapter', 0, 1, 0)")
+            db.execSQL("INSERT INTO chapter_translation (chapterId, mangaId, targetLanguage, state, sourceLanguage, autoDetectSource, configSnapshot, translatedCount, updatedAt) VALUES ('c1', 'm1', 'en', 'DONE', 'ja', 0, '{}', 3, 1)")
+            db.execSQL("INSERT INTO chapter_translation (chapterId, mangaId, targetLanguage, state, sourceLanguage, autoDetectSource, configSnapshot, translatedCount, updatedAt) VALUES ('c1', 'm1', 'zh-Hans', 'PAUSED', 'ja', 0, '{}', 5, 2)")
+        }
+        helper.runMigrationsAndValidate(TEST_DB, 11, true, Migrations.MIGRATION_10_11).use { db ->
+            db.query("SELECT targetLanguage, translatedCount, state FROM chapter_translation").use { cursor ->
+                assertTrue(cursor.moveToFirst()); assertEquals("zh-Hans", cursor.getString(0))
+                assertEquals(5, cursor.getInt(1)); assertEquals("PAUSED", cursor.getString(2))
+                assertEquals(1, cursor.count)
+            }
+        }
+    }
+
+    @Test
+    fun `v9到v10清空旧翻译记录但保留漫画章节和译名`() {
+        helper.createDatabase(TEST_DB, 9).use { db ->
+            db.execSQL("INSERT INTO mangas (mangaId, anchorDocumentId, sourceId, sourceKind, layoutMode, displayName, sortKey, sourceOrderIndex, hasMetadata, chapterCountKnown, availability, discoveryGeneration, discoveredAt, updatedAt, translationAutoDetectSource) VALUES ('m1', '/fixture', 's1', 'IMAGE_DIRECTORY', 'MULTI_CHAPTER', 'fixture', 'fixture', 0, 0, 1, 'AVAILABLE', 1, 0, 0, 0)")
+            db.execSQL("INSERT INTO chapters (chapterId, mangaId, documentId, kind, title, sortKey, position, contentRevision, discoveredAt) VALUES ('c1', 'm1', '/fixture/chapter', 'IMAGE_DIRECTORY', 'chapter', 'chapter', 0, 1, 0)")
+            db.execSQL("INSERT INTO chapter_translation (chapterId, mangaId, targetLanguage, state, sourceLanguage, autoDetectSource, configSnapshot, translatedCount, updatedAt) VALUES ('c1', 'm1', '简体中文', 'PENDING', '日语', 0, '{}', 0, 0)")
+            db.execSQL("INSERT INTO manga_glossary (mangaId, source, target, manual, updatedAt) VALUES ('m1', 'A', '甲', 1, 0)")
+        }
+        val db = helper.runMigrationsAndValidate(TEST_DB, 10, true, Migrations.MIGRATION_9_10)
+        fun count(table: String): Int = db.query("SELECT COUNT(*) FROM $table").use { cursor ->
+            cursor.moveToFirst()
+            cursor.getInt(0)
+        }
+        assertEquals(0, count("chapter_translation"))
+        assertEquals(1, count("mangas"))
+        assertEquals(1, count("chapters"))
+        assertEquals(1, count("manga_glossary"))
+        db.close()
+    }
+
+    @Test
     fun `v5到v6按既有自然序回填章节位置并保留升级前的顺序`() {
         helper.createDatabase(TEST_DB, 5).use { db ->
             db.execSQL(

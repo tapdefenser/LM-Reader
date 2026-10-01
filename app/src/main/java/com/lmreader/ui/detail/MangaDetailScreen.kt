@@ -1,5 +1,6 @@
 package com.lmreader.ui.detail
 
+import com.lmreader.ui.i18n.showLocalizedSnackbar
 import androidx.compose.foundation.background
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
@@ -33,6 +34,7 @@ import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteSweep
+import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material.icons.filled.FlipToBack
 import androidx.compose.material.icons.filled.MoreVert
@@ -51,7 +53,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
+import com.lmreader.ui.i18n.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
@@ -62,7 +64,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
+import com.lmreader.ui.i18n.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -73,6 +75,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -80,6 +83,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
@@ -101,6 +105,7 @@ import com.lmreader.di.AppContainer
 import com.lmreader.ui.common.CoverImage
 import com.lmreader.ui.common.CoverRequest
 import kotlin.math.roundToInt
+import kotlinx.coroutines.launch
 
 /**
  * 点章节行时从哪一页打开。
@@ -128,7 +133,16 @@ fun MangaDetailScreen(
     ),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
+    val exportScope = rememberCoroutineScope()
+    val enqueueExport: (List<String>) -> Unit = { ids ->
+        exportScope.launch {
+            runCatching { container.exportQueue.enqueue(mangaId, ids) }
+                .onSuccess { count -> snackbarHostState.showLocalizedSnackbar(context, if (count > 0) "已加入导出队列：$count 章" else "所选章节已在导出队列中") }
+                .onFailure { snackbarHostState.showLocalizedSnackbar(context, it.message ?: "加入导出队列失败") }
+        }
+    }
     var showCategoryDialog by remember { mutableStateOf(false) }
     var showSortSheet by remember { mutableStateOf(false) }
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -143,7 +157,7 @@ fun MangaDetailScreen(
 
     LaunchedEffect(state.message) {
         state.message?.let {
-            snackbarHostState.showSnackbar(it)
+            snackbarHostState.showLocalizedSnackbar(context, it)
             viewModel.consumeMessage()
         }
     }
@@ -176,7 +190,7 @@ fun MangaDetailScreen(
                             },
                             modifier = Modifier.fillMaxWidth(),
                         ) {
-                            Text(category.name, modifier = Modifier.fillMaxWidth())
+                            Text(category.name, modifier = Modifier.fillMaxWidth(), localize = false)
                         }
                     }
                 }
@@ -213,7 +227,7 @@ fun MangaDetailScreen(
                 )
             } else {
                 TopAppBar(
-                    title = { Text(state.manga?.displayName ?: "漫画详情", maxLines = 1) },
+                    title = { Text(state.manga?.displayName ?: "漫画详情", maxLines = 1, localize = state.manga == null) },
                     navigationIcon = {
                         IconButton(onClick = onBack) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
@@ -222,6 +236,7 @@ fun MangaDetailScreen(
                     actions = {
                         DetailOverflowMenu(
                             onTranslateAll = viewModel::translateAll,
+                            onExportAll = { enqueueExport(state.chapters.map { it.chapterId }) },
                             onOpenSettings = { onOpenTranslationOptions(false) },
                         )
                     },
@@ -236,6 +251,7 @@ fun MangaDetailScreen(
                     onMarkRead = { viewModel.markSelectionRead(true) },
                     onMarkUnread = { viewModel.markSelectionRead(false) },
                     onTranslateSelected = viewModel::translateSelection,
+                    onExportSelected = { enqueueExport(state.selection.toList()) },
                     onClearTranslations = viewModel::clearSelectionTranslations,
                 )
             }
@@ -698,17 +714,13 @@ private fun ChapterRow(
                         }
                         // 翻译状态写在副标题里而不是行尾：行尾已经被"已读"与页码占着，
                         // 而这一行本来就短。
-                        translation?.let { record ->
-                            append(" · ")
-                            append(
-                                when (record.state) {
-                                    TranslationState.PENDING -> "待翻译"
-                                    TranslationState.RUNNING -> "翻译中"
-                                    TranslationState.DONE -> "已翻译 ${record.translatedCount} 段"
-                                    TranslationState.FAILED -> "翻译失败"
-                                },
-                            )
-                        }
+                        append(" · ")
+                        append(when {
+                            translation == null -> "未翻译"
+                            translation.state == TranslationState.DONE -> "已翻译"
+                            translation.state == TranslationState.CANCELLED -> if (chapter.pageCount?.let { translation.translatedCount >= it && it > 0 } == true) "已翻译" else "未翻译"
+                            else -> "翻译中"
+                        })
                     },
                 )
             },
@@ -784,7 +796,7 @@ private fun SelectionTopBar(
  * 贴到屏幕底边的控件会被导航栏压住一半——真机上「标记已读」就正好被吃掉，
  * 看得见点不到。这是与 `SourceFilterDrawer` / 路径表同一套约定。
  *
- * 五个动作都**真的会改数据**：标记已读/未读写 `chapter_read_state`；翻译所选/清除翻译文本
+ * 底栏动作会实际改数据：标记已读/未读写 `chapter_read_state`；翻译所选/清除翻译文本
  * 写 `chapter_translation`（侧栏「翻译队列」的计数因此会变）。开发文档 17 的完成标准是
  * "不存在仅摆放未接线的核心控件"，所以没接上的功能宁可不出现在这里。
  */
@@ -794,6 +806,7 @@ private fun ChapterSelectionBar(
     onMarkRead: () -> Unit,
     onMarkUnread: () -> Unit,
     onTranslateSelected: () -> Unit,
+    onExportSelected: () -> Unit,
     onClearTranslations: () -> Unit,
 ) {
     Surface(
@@ -814,6 +827,12 @@ private fun ChapterSelectionBar(
                 label = "翻译所选",
                 enabled = count > 0,
                 onClick = onTranslateSelected,
+            )
+            SelectionAction(
+                icon = Icons.Filled.FileDownload,
+                label = "导出所选",
+                enabled = count > 0,
+                onClick = onExportSelected,
             )
             SelectionAction(
                 icon = Icons.Filled.DeleteSweep,
@@ -947,8 +966,7 @@ private fun ChapterOrdering.Mode.hint(): String = when (this) {
 /**
  * 详情页右上角的 ⋮。
  *
- * 只有两项（用户口径）：把语言 / 文风 / 译名三个入口**全部收进「翻译选项」**之后，
- * ⋮ 上不该再重复摆它们——同一个东西有两个入口，用户会以为它们是不同的设置。
+ * 语言 / 文风 / 译名三个入口统一放在「翻译选项」中。
  *
  * 入口叫「翻译选项」而不是「翻译设置」（用户口径）：后者已经被应用级的翻译配置
  * （设置里的那一套）占用了，同名会让人分不清改的是这部作品还是全局。
@@ -956,6 +974,7 @@ private fun ChapterOrdering.Mode.hint(): String = when (this) {
 @Composable
 private fun DetailOverflowMenu(
     onTranslateAll: () -> Unit,
+    onExportAll: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
     var open by remember { mutableStateOf(false) }
@@ -969,6 +988,10 @@ private fun DetailOverflowMenu(
                 open = false
                 onTranslateAll()
             },
+        )
+        DropdownMenuItem(
+            text = { Text("全部导出") },
+            onClick = { open = false; onExportAll() },
         )
         DropdownMenuItem(
             text = { Text("翻译选项") },

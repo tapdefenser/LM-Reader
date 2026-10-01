@@ -18,10 +18,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BookmarkAdded
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material3.Checkbox
-import androidx.compose.material3.Icon
+import com.lmreader.ui.i18n.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
+import com.lmreader.ui.i18n.Text
+import com.lmreader.ui.i18n.localizedContentDescription
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -76,7 +77,7 @@ fun MangaCardItem(
                     onCheckedChange = { onClick() },
                     modifier = Modifier
                         .align(Alignment.CenterVertically)
-                        .semantics { contentDescription = "选中 ${card.displayName}" },
+                        .localizedContentDescription("选中 ${card.displayName}"),
                 )
             }
             CoverImage(
@@ -92,6 +93,7 @@ fun MangaCardItem(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         text = card.displayName,
+                        localize = false,
                         style = MaterialTheme.typography.titleSmall,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
@@ -120,6 +122,7 @@ fun MangaCardItem(
                 Text(
                     // 无简介显示「无简介」而不是留空（开发文档 2）。
                     text = card.summaryPreview ?: "无简介",
+                    localize = card.summaryPreview == null,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 2,
@@ -130,9 +133,7 @@ fun MangaCardItem(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    // 只有"章节是压缩包"的卡片才多一个徽标：一次遍历同时识别图片与归档，
-                    // 来源种类已经不再说明卡片内容，而归档阅读是 P2，用户需要知道
-                    // 哪几张卡暂时打不开（开发文档 8.1「卡片字段」）。
+                    // 归档章节显示独立徽标，方便区分图片目录与 ZIP/CBZ/PDF。
                     if (card.hasArchiveChapters) {
                         Badge(text = "压缩包章节")
                     }
@@ -184,12 +185,13 @@ fun MangaGridItem(
                     modifier = Modifier
                         .align(Alignment.TopEnd)
                         .padding(4.dp)
-                        .semantics { contentDescription = "选中 ${card.displayName}" },
+                        .localizedContentDescription("选中 ${card.displayName}"),
                 )
             }
         }
         Text(
             text = card.displayName,
+            localize = false,
             style = MaterialTheme.typography.labelMedium,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,

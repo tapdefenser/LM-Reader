@@ -159,6 +159,15 @@ data class MangaEntity(
     /** 漫画自己的文风模式；只有 CUSTOM + 非空文本才会覆盖分类与全局。 */
     val translationStyleMode: String? = null,
     val translationCustomStyle: String? = null,
+    val translationWorkflowId: String? = null,
+    val translationPageMode: String? = null,
+    val translationSegThreshold: Float? = null,
+    val translationBubbleFillMode: String? = null,
+    val translationBubbleOpacity: Int? = null,
+    val translationBubblePadding: Int? = null,
+    val translationBubbleFont: String? = null,
+    val translationBubbleFontScale: Int? = null,
+    val translationBubbleBold: Boolean? = null,
 )
 
 /** 章节行；物理定位键是 `(documentId, kind)`（开发文档 15.3）。 */
@@ -307,18 +316,10 @@ data class ChapterReadStateEntity(
     val updatedAt: Long,
 )
 
-/**
- * 一章 × 一种目标语言的翻译记录（阶段 2 的待翻译队列）。
- *
- * 主键 `(chapterId, targetLanguage)`：同一章可以同时存在"翻成简中"与"翻成英文"两份
- * 任务与译文，而它们的状态互不代表（一种语言翻完了另一种可能还没开始）。
- *
- * 没有行 = 未翻译（不为未翻译写行，理由同 [ChapterReadStateEntity]）。
- * 外键指向 `chapters.chapterId` 并级联删除：章节消失时任务跟着走。
- */
+/** 每章一套翻译记录；目标语言是任务快照的内容，不参与主键。取消保留完成页，清除删除记录。 */
 @Entity(
     tableName = "chapter_translation",
-    primaryKeys = ["chapterId", "targetLanguage"],
+    primaryKeys = ["chapterId"],
     foreignKeys = [
         ForeignKey(
             entity = ChapterEntity::class,
@@ -346,7 +347,7 @@ data class ChapterTranslationEntity(
     val configSnapshot: String?,
     val queuedAt: Long?,
     val translatedAt: Long?,
-    /** 已保存的译文条数；「清除翻译文本」把它与 [translatedAt] 一起抹掉。 */
+    /** 已保存的页数；「清除翻译文本」把它与 [translatedAt] 一起抹掉。 */
     val translatedCount: Int,
     val failure: String?,
     val updatedAt: Long,

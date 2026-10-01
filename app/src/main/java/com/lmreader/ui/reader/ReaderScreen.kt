@@ -27,12 +27,12 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
-import androidx.compose.material3.Icon
+import com.lmreader.ui.i18n.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
+import com.lmreader.ui.i18n.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -43,6 +43,7 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -59,6 +60,20 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
+import com.lmreader.R
+import com.lmreader.core.model.BubbleRenderSettings
+import com.lmreader.core.model.LocalTranslationLanguage
+import com.lmreader.core.model.WorkflowKind
+import com.lmreader.ui.reader.translation.*
+import com.lmreader.core.model.MangaTranslationSettings
+import com.lmreader.core.model.effectiveBubbleRender
+import com.lmreader.core.model.translationSetupComplete
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.lmreader.core.model.NavigationRegions
@@ -66,6 +81,8 @@ import com.lmreader.core.model.ReaderTheme
 import com.lmreader.core.model.ReadingMode
 import com.lmreader.core.model.TapAction
 import com.lmreader.di.AppContainer
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.collect
 
 /**
  * 阅读器宿主（开发文档 12）。
@@ -92,6 +109,7 @@ fun ReaderScreen(
     /** 从哪一页开始；[ReaderViewModel.NO_START_PAGE] 表示没指定。 */
     startPage: Int = ReaderViewModel.NO_START_PAGE,
     onBack: () -> Unit,
+    onOpenTranslationOptions: () -> Unit,
     viewModel: ReaderViewModel = viewModel(
         // key 里带上起始页：不同起始页是不同的阅读会话，复用同一个 ViewModel 会让
         // 后一次打开沿用前一次的页码。
@@ -100,11 +118,51 @@ fun ReaderScreen(
     ),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val translationViewModel: ReaderPageTranslationViewModel = viewModel(
+        key="page-translation:$mangaId:$chapterId:$startPage",
+        factory=viewModelFactory {initializer {ReaderPageTranslationViewModel(container,mangaId)}})
+    val translations by translationViewModel.state.collectAsStateWithLifecycle()
+    val legacyRender by container.bubbleRenderPreferences.settings.collectAsStateWithLifecycle(initialValue=BubbleRenderSettings())
+    var mangaOptions by remember(mangaId) { mutableStateOf(MangaTranslationSettings()) }
+    val optionScope = rememberCoroutineScope()
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+        optionScope.launch {
+            mangaOptions = container.mangaRepository.translationSettings(mangaId)
+        }
+    }
+    val renderSettings = mangaOptions.effectiveBubbleRender(legacyRender)
+    val currentItem=state.items.getOrNull(state.currentPageIndex) as? ReaderItem.PageItem
+    val nearbyPages=state.items.drop((state.currentPageIndex-3).coerceAtLeast(0)).take(7).filterIsInstance<ReaderItem.PageItem>()
+    var translatingItem by remember {mutableStateOf<ReaderItem.PageItem?>(null)}
+    LaunchedEffect(currentItem?.page?.pageId,nearbyPages.map {it.page.pageId}) {translationViewModel.showPage(currentItem,renderSettings,nearbyPages)}
+    LaunchedEffect(currentItem?.page?.pageId, renderSettings) {
+        container.translationQueue.pageUpdates.collect { pageId ->
+            if (currentItem?.page?.pageId == pageId || nearbyPages.any { it.page.pageId == pageId }) {
+                translationViewModel.showPage(currentItem, renderSettings, nearbyPages)
+            }
+        }
+    }
+    DisposableEffect(viewModel,translationViewModel) {
+        viewModel.navigationGuard=translationViewModel::requestNavigation
+        viewModel.navigationBlocked={translationViewModel.state.value.confirmNavigation || translationViewModel.state.value.savingEdits}
+        onDispose {viewModel.navigationGuard=null;viewModel.navigationBlocked={false};translationViewModel.cancel()}
+    }
+    val context=LocalContext.current
+    val cancelledMessage=stringResource(R.string.reader_mt_cancelled)
+    LaunchedEffect(translations.cancelled) {if(translations.cancelled) {
+        android.widget.Toast.makeText(context,cancelledMessage,android.widget.Toast.LENGTH_SHORT).show()
+        translationViewModel.clearMessage()
+    }}
+    val completionMessage=translations.completedRegions?.let {count ->stringResource(
+        if(count==0) R.string.reader_mt_empty else R.string.reader_mt_completed,count)}
+    LaunchedEffect(completionMessage) {if(completionMessage!=null) {
+        android.widget.Toast.makeText(context,completionMessage,android.widget.Toast.LENGTH_SHORT).show()
+        translationViewModel.clearMessage()
+    }}
     val measureHeightDp = rememberStripHeightMeasurer()
 
-    val leave = {
-        viewModel.saveProgress()
-        onBack()
+    val leave: () -> Unit = {
+        translationViewModel.requestNavigation { viewModel.saveProgress(); onBack() }
     }
     BackHandler(onBack = leave)
 
@@ -144,18 +202,46 @@ fun ReaderScreen(
             measureHeightDp = measureHeightDp,
             prefetcher = container.pagePrefetcher,
             onOpenSettings = { settingsOpen = true },
+            translations = translations,
+            translationViewModel = translationViewModel,
+            renderSettings = renderSettings,
+            onBubbleSelected = {pageId,id ->
+                if(pageId==currentItem?.page?.pageId) translationViewModel.selectBubble(pageId,id)
+                else translationViewModel.requestNavigation {viewModel.focusPage(pageId);translationViewModel.selectBubble(pageId,id)}
+            },
+            onTranslate = { translationViewModel.requestNavigation {
+                if (translationSetupComplete(mangaOptions.sourceLanguage, mangaOptions.targetLanguage,
+                        mangaOptions.autoDetectSource)) translatingItem=currentItem
+                else onOpenTranslationOptions()
+            } },
+            onToggleOriginal = {currentItem?.let {translationViewModel.toggleOriginal(it.page.pageId)}},
+            onCancelTranslation = translationViewModel::cancel,
+            onBubbleSettings = {translationViewModel.requestNavigation(onOpenTranslationOptions)},
         )
 
         if (settingsOpen) {
             ReaderSettingsDialog(
                 state = state,
                 onDismiss = { settingsOpen = false },
-                onReadingMode = viewModel::setReadingMode,
-                onClearReadingMode = viewModel::clearReadingModeOverride,
+                onReadingMode = {mode ->translationViewModel.requestNavigation {viewModel.setReadingMode(mode)}},
+                onClearReadingMode = {translationViewModel.requestNavigation {viewModel.clearReadingModeOverride()}},
                 onOrientation = viewModel::setOrientationOverride,
                 onUpdateGlobal = viewModel::updateGlobalSettings,
             )
         }
+        translatingItem?.let {item ->PageTranslationDialog(container,
+            com.lmreader.ui.translation.matchEngineLanguage(mangaOptions.sourceLanguage, container.translationModels.installedCatalog().languages)
+                ?: runCatching { LocalTranslationLanguage.fromTag(mangaOptions.sourceLanguage.orEmpty()) }.getOrNull(),
+            com.lmreader.ui.translation.matchEngineLanguage(mangaOptions.targetLanguage, container.translationModels.installedCatalog().languages)
+                ?: runCatching { LocalTranslationLanguage.fromTag(mangaOptions.targetLanguage.orEmpty()) }.getOrDefault(translations.target),
+            onDismiss={translatingItem=null},onTranslate={source,target ->
+                translatingItem=null;translationViewModel.translate(item,source,target,renderSettings)
+            }, requiresLocalModels = container.translationWorkflows.find(mangaOptions.workflowId)?.program?.uses(WorkflowKind.TRANSLATE) != false)}
+        translations.failure?.let {failure ->androidx.compose.material3.AlertDialog(onDismissRequest=translationViewModel::clearMessage,
+            title={Text(stringResource(R.string.reader_mt_action))},text={Text(stringResource(R.string.reader_mt_failed,failure))},
+            confirmButton={androidx.compose.material3.TextButton(onClick=translationViewModel::clearMessage) {Text(stringResource(R.string.local_mt_close))}})}
+        BubbleDraftNavigationDialog(translations,translationViewModel::saveAndNavigate,
+            translationViewModel::discardAndNavigate,translationViewModel::cancelNavigation)
     }
 
     // 点按区域提示：**每次切换阅读方式时显示一次**。
@@ -201,6 +287,14 @@ private fun ReaderChrome(
     measureHeightDp: suspend (ReaderItem.PageItem, Float) -> Int?,
     prefetcher: PagePrefetcher?,
     onOpenSettings: () -> Unit,
+    translations: ReaderTranslationUiState,
+    translationViewModel: ReaderPageTranslationViewModel,
+    renderSettings: BubbleRenderSettings,
+    onBubbleSelected: (String,String?) -> Unit,
+    onTranslate: () -> Unit,
+    onToggleOriginal: () -> Unit,
+    onCancelTranslation: () -> Unit,
+    onBubbleSettings: () -> Unit,
 ) {
     Surface(
         color = backgroundFor(state.settings.theme),
@@ -217,6 +311,9 @@ private fun ReaderChrome(
                 onLeave = onLeave,
                 measureHeightDp = measureHeightDp,
                 prefetcher = prefetcher,
+                translations = translations,
+                renderSettings = renderSettings,
+                onBubbleSelected = onBubbleSelected,
             )
 
             if (state.tapZoneOverlayVisible) {
@@ -243,9 +340,22 @@ private fun ReaderChrome(
                     state = state,
                     viewModel = viewModel,
                     onOpenSettings = onOpenSettings,
+                    translations = translations,
+                    onTranslate = onTranslate,
+                    onToggleOriginal = onToggleOriginal,
+                    onCancelTranslation = onCancelTranslation,
+                    onBubbleSettings = onBubbleSettings,
+                    onToggleEditing = translationViewModel::toggleEditing,
+                    onClearPage = { (state.items.getOrNull(state.currentPageIndex) as? ReaderItem.PageItem)?.let(translationViewModel::clearPage) },
                     modifier = Modifier.align(Alignment.BottomCenter),
                 )
             }
+            ReaderTranslationProgress(translations,onCancelTranslation,Modifier.align(Alignment.BottomCenter)
+                .padding(start=16.dp,end=16.dp,bottom=if(state.chromeVisible) 164.dp else 40.dp).fillMaxWidth())
+            ReaderBubbleEditor(translations,translationViewModel::editText,translationViewModel::deleteBubble,
+                {translationViewModel.saveEdits()},translationViewModel::undoEdit,translationViewModel::toggleEditing,
+                translationViewModel::clearEditFailure,Modifier.align(Alignment.TopEnd)
+                    .padding(top=if(state.chromeVisible) 80.dp else 12.dp,end=12.dp))
         }
     }
 }
@@ -258,6 +368,9 @@ private fun ReaderContent(
     onLeave: () -> Unit,
     measureHeightDp: suspend (ReaderItem.PageItem, Float) -> Int?,
     prefetcher: PagePrefetcher?,
+    translations: ReaderTranslationUiState,
+    renderSettings: BubbleRenderSettings,
+    onBubbleSelected: (String,String?) -> Unit,
 ) {
     when {
         state.loading -> Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -289,6 +402,7 @@ private fun ReaderContent(
                         currentIndex = state.currentPageIndex,
                         positionKey = state.positionKey,
                         positionSyncToken = state.positionSyncToken,
+                        forcePositionSync = state.forcePositionSync,
                         onItemSettled = viewModel::onItemSettled,
                         onScrollingChanged = viewModel::onScrollingChanged,
                         onPageHeightMeasured = viewModel::onPageHeightMeasured,
@@ -296,6 +410,9 @@ private fun ReaderContent(
                         onTap = viewModel::onTap,
                         onTransitionAction = { viewModel.retryFailedChapters() },
                         prefetcher = prefetcher,
+                        translations = translations,
+                        renderSettings = renderSettings,
+                        onBubbleSelected = onBubbleSelected,
                         onScrollDelta = { delta ->
                             // 只在控制栏可见时判断，避免已在隐藏状态下反复调用。
                             if (state.chromeVisible &&
@@ -318,6 +435,9 @@ private fun ReaderContent(
                         onTap = viewModel::onTap,
                         onTransitionAction = { viewModel.retryFailedChapters() },
                         prefetcher = prefetcher,
+                        translations = translations,
+                        renderSettings = renderSettings,
+                        onBubbleSelected = onBubbleSelected,
                         modifier = Modifier.fillMaxSize(),
                     )
                 }
@@ -391,6 +511,13 @@ private fun ReaderBottomBar(
     state: ReaderUiState,
     viewModel: ReaderViewModel,
     onOpenSettings: () -> Unit,
+    translations: ReaderTranslationUiState,
+    onTranslate: () -> Unit,
+    onToggleOriginal: () -> Unit,
+    onCancelTranslation: () -> Unit,
+    onBubbleSettings: () -> Unit,
+    onToggleEditing: () -> Unit,
+    onClearPage: () -> Unit,
     modifier: Modifier,
 ) {
     val pageCount = state.currentPageCount
@@ -401,7 +528,7 @@ private fun ReaderBottomBar(
     var sliderValue by remember(state.chapters?.currentChapterId) {
         mutableFloatStateOf(pageFraction(localPage ?: 0, pageCount))
     }
-    LaunchedEffect(localPage, pageCount, onTransition) {
+    LaunchedEffect(localPage, pageCount, onTransition, state.positionSyncToken) {
         sliderValue = if (onTransition) 0f else pageFraction(localPage ?: 0, pageCount)
     }
     Surface(color = Color.Black.copy(alpha = 0.76f), modifier = modifier.fillMaxWidth()) {
@@ -413,7 +540,9 @@ private fun ReaderBottomBar(
                 .windowInsetsPadding(WindowInsets.navigationBars)
                 .padding(horizontal = 16.dp, vertical = 10.dp),
         ) {
+            Row(verticalAlignment=Alignment.CenterVertically) {
             Slider(
+                modifier=Modifier.weight(1f),
                 value = sliderValue.coerceIn(0f, 1f),
                 onValueChange = { sliderValue = it },
                 onValueChangeFinished = {
@@ -424,6 +553,11 @@ private fun ReaderBottomBar(
                 // （早前真机因为 -1 上限崩溃过）。过渡页上同样禁用。
                 enabled = pageCount > 1 && !onTransition,
             )
+            val pageId=(state.items.getOrNull(state.currentPageIndex) as? ReaderItem.PageItem)?.page?.pageId
+            ReaderTranslationButton(pageId!=null && !translations.clearingPage && !translations.savingEdits,
+                pageId in translations.pages,pageId in translations.originals,translations.progress!=null,
+                onTranslate,onToggleOriginal,onCancelTranslation,onBubbleSettings,translations.editing,onToggleEditing,onClearPage)
+            }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,

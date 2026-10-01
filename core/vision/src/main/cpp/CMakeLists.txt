@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.22)
+project(lmreader_vision LANGUAGES CXX)
+add_library(lmreader_vision SHARED nnapi_probe.cpp)
+target_link_libraries(lmreader_vision PRIVATE dl)
+target_link_options(lmreader_vision PRIVATE "-Wl,-z,max-page-size=16384")

@@ -30,14 +30,14 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
+import com.lmreader.ui.i18n.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
+import com.lmreader.ui.i18n.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -340,7 +340,7 @@ fun BookshelfScreen(
     movingManga?.let { card ->
         AlertDialog(
             onDismissRequest = { movingManga = null },
-            title = { Text(card.displayName) },
+            title = { Text(card.displayName, localize = false) },
             text = {
                 Column {
                     Text("移动到分类", style = MaterialTheme.typography.labelMedium)
@@ -350,7 +350,7 @@ fun BookshelfScreen(
                                 viewModel.moveToCategory(card.mangaId, category.categoryId)
                                 movingManga = null
                             },
-                        ) { Text(category.name) }
+                        ) { Text(category.name, localize = false) }
                     }
                 }
             },
@@ -461,7 +461,7 @@ private fun CategoryRow(
         ) {
             TextButton(onClick = onClick, modifier = Modifier.weight(1f)) {
                 Column {
-                    Text(name)
+                    Text(name, localize = false)
                     if (description != null) {
                         Text(
                             text = description,

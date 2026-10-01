@@ -23,6 +23,8 @@ import com.lmreader.core.model.ImageScaleType
 import com.lmreader.core.model.ReaderSettings
 import com.lmreader.core.model.ReadingMode
 import com.lmreader.core.model.ZoomStart
+import com.lmreader.core.model.BubbleRenderSettings
+import com.lmreader.ui.reader.translation.ReaderTranslationUiState
 
 /**
  * 条漫阅读器：承载 Mihon 的 `Long strip` 与 `Long strip with gaps` 两种模式。
@@ -63,6 +65,7 @@ internal fun StripReader(
     positionKey: String,
     /** 归位信号；只在状态机主动移动读者、或项列表被替换时自增（见 `positionSyncToken`）。 */
     positionSyncToken: Int,
+    forcePositionSync: Boolean = false,
     onItemSettled: (Int) -> Unit,
     /** 滚动状态上报：滚动中状态机不替换项列表（见 [ReaderViewModel.onScrollingChanged]）。 */
     onScrollingChanged: (Boolean) -> Unit,
@@ -73,6 +76,9 @@ internal fun StripReader(
     onScrollDelta: (Int) -> Unit = {},
     /** 页面字节的预取缓存；命中时不必再过一次 SAF。 */
     prefetcher: PagePrefetcher? = null,
+    translations: ReaderTranslationUiState = ReaderTranslationUiState(),
+    renderSettings: BubbleRenderSettings = BubbleRenderSettings(),
+    onBubbleSelected: (String, String?) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier,
 ) {
     if (items.isEmpty()) return
@@ -133,7 +139,7 @@ internal fun StripReader(
     LaunchedEffect(positionSyncToken) {
         if (positionSyncToken == 0) return@LaunchedEffect
         val target = currentIndex.coerceIn(items.indices)
-        if (listState.layoutInfo.visibleItemsInfo.any { it.index == target }) return@LaunchedEffect
+        if (!forcePositionSync && listState.layoutInfo.visibleItemsInfo.any { it.index == target }) return@LaunchedEffect
         syncing.value = true
         try {
             listState.scrollToItem(target)
@@ -204,6 +210,14 @@ internal fun StripReader(
                             ),
                             onSingleTap = onTap,
                             prefetcher = prefetcher,
+                            translation = translations.pages[item.page.pageId],
+                            regions = translations.draft?.takeIf { it.saved.pageId==item.page.pageId }?.regions
+                                ?: translations.pages[item.page.pageId]?.regions.orEmpty(),
+                            renderSettings = renderSettings,
+                            showingOriginal = item.page.pageId in translations.originals,
+                            editing = translations.editing && translations.progress==null,
+                            selectedBubble = translations.draft?.takeIf { it.saved.pageId==item.page.pageId }?.selectedId,
+                            onBubbleSelected = { onBubbleSelected(item.page.pageId,it) },
                         )
                     }
                 }

@@ -349,10 +349,9 @@ interface ReadingProgressRepository {
  */
 interface TranslationRepository {
 
-    /** 该漫画在某个目标语言下**已有记录**的章节（没有记录的章节 = 未翻译）。 */
+    /** 该漫画**已有记录**的章节（没有记录的章节 = 未翻译）。 */
     suspend fun chapterTranslations(
         mangaId: String,
-        targetLanguage: String,
     ): Map<String, ChapterTranslation>
 
     /**
@@ -368,18 +367,10 @@ interface TranslationRepository {
         request: TranslationRequest,
     ): Int
 
-    /**
-     * 清除翻译文本：取消排队 + 删掉译文，状态回到「待翻译」（用户口径）。
-     *
-     * "都没译文了不得待翻译"——所以清除之后不是"未翻译"（那会丢掉"这一章还需要翻"
-     * 的意图），而是重新排上队等着被翻。
-     *
-     * @return 受影响的章节数
-     */
+    /** 删除章节记录；应用层先取消执行并删除页译文 JSON。清除不依赖语言配置，不重新入队。 */
     suspend fun clearTranslations(
         mangaId: String,
         chapterIds: List<String>,
-        targetLanguage: String,
     ): Int
 
     /** 全库待翻译（含翻译中）章节数；侧栏「翻译队列」的角标。 */
@@ -388,8 +379,13 @@ interface TranslationRepository {
     /** 该漫画的译名字典（按原词排序，供列表展示）；**只和漫画有关，与语言无关**。 */
     suspend fun glossary(mangaId: String): List<GlossaryEntry>
 
-    /** 新增或更新一条译名；`manual = true` 的人工值不会被自动流程覆盖（TR09）。 */
+    /** 只新增空缺原词；已有译名一律保留，与 manual 无关。 */
     suspend fun upsertGlossary(entry: GlossaryEntry)
+
+    /** 用户直接编辑选中的条目；改名不能覆盖另一个已存在的原词。 */
+    suspend fun editGlossary(originalSource: String, entry: GlossaryEntry) {
+        error("此存储不支持编辑译名")
+    }
 
     suspend fun deleteGlossary(mangaId: String, source: String)
 }

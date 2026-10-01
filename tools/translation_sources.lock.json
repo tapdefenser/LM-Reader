@@ -1,0 +1,72 @@
+[
+  {
+    "repo": "niedev/bergamot-translator",
+    "revision": "2e059c32c4a4238811d3eb1b8ea3feec87b3faca",
+    "path": "bergamot",
+    "url": "https://codeload.github.com/niedev/bergamot-translator/tar.gz/2e059c32c4a4238811d3eb1b8ea3feec87b3faca",
+    "sha256": "ce4f4dbf2468d4ebf5c6f66830c2b526dfce2e529c714cb0ca815027ed87dc44"
+  },
+  {
+    "repo": "niedev/marian-dev",
+    "revision": "2781d735d4a10dca876d61be587afdab2726293c",
+    "path": "bergamot/3rd_party/marian-dev",
+    "url": "https://codeload.github.com/niedev/marian-dev/tar.gz/2781d735d4a10dca876d61be587afdab2726293c",
+    "sha256": "96f3f31a79899f26217b5fa0a78d6e8a6bc5e7a8e4c50de7bde4c3fa2858999d"
+  },
+  {
+    "repo": "niedev/ssplit-cpp",
+    "revision": "33db900f52e0411ada00c90b5a2d1b39e90f6e1a",
+    "path": "bergamot/3rd_party/ssplit-cpp",
+    "url": "https://codeload.github.com/niedev/ssplit-cpp/tar.gz/33db900f52e0411ada00c90b5a2d1b39e90f6e1a",
+    "sha256": "03360f1b0b4f32e00ef512fb2bd3c739f3a9480ecda5330801ce0e5ca71e0780"
+  },
+  {
+    "repo": "browsermt/sentencepiece",
+    "revision": "ae41b7740d7006596bb9257e83340b2620db9d00",
+    "path": "bergamot/3rd_party/marian-dev/src/3rd_party/sentencepiece",
+    "url": "https://codeload.github.com/browsermt/sentencepiece/tar.gz/ae41b7740d7006596bb9257e83340b2620db9d00",
+    "sha256": "4d2148ae7e240cd113586004d2cf0102f7ab1bae363b91b2934ee83c5ae3dbbe"
+  },
+  {
+    "repo": "kpu/intgemm",
+    "revision": "f7401513da71758dacce52fed1c7855549abee59",
+    "path": "bergamot/3rd_party/marian-dev/src/3rd_party/intgemm",
+    "url": "https://codeload.github.com/kpu/intgemm/tar.gz/f7401513da71758dacce52fed1c7855549abee59",
+    "sha256": "8e827c445dbb1b117a9667616bac23b3c945e626da0a3466786cfd058ed2f41d"
+  },
+  {
+    "repo": "browsermt/onnxjs",
+    "revision": "924924b08e9596b41aeebada4a172f026be95f5a",
+    "path": "bergamot/3rd_party/marian-dev/src/3rd_party/onnxjs",
+    "url": "https://codeload.github.com/browsermt/onnxjs/tar.gz/924924b08e9596b41aeebada4a172f026be95f5a",
+    "sha256": "3821ba42d187d7011cc860dc1133fb295ac9d97a0a35c5bf08554229fc7b44cd"
+  },
+  {
+    "repo": "google/ruy",
+    "revision": "2d950b3bfa7ebfbe7a97ecb44b1cc4da5ac1d6f0",
+    "path": "bergamot/3rd_party/marian-dev/src/3rd_party/ruy",
+    "url": "https://codeload.github.com/google/ruy/tar.gz/2d950b3bfa7ebfbe7a97ecb44b1cc4da5ac1d6f0",
+    "sha256": "6593ec4323ae69e542bde97711d5680069cb802301512063289b1103c5374244"
+  },
+  {
+    "repo": "browsermt/simd_utils",
+    "revision": "d0793d86aea9036a5bc77b9ca7791dff024168ca",
+    "path": "bergamot/3rd_party/marian-dev/src/3rd_party/simd_utils",
+    "url": "https://codeload.github.com/browsermt/simd_utils/tar.gz/d0793d86aea9036a5bc77b9ca7791dff024168ca",
+    "sha256": "829325e164ee2be5dffed51ccf8cc4b776edbb4269d174e79f6708fd89fca59f"
+  },
+  {
+    "repository": "pytorch/cpuinfo",
+    "revision": "5916273f79a21551890fd3d56fc5375a78d1598d",
+    "path": "bergamot/3rd_party/marian-dev/src/3rd_party/ruy/third_party/cpuinfo",
+    "url": "https://codeload.github.com/pytorch/cpuinfo/tar.gz/5916273f79a21551890fd3d56fc5375a78d1598d",
+    "sha256": "f3c16d5d393d6d1fa6b6ed8621dd0a535552df9bc88cbba739375dde38a93142"
+  },
+  {
+    "repository": "PCRE2Project/pcre2",
+    "revision": "35fee4193b852cb504892352bd0155de10809889",
+    "path": "pcre2",
+    "url": "https://codeload.github.com/PCRE2Project/pcre2/tar.gz/35fee4193b852cb504892352bd0155de10809889",
+    "sha256": "195d16cea72dbf3a50a2ec7e5fad119f099e8e56cc88b071fc063ee108b841f5"
+  }
+]

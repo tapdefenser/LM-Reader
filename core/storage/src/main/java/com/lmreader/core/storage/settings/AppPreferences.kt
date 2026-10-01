@@ -143,26 +143,20 @@ class AppPreferences(private val context: Context) {
         }
     }
 
-    // ---- 翻译的全局默认（漫画级留空时用它，见 MangaTranslationSettings） ----------
+    // ---- 界面语言与全局文风 ----------
 
     /**
-     * 应用**当前界面语言**的 BCP-47 标签，用来定翻译目标语言的全局默认。
-     *
-     * 用户口径："目标语言全局默认直接是应用现在使用的语言"，所以目标语言没有"未设置"
-     * 这个状态，也不需要用户单独填一个全局目标语言——它就是这里。
+     * 应用**当前界面语言**的 BCP-47 标签。翻译目标语言已改为漫画级必填，
+     * 这里仅供界面显示、语言名称本地化使用。
      *
      * 取 `resources.configuration.locales[0]` 而不是 `Locale.getDefault()`：前者是
-     * **这个应用实际被配置成**的语言（P5 的"应用语言"将来改的也是它），后者是系统语言，
+     * **这个应用实际被配置成**的语言，后者是系统语言，
      * 两者的差别在"系统是英文但应用被设成中文"时会显出来。
      *
      * **原文语言没有对应的全局偏好**：它是每部作品的属性，必须逐部手动选（用户口径）。
      */
     val appLanguageTag: String
-        get() {
-            val locales = context.resources.configuration.locales
-            val tag = if (locales.size() > 0) locales[0]?.toLanguageTag() else null
-            return tag?.takeIf { it.isNotBlank() } ?: "zh-Hans-CN"
-        }
+        get() = GeneralPreferences(context).effectiveLanguageTag
 
     /**
      * 全局默认文风（覆盖链的最后一层）。

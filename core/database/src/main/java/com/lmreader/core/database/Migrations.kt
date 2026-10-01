@@ -294,6 +294,45 @@ object Migrations {
         }
     }
 
+    /**
+     * v9 → v10 moves rendering and workflow selection to each manga. Previous chapter rows
+     * may have unreliable settings; clear every old translation record as explicitly requested.
+     * Page JSON, glossary, manga and chapter source rows are untouched.
+     */
+    val MIGRATION_9_10 = object : Migration(9, 10) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("ALTER TABLE mangas ADD COLUMN translationWorkflowId TEXT")
+            db.execSQL("ALTER TABLE mangas ADD COLUMN translationPageMode TEXT")
+            db.execSQL("ALTER TABLE mangas ADD COLUMN translationSegThreshold REAL")
+            db.execSQL("ALTER TABLE mangas ADD COLUMN translationBubbleFillMode TEXT")
+            db.execSQL("ALTER TABLE mangas ADD COLUMN translationBubbleOpacity INTEGER")
+            db.execSQL("ALTER TABLE mangas ADD COLUMN translationBubblePadding INTEGER")
+            db.execSQL("DELETE FROM chapter_translation")
+        }
+    }
+
+    /** One active translation per chapter, independent of language; retain the newest record. */
+    val MIGRATION_10_11 = object : Migration(10, 11) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("ALTER TABLE mangas ADD COLUMN translationBubbleFont TEXT")
+            db.execSQL("ALTER TABLE mangas ADD COLUMN translationBubbleFontScale INTEGER")
+            db.execSQL("ALTER TABLE mangas ADD COLUMN translationBubbleBold INTEGER")
+            db.execSQL("""CREATE TABLE chapter_translation_new (
+                chapterId TEXT NOT NULL PRIMARY KEY, mangaId TEXT NOT NULL, targetLanguage TEXT NOT NULL,
+                state TEXT NOT NULL, sourceLanguage TEXT, autoDetectSource INTEGER NOT NULL,
+                configSnapshot TEXT, queuedAt INTEGER, translatedAt INTEGER, translatedCount INTEGER NOT NULL,
+                failure TEXT, updatedAt INTEGER NOT NULL,
+                FOREIGN KEY(chapterId) REFERENCES chapters(chapterId) ON UPDATE NO ACTION ON DELETE CASCADE)""")
+            db.execSQL("""INSERT INTO chapter_translation_new SELECT old.* FROM chapter_translation old
+                WHERE NOT EXISTS (SELECT 1 FROM chapter_translation newer WHERE newer.chapterId = old.chapterId
+                AND (newer.updatedAt > old.updatedAt OR (newer.updatedAt = old.updatedAt AND newer.targetLanguage > old.targetLanguage)))""")
+            db.execSQL("DROP TABLE chapter_translation")
+            db.execSQL("ALTER TABLE chapter_translation_new RENAME TO chapter_translation")
+            db.execSQL("CREATE INDEX index_chapter_translation_mangaId_state ON chapter_translation(mangaId, state)")
+            db.execSQL("UPDATE mangas SET translationPageMode = 'BUBBLE' WHERE translationPageMode IS NOT NULL")
+        }
+    }
+
     val ALL: Array<Migration> =
         arrayOf(
             MIGRATION_1_2,
@@ -304,5 +343,7 @@ object Migrations {
             MIGRATION_6_7,
             MIGRATION_7_8,
             MIGRATION_8_9,
+            MIGRATION_9_10,
+            MIGRATION_10_11,
         )
 }

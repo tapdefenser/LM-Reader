@@ -2,6 +2,16 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- QNN is optional and only loaded on Android 8.1+ ARM64; Android 8.0 uses CPU. -->
+    <uses-sdk tools:overrideLibrary="ai.onnxruntime.qnnpluginep" />
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
     <!--
       全部文件访问权限（Android 11+）。
 
@@ -60,7 +70,11 @@
         android:largeHeap="true"
         android:requestLegacyExternalStorage="true"
         android:supportsRtl="true"
+        android:usesCleartextTraffic="true"
         android:theme="@style/Theme.LmReader">
+
+        <service android:name=".tasks.QueueTaskService" android:exported="false"
+            android:foregroundServiceType="dataSync" android:stopWithTask="false" />
 
         <activity
             android:name=".MainActivity"

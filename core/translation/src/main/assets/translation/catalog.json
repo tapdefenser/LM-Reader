@@ -1,0 +1,363 @@
+{
+  "schema": 1,
+  "engine": "bergamot-v1",
+  "officialBaseUrl": "https://storage.googleapis.com/moz-fx-translations-data--303e-prod-translations-data",
+  "mirrorRepository": "TiberiuCristianLeon/Bergamot",
+  "mirrorRevision": "18008da9d2922dde09dae47f5fee71cac4253701",
+  "packages": [
+    {
+      "id": "ja-en",
+      "source": "ja",
+      "target": "en",
+      "version": "20260929",
+      "files": [
+        {
+          "role": "lexicalShortlist",
+          "name": "lex.50.50.jaen.s2t.bin",
+          "size": 9348172,
+          "sha256": "525f412f0d210536c2933c78ae395fa0bf2b5ee6cc5dda61ebc2e79410ebaee4",
+          "officialPath": "models/ja-en/cjk_retrain_base-memory_NLRJLD_pQFyrvgKtbie2nA/exported/lex.50.50.jaen.s2t.bin.gz",
+          "mirrorPath": "base-memory/jaen/lex.50.50.jaen.s2t.bin.gz",
+          "downloadSize": 4819610,
+          "downloadSha256": "438152f5ccd982edb43e88ef51305e3ae7c7b66ee5c20a8fa425e9f1822f9b9b"
+        },
+        {
+          "role": "model",
+          "name": "model.jaen.intgemm.alphas.bin",
+          "size": 43977787,
+          "sha256": "3a603e20bfe1be86071913f9e23ab5129075bc0a8490151020ac4821e4f17302",
+          "officialPath": "models/ja-en/cjk_retrain_base-memory_NLRJLD_pQFyrvgKtbie2nA/exported/model.jaen.intgemm.alphas.bin.gz",
+          "mirrorPath": "base-memory/jaen/model.jaen.intgemm.alphas.bin.gz",
+          "downloadSize": 32577435,
+          "downloadSha256": "ae56ffbb5556d8e4240b2f208a7c7a2449a4b627ac9d673981ed29eaadaab79d"
+        },
+        {
+          "role": "vocab",
+          "name": "vocab.jaen.spm",
+          "size": 1443222,
+          "sha256": "5cb217758bae05877bb3f0c2f612e4e7c1e4cb03c10db11f4a47098d7ae62919",
+          "officialPath": "models/ja-en/cjk_retrain_base-memory_NLRJLD_pQFyrvgKtbie2nA/exported/vocab.jaen.spm.gz",
+          "mirrorPath": "base-memory/jaen/vocab.jaen.spm.gz",
+          "downloadSize": 746616,
+          "downloadSha256": "12d693f5055525d5cc1e133c8c1b8ed787c77b9bb797400d9a14382ac69c1236"
+        }
+      ]
+    },
+    {
+      "id": "ko-en",
+      "source": "ko",
+      "target": "en",
+      "version": "20260929",
+      "files": [
+        {
+          "role": "lexicalShortlist",
+          "name": "lex.50.50.koen.s2t.bin",
+          "size": 8617516,
+          "sha256": "b26291f063ce216a74239275f0485534a38111203e59d42a2a56ba62d6eeb196",
+          "officialPath": "models/ko-en/cjk_retrain_base-memory_QgYNtG3BTzKBFSV1wl06Pg/exported/lex.50.50.koen.s2t.bin.gz",
+          "mirrorPath": "base-memory/koen/lex.50.50.koen.s2t.bin.gz",
+          "downloadSize": 4381854,
+          "downloadSha256": "92d595d9e7cab334cf4560c4f66d0439bc4b9aeb644852f4eb280ccaf9aed587"
+        },
+        {
+          "role": "model",
+          "name": "model.koen.intgemm.alphas.bin",
+          "size": 43977787,
+          "sha256": "7cb30cbc0a86e242084756445268a2346136771c92b884d9b4ebb077f67d5507",
+          "officialPath": "models/ko-en/cjk_retrain_base-memory_QgYNtG3BTzKBFSV1wl06Pg/exported/model.koen.intgemm.alphas.bin.gz",
+          "mirrorPath": "base-memory/koen/model.koen.intgemm.alphas.bin.gz",
+          "downloadSize": 32152814,
+          "downloadSha256": "1fa9af76c6a954fce14243d698c02edea38b74b1f3d149ca6a4d7f8f88ba1b92"
+        },
+        {
+          "role": "vocab",
+          "name": "vocab.koen.spm",
+          "size": 1410063,
+          "sha256": "1c72b740ab793cdc3a8f16913dd6b4e806c77421077dd2d85edeb7be38418598",
+          "officialPath": "models/ko-en/cjk_retrain_base-memory_QgYNtG3BTzKBFSV1wl06Pg/exported/vocab.koen.spm.gz",
+          "mirrorPath": "base-memory/koen/vocab.koen.spm.gz",
+          "downloadSize": 706864,
+          "downloadSha256": "3b17fba7f58bde82f4ebd7ea0f51fa96fc22c8c5c20a4e905e0498f6da0ca46c"
+        }
+      ]
+    },
+    {
+      "id": "en-zh-Hans",
+      "source": "en",
+      "target": "zh-Hans",
+      "version": "20260929",
+      "files": [
+        {
+          "role": "lexicalShortlist",
+          "name": "lex.50.50.enzh.s2t.bin",
+          "size": 4485184,
+          "sha256": "8575d8daa10e2dbff316dcdf8e1ce475357bcc2c92bdc63b736a2d5add22f681",
+          "officialPath": "models/en-zh/llmaat_finetune10M_qe8_f2_ByQcSxGXQRqGi-UTxYE43g/exported/lex.50.50.enzh.s2t.bin.gz",
+          "mirrorPath": "base-memory/enzh/lex.50.50.enzh.s2t.bin.gz",
+          "downloadSize": 2536039,
+          "downloadSha256": "806f75821c0b838f4a8f4afe5bab3db8289cb7e5187753ba04c3bceadd75687a"
+        },
+        {
+          "role": "model",
+          "name": "model.enzh.intgemm.alphas.bin",
+          "size": 43849787,
+          "sha256": "4e5accc141373565ddc8fa1565bceaa8d0c3482a82cab8131c719ebcc6c2157c",
+          "officialPath": "models/en-zh/llmaat_finetune10M_qe8_f2_ByQcSxGXQRqGi-UTxYE43g/exported/model.enzh.intgemm.alphas.bin.gz",
+          "mirrorPath": "base-memory/enzh/model.enzh.intgemm.alphas.bin.gz",
+          "downloadSize": 33375922,
+          "downloadSha256": "7f255403b3bb2502f08ac4d5ca397a8a5a13f899d2f2e987a4934e089d241d16"
+        },
+        {
+          "role": "srcVocab",
+          "name": "srcvocab.enzh.spm",
+          "size": 806952,
+          "sha256": "bd9b65504acc6d9726dd281f7defc2adb7c2c22d0688fe2f84697de25197c8c5",
+          "officialPath": "models/en-zh/llmaat_finetune10M_qe8_f2_ByQcSxGXQRqGi-UTxYE43g/exported/srcvocab.enzh.spm.gz",
+          "mirrorPath": "base-memory/enzh/srcvocab.enzh.spm.gz",
+          "downloadSize": 407784,
+          "downloadSha256": "7846e3c236388390f4e5d321f8413d67f34c1bab5f066165eeb673bfd07607cc"
+        },
+        {
+          "role": "trgVocab",
+          "name": "trgvocab.enzh.spm",
+          "size": 772004,
+          "sha256": "aded6993c36e440284d11cec3f6b8aef9c0e43188a772d80be342a713adf223d",
+          "officialPath": "models/en-zh/llmaat_finetune10M_qe8_f2_ByQcSxGXQRqGi-UTxYE43g/exported/trgvocab.enzh.spm.gz",
+          "mirrorPath": "base-memory/enzh/trgvocab.enzh.spm.gz",
+          "downloadSize": 425748,
+          "downloadSha256": "4d641ce165b1f8478ee2ffb5149d2d46fab3779dc8fa1e9b97f9af1d2206c091"
+        }
+      ]
+    },
+    {
+      "id": "en-zh-Hant",
+      "source": "en",
+      "target": "zh-Hant",
+      "version": "20260929",
+      "files": [
+        {
+          "role": "lexicalShortlist",
+          "name": "lex.50.50.enzh_hant.s2t.bin",
+          "size": 4057188,
+          "sha256": "d891404d1436a7334df12539fe30a26f9e9f2b80bd42fdb8b5f8849e8a1e942b",
+          "officialPath": "models/en-zh_hant/zh_hant_llmaat_finetune10M_qe8_f2_aQ8azdOMQOSBVjBDOVDIZQ/exported/lex.50.50.enzh_hant.s2t.bin.gz",
+          "mirrorPath": "base-memory/enzh_hant/lex.50.50.enzh_hant.s2t.bin.gz",
+          "downloadSize": 2290215,
+          "downloadSha256": "b254c97043a9ba5ff2791abac8b411dc024de6257576745a522ccc6c92421870"
+        },
+        {
+          "role": "model",
+          "name": "model.enzh_hant.intgemm.alphas.bin",
+          "size": 43849787,
+          "sha256": "559ab90d723a58c1f1e2ab7cc12137bc667af5ba3e325e3eb30b5cdc930db520",
+          "officialPath": "models/en-zh_hant/zh_hant_llmaat_finetune10M_qe8_f2_aQ8azdOMQOSBVjBDOVDIZQ/exported/model.enzh_hant.intgemm.alphas.bin.gz",
+          "mirrorPath": "base-memory/enzh_hant/model.enzh_hant.intgemm.alphas.bin.gz",
+          "downloadSize": 33291007,
+          "downloadSha256": "79cb710e5e66bb0490368bf158f42aff800a0f9ef2f6449d98dfb654f2d02669"
+        },
+        {
+          "role": "srcVocab",
+          "name": "srcvocab.enzh_hant.spm",
+          "size": 803694,
+          "sha256": "2266df70492162a249ab1c0154f929bd6098b246544c666c1a0d5a24dde7d2ea",
+          "officialPath": "models/en-zh_hant/zh_hant_llmaat_finetune10M_qe8_f2_aQ8azdOMQOSBVjBDOVDIZQ/exported/srcvocab.enzh_hant.spm.gz",
+          "mirrorPath": "base-memory/enzh_hant/srcvocab.enzh_hant.spm.gz",
+          "downloadSize": 404976,
+          "downloadSha256": "5ad55cf62d3e8b0a1cefacc0086b1ceb26d0df6415205714effa76bbb1a3063b"
+        },
+        {
+          "role": "trgVocab",
+          "name": "trgvocab.enzh_hant.spm",
+          "size": 751671,
+          "sha256": "22b91a4436d70b91ab8777c677252ab5fae2bc284d71f977df5206c110e3444c",
+          "officialPath": "models/en-zh_hant/zh_hant_llmaat_finetune10M_qe8_f2_aQ8azdOMQOSBVjBDOVDIZQ/exported/trgvocab.enzh_hant.spm.gz",
+          "mirrorPath": "base-memory/enzh_hant/trgvocab.enzh_hant.spm.gz",
+          "downloadSize": 416659,
+          "downloadSha256": "324622c18601da5784569eeda74b77e5ae96b164657eb8029a9dabfdcd29803b"
+        }
+      ]
+    },
+    {
+      "id": "zh-Hans-en",
+      "source": "zh-Hans",
+      "target": "en",
+      "version": "20260929",
+      "files": [
+        {
+          "role": "lexicalShortlist",
+          "name": "lex.50.50.zhen.s2t.bin",
+          "size": 9219192,
+          "sha256": "8524dd4c93ffd7f0ae7be32f77a7c14fea7cdbbebe34ea6ad0ec368d5ddd8b13",
+          "officialPath": "models/zh-en/cjk_retrain_base-memory_cNY_yaJCStGwnTeXgW8A5w/exported/lex.50.50.zhen.s2t.bin.gz",
+          "mirrorPath": "base-memory/zhen/lex.50.50.zhen.s2t.bin.gz",
+          "downloadSize": 4822158,
+          "downloadSha256": "216b4f87e61c89741114fa36b3cf01fb1e3a32cf0eb97bf1cb2f992951e8691b"
+        },
+        {
+          "role": "model",
+          "name": "model.zhen.intgemm.alphas.bin",
+          "size": 43977787,
+          "sha256": "5cd149601802fc8a18124a1c1306144dbbedc058630c4ddb2d53aa76fa9c7c06",
+          "officialPath": "models/zh-en/cjk_retrain_base-memory_cNY_yaJCStGwnTeXgW8A5w/exported/model.zhen.intgemm.alphas.bin.gz",
+          "mirrorPath": "base-memory/zhen/model.zhen.intgemm.alphas.bin.gz",
+          "downloadSize": 32726806,
+          "downloadSha256": "c430e24baad44b8e4f725458e2454aec8a760faefbd0a4592c80f114b051f692"
+        },
+        {
+          "role": "vocab",
+          "name": "vocab.zhen.spm",
+          "size": 1359697,
+          "sha256": "dff594318ab7d8b7b60b844ab98ebe6b932ae8045fab15235404c787715965b3",
+          "officialPath": "models/zh-en/cjk_retrain_base-memory_cNY_yaJCStGwnTeXgW8A5w/exported/vocab.zhen.spm.gz",
+          "mirrorPath": "base-memory/zhen/vocab.zhen.spm.gz",
+          "downloadSize": 738862,
+          "downloadSha256": "244ac04cd4e2126852fc6f697b2aa1e04acad4492c5ec8b37453974f33f88183"
+        }
+      ]
+    },
+    {
+      "id": "zh-Hant-en",
+      "source": "zh-Hant",
+      "target": "en",
+      "version": "20260929",
+      "files": [
+        {
+          "role": "lexicalShortlist",
+          "name": "lex.50.50.zh_hanten.s2t.bin",
+          "size": 6385944,
+          "sha256": "aa7daf6cfc85c0cd2c10e2944d66f6da55497c9c6408789f3adfded4074c2fb1",
+          "officialPath": "models/zh_hant-en/zh_hant_openlid_zh_tw_lr0002_WJi5Ozi7SZWC6hgfD5GhTA/exported/lex.50.50.zh_hanten.s2t.bin.gz",
+          "mirrorPath": "base-memory/zh_hanten/lex.50.50.zh_hanten.s2t.bin.gz",
+          "downloadSize": 3268812,
+          "downloadSha256": "69046bfea1a70a556b5669be3c014958698683ef3c3f00b8dfd5c6b4e8f4f8ca"
+        },
+        {
+          "role": "model",
+          "name": "model.zh_hanten.intgemm.alphas.bin",
+          "size": 43849787,
+          "sha256": "0aee91790894458f5d367551f6edcd4c9cb97852c34f221bcbf9f4701ebcf0cd",
+          "officialPath": "models/zh_hant-en/zh_hant_openlid_zh_tw_lr0002_WJi5Ozi7SZWC6hgfD5GhTA/exported/model.zh_hanten.intgemm.alphas.bin.gz",
+          "mirrorPath": "base-memory/zh_hanten/model.zh_hanten.intgemm.alphas.bin.gz",
+          "downloadSize": 33653648,
+          "downloadSha256": "07af851b5a9160e84f3327e6f6151725e2712bed7b6b86edde5920fae107e55b"
+        },
+        {
+          "role": "srcVocab",
+          "name": "srcvocab.zh_hanten.spm",
+          "size": 769669,
+          "sha256": "5cc6a76611dbf86219f109141533606b15ecb34eee83673bb86b2c16b14734db",
+          "officialPath": "models/zh_hant-en/zh_hant_openlid_zh_tw_lr0002_WJi5Ozi7SZWC6hgfD5GhTA/exported/srcvocab.zh_hanten.spm.gz",
+          "mirrorPath": "base-memory/zh_hanten/srcvocab.zh_hanten.spm.gz",
+          "downloadSize": 423691,
+          "downloadSha256": "e28a5484fce525e13a6cde4737b2fac08cb3c9cc60c13da9a6395c38833f7936"
+        },
+        {
+          "role": "trgVocab",
+          "name": "trgvocab.zh_hanten.spm",
+          "size": 812572,
+          "sha256": "7bf002db37c10d3b114cc5588d7fdcb16c57d0fd1e2c34354c22cc9f0b6c3c29",
+          "officialPath": "models/zh_hant-en/zh_hant_openlid_zh_tw_lr0002_WJi5Ozi7SZWC6hgfD5GhTA/exported/trgvocab.zh_hanten.spm.gz",
+          "mirrorPath": "base-memory/zh_hanten/trgvocab.zh_hanten.spm.gz",
+          "downloadSize": 408143,
+          "downloadSha256": "071d675ee1a1b5faffbde94910814998f187df9717b007ae56d54d0a6ae791ac"
+        }
+      ]
+    },
+    {
+      "id": "en-ja",
+      "source": "en",
+      "target": "ja",
+      "version": "20260929",
+      "files": [
+        {
+          "role": "lexicalShortlist",
+          "name": "lex.50.50.enja.s2t.bin",
+          "size": 4128360,
+          "sha256": "edfb7eb47b98a2689b804ab3614c31b24f1257aa54b1154da3d85e1ae8152d9f",
+          "officialPath": "models/en-ja/llmaat_finetune10M_qe8_f2_ApiGGQIwTKuF9i_k3n9Q2Q/exported/lex.50.50.enja.s2t.bin.gz",
+          "mirrorPath": "base-memory/enja/lex.50.50.enja.s2t.bin.gz",
+          "downloadSize": 2341409,
+          "downloadSha256": "7966382f7a9ba15993c67721526921d8901caa0f8add56eff04e4bb327d57c11"
+        },
+        {
+          "role": "model",
+          "name": "model.enja.intgemm.alphas.bin",
+          "size": 43849787,
+          "sha256": "59ae659f9bb63e4f81f474fe3c03d3f4499434b5f9e779fab7c12a45f31fd562",
+          "officialPath": "models/en-ja/llmaat_finetune10M_qe8_f2_ApiGGQIwTKuF9i_k3n9Q2Q/exported/model.enja.intgemm.alphas.bin.gz",
+          "mirrorPath": "base-memory/enja/model.enja.intgemm.alphas.bin.gz",
+          "downloadSize": 33052218,
+          "downloadSha256": "99fc8fc120189930beadacb2eef4b049d0794ac6132d1266340e457c95730368"
+        },
+        {
+          "role": "srcVocab",
+          "name": "srcvocab.enja.spm",
+          "size": 796275,
+          "sha256": "970c98d174fc01e0339fbabbf45af36a4be3f26f819ec1a5ea1189f71e091889",
+          "officialPath": "models/en-ja/llmaat_finetune10M_qe8_f2_ApiGGQIwTKuF9i_k3n9Q2Q/exported/srcvocab.enja.spm.gz",
+          "mirrorPath": "base-memory/enja/srcvocab.enja.spm.gz",
+          "downloadSize": 404352,
+          "downloadSha256": "12d8ffc83fc0bb61494d95701f6a298bbad5c999a043d4a48a1c1bd61e092167"
+        },
+        {
+          "role": "trgVocab",
+          "name": "trgvocab.enja.spm",
+          "size": 827144,
+          "sha256": "3b3d9f8f3a034d98d0a476f1794fa79c01e4e98a967ceb6777a66ba2d03ec1e1",
+          "officialPath": "models/en-ja/llmaat_finetune10M_qe8_f2_ApiGGQIwTKuF9i_k3n9Q2Q/exported/trgvocab.enja.spm.gz",
+          "mirrorPath": "base-memory/enja/trgvocab.enja.spm.gz",
+          "downloadSize": 431278,
+          "downloadSha256": "be7fec234b5fc94616276ee6cca69f3a8cbfa6762fdf278dfc6b11eaf669cc48"
+        }
+      ]
+    },
+    {
+      "id": "en-ko",
+      "source": "en",
+      "target": "ko",
+      "version": "20260929",
+      "files": [
+        {
+          "role": "lexicalShortlist",
+          "name": "lex.50.50.enko.s2t.bin",
+          "size": 6449612,
+          "sha256": "96efba97d4bb93ab362e5569bea0f115184d2f68d63b67305ee663c18e32fbeb",
+          "officialPath": "models/en-ko/cjk_retrain_base-memory_GP50C3MpQ9apCWZOW-f3PA/exported/lex.50.50.enko.s2t.bin.gz",
+          "mirrorPath": "base-memory/enko/lex.50.50.enko.s2t.bin.gz",
+          "downloadSize": 3471311,
+          "downloadSha256": "062ceb1b1173f81c5ece40fb45affb5b7cbd8eaaf295e5744647d0e94b04beef"
+        },
+        {
+          "role": "model",
+          "name": "model.enko.intgemm.alphas.bin",
+          "size": 43849787,
+          "sha256": "ffe5ef2ce3f2e944055e35310bab186f6a70d533a0ee4394adf716a0e383afbb",
+          "officialPath": "models/en-ko/cjk_retrain_base-memory_GP50C3MpQ9apCWZOW-f3PA/exported/model.enko.intgemm.alphas.bin.gz",
+          "mirrorPath": "base-memory/enko/model.enko.intgemm.alphas.bin.gz",
+          "downloadSize": 33738001,
+          "downloadSha256": "91ebb959edc11b6ff63d28b5e237106047673e5be2dfec99169352fd98f0f1be"
+        },
+        {
+          "role": "srcVocab",
+          "name": "srcvocab.enko.spm",
+          "size": 791280,
+          "sha256": "8d4e3141868efd410eb86c2b60d41aa6bc6b46e4c4b2c0b85e3792493c69d802",
+          "officialPath": "models/en-ko/cjk_retrain_base-memory_GP50C3MpQ9apCWZOW-f3PA/exported/srcvocab.enko.spm.gz",
+          "mirrorPath": "base-memory/enko/srcvocab.enko.spm.gz",
+          "downloadSize": 402480,
+          "downloadSha256": "2227e5841e4376a3de47010a22f77762d9259c7459959744f2505721b93134a3"
+        },
+        {
+          "role": "trgVocab",
+          "name": "trgvocab.enko.spm",
+          "size": 815353,
+          "sha256": "2ece21b28dd7022d36127d17423a74dabf544787dfc1cf614f7b565f93a4a1d3",
+          "officialPath": "models/en-ko/cjk_retrain_base-memory_GP50C3MpQ9apCWZOW-f3PA/exported/trgvocab.enko.spm.gz",
+          "mirrorPath": "base-memory/enko/trgvocab.enko.spm.gz",
+          "downloadSize": 412614,
+          "downloadSha256": "676f821c4e0bab2f6b5af0e38fffdb7c053ad74ffa5a3e822e55fd2370af4008"
+        }
+      ]
+    }
+  ]
+}

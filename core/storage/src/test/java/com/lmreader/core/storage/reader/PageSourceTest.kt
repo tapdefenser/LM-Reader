@@ -11,6 +11,9 @@ import io.mockk.mockk
 import io.mockk.verify
 import java.io.ByteArrayInputStream
 import java.io.FileNotFoundException
+import java.io.File
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
@@ -19,6 +22,25 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 
 class PageSourceTest {
+    @Test
+    fun `zip and cbz chapters expose natural ordered image pages`() = runTest {
+        val archive = File.createTempFile("lmreader-pages-", ".cbz")
+        try {
+            ZipOutputStream(archive.outputStream()).use { zip ->
+                listOf("10.jpg", "2.png", "1.webp", "nested/3.png", "../escape.jpg", "ComicInfo.xml").forEach { name ->
+                    zip.putNextEntry(ZipEntry(name)); zip.write(byteArrayOf(1, 2, 3)); zip.closeEntry()
+                }
+            }
+            val record = chapter().copy(documentId = archive.absolutePath, kind = ChapterKind.ARCHIVE)
+            val source = assertIs<PageSourceOpenResult.Ready>(PageSourceFactory(mockk()).open(TREE_URI, record)).source
+            val pages = source.pages()
+            assertEquals(listOf("1.webp", "2.png", "10.jpg", "3.png"), pages.map { it.displayName })
+            assertContentEquals(byteArrayOf(1, 2, 3), source.open(pages[1]).use { it.readBytes() })
+            assertFailsWith<FileNotFoundException> {
+                source.open(ReaderPage("wrong", 0, "escape.jpg", "../escape.jpg"))
+            }
+        } finally { archive.delete() }
+    }
     @Test
     fun `image directory pages use natural order and stable ids`() = runTest {
         val treeAccess = mockk<TreeAccess>()

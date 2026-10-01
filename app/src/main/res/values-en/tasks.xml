@@ -1,0 +1,9 @@
+<resources>
+    <string name="lmreader_task_channel">Translation and export tasks</string>
+    <string name="lmreader_task_title">LM-Reader is processing tasks</string>
+    <string name="lmreader_task_starting">Starting…</string>
+    <string name="lmreader_task_counts">Translation: %1$d chapters · Export: %2$d chapters</string>
+    <string name="lmreader_task_pause">Pause all</string>
+    <string name="lmreader_task_timeout">Background time limit reached. Tasks are paused. Open the app to resume.</string>
+    <string name="lmreader_task_stopped">Background service stopped. Tasks are paused. Resume manually.</string>
+</resources>

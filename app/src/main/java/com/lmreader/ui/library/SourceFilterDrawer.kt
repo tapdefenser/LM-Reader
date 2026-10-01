@@ -18,7 +18,8 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
+import com.lmreader.ui.i18n.Text
+import com.lmreader.ui.i18n.localizedContentDescription
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -146,7 +147,7 @@ private fun SourceFilterRow(
             .fillMaxWidth()
             .padding(horizontal = 8.dp, vertical = 2.dp)
             // 无障碍朗读用"名称 + 数量"，与视觉层级一致（标题是名称，不是路径）。
-            .semantics { contentDescription = "图源 ${source.displayLabel()}" },
+            .localizedContentDescription("图源 ${source.displayLabel()}"),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Checkbox(checked = checked, onCheckedChange = { onToggle() })
@@ -156,6 +157,7 @@ private fun SourceFilterRow(
                 // （SAF 的系统路径常常是 `primary:Tachiyomi/downloads` 这种，
                 // 所以给用户留了自定义名称的入口。）
                 text = source.displayLabel(),
+                localize = false,
                 style = MaterialTheme.typography.bodyMedium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,

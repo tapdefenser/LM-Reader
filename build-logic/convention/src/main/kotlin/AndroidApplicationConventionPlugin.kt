@@ -7,6 +7,8 @@ import org.gradle.kotlin.dsl.dependencies
 import org.jetbrains.kotlin.gradle.dsl.JvmDefaultMode
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.dsl.KotlinAndroidProjectExtension
+import java.io.StringReader
+import java.util.Properties
 
 /**
  * 应用宿主模块配置：导航、依赖装配、主题（开发文档 15.2）。
@@ -21,6 +23,10 @@ class AndroidApplicationConventionPlugin : Plugin<Project> {
         pluginManager.apply("org.jetbrains.kotlin.plugin.serialization")
         pluginManager.apply("com.google.devtools.ksp")
 
+        val releaseVersion = Properties().apply {
+            load(StringReader(providers.fileContents(rootProject.layout.projectDirectory.file("gradle/release.properties")).asText.get()))
+        }
+
         extensions.configure<ApplicationExtension> {
             namespace = "com.lmreader"
             compileSdk = COMPILE_SDK
@@ -28,8 +34,8 @@ class AndroidApplicationConventionPlugin : Plugin<Project> {
                 applicationId = "com.lmreader"
                 minSdk = MIN_SDK
                 targetSdk = TARGET_SDK
-                versionCode = 1
-                versionName = "0.1.0-m1"
+                versionCode = releaseVersion.getProperty("versionCode").toInt()
+                versionName = releaseVersion.getProperty("versionName")
             }
             compileOptions {
                 sourceCompatibility = JavaVersion.VERSION_17

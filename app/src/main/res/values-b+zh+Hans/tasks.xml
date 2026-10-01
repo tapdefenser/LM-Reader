@@ -1,0 +1,9 @@
+<resources>
+    <string name="lmreader_task_channel">翻译与导出任务</string>
+    <string name="lmreader_task_title">LM-Reader 正在处理任务</string>
+    <string name="lmreader_task_starting">正在启动…</string>
+    <string name="lmreader_task_counts">翻译 %1$d 章 · 导出 %2$d 章</string>
+    <string name="lmreader_task_pause">全部暂停</string>
+    <string name="lmreader_task_timeout">系统后台运行时限已到，任务已暂停，请打开应用手动继续</string>
+    <string name="lmreader_task_stopped">后台服务已停止，任务已暂停，请手动继续</string>
+</resources>

@@ -1,0 +1,24 @@
+LM-Reader local vision components
+
+Code adapted from manga-translator-android (jedzqer): MIT.
+Source commit: 809452a4a6b10f520559ad6439e3a85d8ae4c680
+https://github.com/jedzqer/manga-translator-android
+Adaptations: shared components, explicit failures, pixel coordinates, cancellation,
+tiling, complete-region deduplication, strict CTC dictionaries and vertical glyph candidates.
+
+OCR weights and dictionaries: PaddlePaddle official Hugging Face repositories,
+Apache-2.0 according to the respective model cards.
+https://huggingface.co/PaddlePaddle/PP-OCRv6_small_det_onnx
+https://huggingface.co/PaddlePaddle/PP-OCRv6_small_rec_onnx
+https://huggingface.co/PaddlePaddle/korean_PP-OCRv5_mobile_rec_onnx
+Dictionaries derived without reordering from the matching inference.yml.
+
+Seg weights: mixed-dual-s-e5_float16.tflite extracted from the author's v3.5.5 APK.
+https://github.com/jedzqer/manga-translator-android/releases/tag/v3.5.5
+The weights' independent training source and redistribution license have not been
+identified in the source checkout or distribution. The code's MIT license is not
+asserted to license these weights. Current model preparation is for self-use/testing;
+public redistribution requires a separately verified model license or replacement.
+
+Pinned URLs, SHA-256 and input/output specifications: docs/MODEL_PACKS.md
+LiteRT runtime: Apache-2.0. ONNX Runtime: MIT (respective upstream distributions).

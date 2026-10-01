@@ -86,6 +86,8 @@ data class ProbeTargetRow(
  */
 @Dao
 interface MangaDao {
+    @Query("SELECT displayName FROM mangas WHERE translationWorkflowId = :workflowId ORDER BY displayName LIMIT 20")
+    suspend fun workflowReferences(workflowId: String): List<String>
 
     /**
      * 必须使用真正的 UPDATE/INSERT upsert，不能使用 INSERT OR REPLACE。
@@ -725,7 +727,16 @@ interface MangaDao {
             translationAutoDetectSource = :autoDetectSource,
             translationTargetLanguage = :targetLanguage,
             translationStyleMode = :styleMode,
-            translationCustomStyle = :customStyle
+            translationCustomStyle = :customStyle,
+            translationWorkflowId = :workflowId,
+            translationPageMode = :pageMode,
+            translationSegThreshold = :segThreshold,
+            translationBubbleFillMode = :bubbleFillMode,
+            translationBubbleOpacity = :bubbleOpacity,
+            translationBubblePadding = :bubblePadding,
+            translationBubbleFont = :bubbleFont,
+            translationBubbleFontScale = :bubbleFontScale,
+            translationBubbleBold = :bubbleBold
         WHERE mangaId = :mangaId
         """,
     )
@@ -736,6 +747,15 @@ interface MangaDao {
         targetLanguage: String?,
         styleMode: String?,
         customStyle: String?,
+        workflowId: String?,
+        pageMode: String?,
+        segThreshold: Float?,
+        bubbleFillMode: String?,
+        bubbleOpacity: Int?,
+        bubblePadding: Int?,
+        bubbleFont: String?,
+        bubbleFontScale: Int?,
+        bubbleBold: Boolean?,
     )
 
     /**

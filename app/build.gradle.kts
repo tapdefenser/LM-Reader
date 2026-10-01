@@ -3,9 +3,32 @@ plugins {
 }
 
 android {
+    androidResources { noCompress += listOf("tflite", "onnx") }
+    // QNN's DSP runtime needs extracted native libraries, including the skel files.
+    packaging { jniLibs.useLegacyPackaging = true }
+    // Keep both UI languages available after a manual language change in bundle installs.
+    bundle { language { enableSplit = false } }
     defaultConfig {
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // 资源前缀，避免与依赖库资源冲突。
         resourcePrefix = "lmreader_"
+        // The visual and translation engines support these two 64-bit ABIs.
+        ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
+    }
+
+    // No debug-key fallback: missing credentials produce an unsigned candidate.
+    val signingVariables = listOf("LMREADER_KEYSTORE_FILE", "LMREADER_KEYSTORE_PASSWORD", "LMREADER_KEY_ALIAS", "LMREADER_KEY_PASSWORD")
+    val signingValues = signingVariables.map { providers.environmentVariable(it).orNull }
+    if (signingValues.any { !it.isNullOrBlank() }) {
+        require(signingValues.all { !it.isNullOrBlank() }) { "Set all four LMREADER signing environment variables, or clear all of them for an unsigned candidate." }
+        val releaseSigning = signingConfigs.create("releaseEnvironment") {
+            storeFile = file(signingValues[0]!!)
+            require(storeFile!!.isFile) { "Release keystore file does not exist." }
+            storePassword = signingValues[1]
+            keyAlias = signingValues[2]
+            keyPassword = signingValues[3]
+        }
+        buildTypes.named("release") { signingConfig = releaseSigning }
     }
 
     lint {
@@ -22,7 +45,11 @@ android {
 }
 
 dependencies {
+    implementation(project(":core:workflow"))
     implementation(project(":core:model"))
+    implementation(project(":core:api"))
+    implementation(project(":core:vision"))
+    implementation(project(":core:translation"))
     implementation(project(":core:index"))
     implementation(project(":core:database"))
     implementation(project(":core:storage"))
@@ -34,6 +61,8 @@ dependencies {
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.navigation.compose)
     implementation(libs.androidx.datastore.preferences)
+    implementation(libs.androidx.room.runtime)
+    implementation(libs.androidx.room.ktx)
     implementation(libs.androidx.documentfile)
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.compose.material.icons.extended)
@@ -42,7 +71,7 @@ dependencies {
 
     // 阅读器图片引擎：缩放/平移/分块解码/裁白边由它实现。
     // Mihon 的非 WebGPU 阅读路径用的就是同一个 fork（com.github.mihonapp）。
-    // 它含 native 代码（libssiv_crop.so），APK 会带四种 ABI 的该库。
+    // 它含 native 代码（libssiv_crop.so），由上面的 ABI 过滤保留两种 64 位库。
     implementation(libs.subsampling.scale.image.view)
 
     // 阅读器的章节编排是纯逻辑（项列表组装、跨章提升、下标重定位），
@@ -52,4 +81,10 @@ dependencies {
     // 封面懒加载队列是协程状态机（去重、批次、上限、落库时机），
     // 用 runTest 才能确定性地驱动它，不必依赖真机滚动。
     testImplementation(libs.kotlinx.coroutines.test)
+    androidTestImplementation(libs.androidx.test.core)
+    androidTestImplementation(libs.androidx.test.junit)
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(platform(libs.androidx.compose.bom))
+    androidTestImplementation(libs.androidx.compose.ui.test.junit4)
+    debugImplementation(libs.androidx.compose.ui.test.manifest)
 }

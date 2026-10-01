@@ -1,3 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 备份规则：本阶段没有需要排除的本地凭据，保留默认行为并显式声明。 -->
-<full-backup-content />
+<!-- API 密文与设备 Keystore 绑定，不随备份迁移。 -->
+<full-backup-content>
+    <exclude domain="file" path="datastore/api_profiles.preferences_pb" />
+    <exclude domain="file" path="api-request-logs/" />
+    <!-- Publication journals are meaningful only with this installation's private snapshots. -->
+    <exclude domain="file" path="export-queue.json" />
+    <exclude domain="file" path="export-queue.json.part" />
+    <exclude domain="file" path="export-queue.json.bak" />
+    <exclude domain="file" path="export-queue.json.new" />
+</full-backup-content>

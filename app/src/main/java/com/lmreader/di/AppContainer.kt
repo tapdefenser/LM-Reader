@@ -24,6 +24,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 /**
@@ -35,7 +36,8 @@ import kotlinx.coroutines.launch
  *
  * 线程约定：容器构建本身不做 IO；数据库与 DataStore 都是惰性打开。
  */
-class AppContainer(private val application: Application) {
+class AppContainer(val application: Application) {
+    val applicationContext: Context get() = application.applicationContext
 
     private val databaseComponents by lazy {
         DatabaseProvider.create(
@@ -56,37 +58,9 @@ class AppContainer(private val application: Application) {
      * 容器构建本身不做 IO（见类注释），所以放在独立作用域里跑；结果只记日志，
      * 因为它是维护而不是启动前提。
      */
-    private val maintenanceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-
-    init {
-        // 这里曾经调用 `SubsamplingScaleImageView.setPreferredBitmapConfig(RGB_565)` 以期
-        // 把每页的内存减半。反编译该 fork 的解码器后确认**它无效**：位图格式在
-        // `decoder.Decoder.init` 里硬编码为 ARGB_8888，静态配置根本不参与。
-        // 真正的对策见 ReaderImageView（控制送进去的像素量）与 PagePrefetcher
-        // （字节只落磁盘、不压堆）。留着那行只会让人以为内存已经被限制住了。
-
-        maintenanceScope.launch {
-            runCatching { mangaRepository.markOrphanedAsStale() }
-                .onSuccess { hidden ->
-                    if (hidden > 0) {
-                        android.util.Log.i(TAG, "启动维护：隐藏孤儿卡片 $hidden 张（来源行已删除，只隐藏不删除）")
-                    }
-                }
-                .onFailure { error -> android.util.Log.e(TAG, "启动维护：孤儿卡片清扫失败", error) }
-        }
-
-        // 上次进程被系统/用户杀掉时，来源行会停在 RUNNING（真机快照里就有两个）。
-        // 不收敛的话路径表永远显示"正在扫描"，用户分不清"真的在扫"与"上次没扫完"。
-        maintenanceScope.launch {
-            runCatching { sourceRepository.clearInterruptedScans("上次扫描被中断，请重新扫描") }
-                .onSuccess { cleared ->
-                    if (cleared > 0) {
-                        android.util.Log.i(TAG, "启动维护：收敛 $cleared 个停留在「扫描中」的来源")
-                    }
-                }
-                .onFailure { error -> android.util.Log.e(TAG, "启动维护：扫描状态收敛失败", error) }
-        }
-    }
+    /** All application-owned queue/maintenance jobs share one lifetime. */
+    internal val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    val startupReady = kotlinx.coroutines.CompletableDeferred<Unit>()
 
     val database get() = databaseComponents.database
     val sourceRepository: SourceRepository get() = databaseComponents.sources
@@ -98,6 +72,43 @@ class AppContainer(private val application: Application) {
     val readingProgressRepository get() = databaseComponents.readingProgress
 
     val preferences by lazy { AppPreferences(application) }
+    val generalPreferences by lazy { com.lmreader.core.storage.settings.GeneralPreferences(application) }
+
+    /** 独立 API 配置列表与可取消的流式客户端，供设置和未来工作流共用。 */
+    val apiProfiles by lazy { com.lmreader.core.storage.settings.ApiProfileStore(application) }
+    val apiLogs by lazy { com.lmreader.ui.settings.api.ApiLogStore(java.io.File(applicationContext.filesDir, "api-request-logs")) }
+    val apiClient by lazy { com.lmreader.core.api.ApiClient(journal = apiLogs) }
+    val visionExecutionPreferences by lazy { com.lmreader.core.storage.settings.VisionExecutionPreferences(application) }
+    val localVision by lazy { com.lmreader.core.vision.LocalVisionEngine(application) { visionExecutionPreferences.settings.value } }
+    val translationSources by lazy { com.lmreader.core.translation.TranslationSourceStore(application) }
+    val translationCatalog by lazy { com.lmreader.core.translation.TranslationModelCatalog(
+        application.assets.open("translation/catalog.json").bufferedReader().use { it.readText() }) }
+    val translationInstaller by lazy { com.lmreader.core.translation.ModelPackageInstaller(
+        java.io.File(application.noBackupFilesDir, "translation-models")) }
+    val translationCatalogs by lazy { com.lmreader.core.translation.TranslationCatalogStore(
+        translationCatalog, java.io.File(application.noBackupFilesDir,"translation-catalogs")) }
+    val translationModels by lazy { com.lmreader.core.translation.TranslationModelManager(
+        application, translationCatalogs, translationInstaller, translationSources, translationCatalog) }
+    val localTranslator by lazy { com.lmreader.core.translation.BergamotTextTranslator({translationModels.installedCatalog()}, translationInstaller) }
+    val loadedTranslationResources by lazy {
+        kotlinx.coroutines.flow.combine(localVision.loadedResources, localTranslator.loadedResources) { vision, translation -> vision + translation }
+            .stateIn(backgroundScope, kotlinx.coroutines.flow.SharingStarted.Eagerly, emptyList())
+    }
+    val bubbleRenderPreferences by lazy { com.lmreader.core.storage.settings.BubbleRenderPreferences(application) }
+    val translationWorkflows by lazy { com.lmreader.ui.workflow.TranslationWorkflowStore(
+        java.io.File(application.filesDir, "translation-workflows")) }
+    val queueOrder by lazy { com.lmreader.ui.queue.QueueOrderStore(
+        java.io.File(application.filesDir, "translation-queue-order.json")) }
+    val translationCachePreferences by lazy { com.lmreader.core.storage.settings.TranslationCachePreferences(application) }
+    val translationQueue by lazy { com.lmreader.ui.queue.TranslationQueueCoordinator(this) }
+    val exportSettings by lazy { com.lmreader.ui.queue.ExportSettingsStore(application) }
+    val exportQueue by lazy { com.lmreader.ui.queue.ExportQueueCoordinator(this) }
+    val taskService by lazy { com.lmreader.tasks.TaskServiceController(this) }
+    val backups by lazy { com.lmreader.ui.settings.backup.AppBackupManager(this) }
+    val localPageTranslator by lazy { com.lmreader.ui.reader.translation.LocalPageTranslator(application,localVision,localTranslator,
+        com.lmreader.ui.reader.translation.ReaderPageArtifactStore(java.io.File(application.filesDir,"reader-page-translations"),
+            java.io.File(application.cacheDir,"reader-page-translations")),
+        {translationModels.installedPacks.value.values.toList()}) }
 
     /**
      * 阅读器偏好（开发文档 12、14）。
@@ -181,7 +192,7 @@ class AppContainer(private val application: Application) {
         )
     }
 
-    val pageSourceFactory by lazy { PageSourceFactory(treeAccess) }
+    val pageSourceFactory by lazy { PageSourceFactory(treeAccess, java.io.File(application.cacheDir, "chapter-archives")) }
 
     /**
      * 页面字节的磁盘预取缓存（见 [com.lmreader.ui.reader.PagePrefetcher]）。
@@ -217,6 +228,45 @@ class AppContainer(private val application: Application) {
             mangaRepository = mangaRepository,
             backfillWorker = backfillWorker,
         )
+    }
+
+    init {
+        // 这里曾经调用 `SubsamplingScaleImageView.setPreferredBitmapConfig(RGB_565)` 以期
+        // 把每页的内存减半。反编译该 fork 的解码器后确认**它无效**：位图格式在
+        // `decoder.Decoder.init` 里硬编码为 ARGB_8888，静态配置根本不参与。
+        // 真正的对策见 ReaderImageView（控制送进去的像素量）与 PagePrefetcher
+        // （字节只落磁盘、不压堆）。留着那行只会让人以为内存已经被限制住了。
+
+        // Launch only after every lazy delegate has been initialized.
+        backgroundScope.launch { translationQueue }
+        backgroundScope.launch { exportQueue }
+        backgroundScope.launch {
+            try { backups.recoverPendingRestore(); startupReady.complete(Unit) }
+            catch (error: Exception) { startupReady.completeExceptionally(error) }
+        }
+        backgroundScope.launch {
+            try { startupReady.await() } catch (_: Exception) { return@launch }
+            runCatching { mangaRepository.markOrphanedAsStale() }
+                .onSuccess { hidden ->
+                    if (hidden > 0) {
+                        android.util.Log.i(TAG, "启动维护：隐藏孤儿卡片 $hidden 张（来源行已删除，只隐藏不删除）")
+                    }
+                }
+                .onFailure { error -> android.util.Log.e(TAG, "启动维护：孤儿卡片清扫失败", error) }
+        }
+
+        // 上次进程被系统/用户杀掉时，来源行会停在 RUNNING（真机快照里就有两个）。
+        // 不收敛的话路径表永远显示"正在扫描"，用户分不清"真的在扫"与"上次没扫完"。
+        backgroundScope.launch {
+            try { startupReady.await() } catch (_: Exception) { return@launch }
+            runCatching { sourceRepository.clearInterruptedScans("上次扫描被中断，请重新扫描") }
+                .onSuccess { cleared ->
+                    if (cleared > 0) {
+                        android.util.Log.i(TAG, "启动维护：收敛 $cleared 个停留在「扫描中」的来源")
+                    }
+                }
+                .onFailure { error -> android.util.Log.e(TAG, "启动维护：扫描状态收敛失败", error) }
+        }
     }
 
     companion object {

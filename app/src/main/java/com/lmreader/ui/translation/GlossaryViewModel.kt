@@ -41,8 +41,8 @@ class GlossaryViewModel(
         }
     }
 
-    /** 新增或修改一条。人工录入（`manual = true`）因此不会被自动流程覆盖。 */
-    fun save(source: String, target: String) {
+    /** 新增只填空缺；修改必须明确选中已有条目。 */
+    fun save(source: String, target: String, originalSource: String? = null) {
         val trimmedSource = source.trim()
         val trimmedTarget = target.trim()
         if (trimmedSource.isEmpty() || trimmedTarget.isEmpty()) {
@@ -51,15 +51,18 @@ class GlossaryViewModel(
         }
         viewModelScope.launch {
             runCatching {
-                translationRepository.upsertGlossary(
-                    GlossaryEntry(
+                val entry = GlossaryEntry(
                         mangaId = mangaId,
                         source = trimmedSource,
                         target = trimmedTarget,
                         manual = true,
                         updatedAt = System.currentTimeMillis(),
-                    ),
-                )
+                    )
+                if (originalSource != null) translationRepository.editGlossary(originalSource, entry)
+                else {
+                    require(translationRepository.glossary(mangaId).none { it.source == trimmedSource }) { "该原词已有译名，请编辑已有条目" }
+                    translationRepository.upsertGlossary(entry)
+                }
             }.onFailure { error ->
                 _state.update { it.copy(message = error.message ?: "保存失败") }
                 return@launch

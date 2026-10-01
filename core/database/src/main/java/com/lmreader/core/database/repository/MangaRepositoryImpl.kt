@@ -526,6 +526,15 @@ internal class MangaRepositoryImpl(
             targetLanguage = settings.targetLanguage?.trim()?.takeIf { it.isNotEmpty() },
             styleMode = settings.styleMode?.name,
             customStyle = settings.customStyle,
+            workflowId = settings.workflowId,
+            pageMode = settings.pageMode?.name,
+            segThreshold = settings.segThreshold,
+            bubbleFillMode = settings.bubbleFillMode?.name,
+            bubbleOpacity = settings.bubbleOpacityPercent,
+            bubblePadding = settings.bubbleTextPaddingPercent,
+            bubbleFont = settings.bubbleFont?.name,
+            bubbleFontScale = settings.bubbleFontScalePercent,
+            bubbleBold = settings.bubbleBold,
         )
     }
 

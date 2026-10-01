@@ -1,0 +1,29 @@
+package com.lmreader.ui.settings.api
+
+import androidx.test.platform.app.InstrumentationRegistry
+import com.lmreader.core.api.*
+import kotlinx.coroutines.runBlocking
+import org.junit.Assert.*
+import org.junit.Test
+import java.io.File
+import java.util.UUID
+
+class ApiLogStoreTest {
+    @Test fun privateJournalRestoresBodiesAndMarksUnfinishedRequestsInterrupted() = runBlocking {
+        val cache = InstrumentationRegistry.getInstrumentation().targetContext.cacheDir.canonicalFile
+        val root = File(cache, "api-log-fixture-${UUID.randomUUID()}")
+        try {
+            val store = ApiLogStore(root)
+            val info = ApiRequestInfo(ApiTraceContext("manga-fixture", "合成漫画", "章", "页", "步骤"), "fixture", "model", "http://127.0.0.1/v1/chat/completions", "POST", "CHAT_COMPLETIONS", 1, "{\"messages\":[]}")
+            val done = store.begin(info); store.finish(done, ApiRequestOutcome("SUCCESS", "[{\"translation\":\"译文\"}]", "thinking", httpCode = 200))
+            val pending = store.begin(info.copy(attempt = 2))
+            assertTrue(store.records.value.all { it.info.request.isEmpty() && it.outcome.response.isEmpty() })
+            val restored = ApiLogStore(root)
+            assertEquals("INTERRUPTED", restored.detail(pending)!!.outcome.status)
+            assertEquals("[{\"translation\":\"译文\"}]", restored.detail(done)!!.outcome.response)
+            assertEquals(2, restored.records.value.groupBy { it.info.context.mangaId }.getValue("manga-fixture").size)
+        } finally {
+            if(root.canonicalFile.parentFile == cache && root.name.startsWith("api-log-fixture-")) root.deleteRecursively()
+        }
+    }
+}
