@@ -100,7 +100,9 @@ def prepare(apk, output, allow_unsigned):
         raise RuntimeError("APK package/version/SDK does not match the release configuration.")
     signature = run([tool(tools, "apksigner"), "verify", "--verbose", "--print-certs", apk], check=False)
     signed = signature.returncode == 0
-    signer = re.search(r"Signer #1 certificate SHA-256 digest: ([0-9a-f]{64})", signature.stdout)
+    signer = re.search(r"certificate SHA-256 digest: ([0-9a-f]{64})", signature.stdout)
+    if signed and signer is None:
+        raise RuntimeError("Verified APK did not report its signer certificate fingerprint.")
     dirty = bool(run(["git", "status", "--porcelain"]).stdout.strip())
     if not signed and not allow_unsigned:
         raise RuntimeError("APK is unsigned. For a local candidate only, pass --allow-unsigned.")
