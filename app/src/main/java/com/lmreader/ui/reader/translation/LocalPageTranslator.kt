@@ -49,18 +49,25 @@ class LocalPageTranslator(private val context: Context, private val vision: Loca
         } } catch (failure: Throwable) { returned?.close(); throw failure }
     }
     suspend fun recognize(segmented: SegmentedPage, source: LocalTranslationLanguage,
+        scope: SegTextScope = SegTextScope.ALL,
         progress: (PageTranslationProgress) -> Unit = {}): RecognizedPage = withContext(Dispatchers.IO) {
         try {
             progress(PageTranslationProgress(PageTranslationStage.OCR))
-            val regions = segmented.seg.regions.map { it.bounds }
-            val ocr = if (regions.isEmpty()) LocalOcrResult(segmented.page.pageId, segmented.image.width,
-                segmented.image.height, ocrLanguage(source), emptyList(), 0)
-            else vision.recognize(segmented.page.pageId, segmented.image, ocrLanguage(source), regions) {
-                progress(PageTranslationProgress(PageTranslationStage.OCR, it.completed, it.total))
+            val regions = selectSegRegions(segmented.seg, scope)
+            val lines = ArrayList<OcrLine>()
+            var elapsed = 0L
+            for (region in regions) {
+                val result = vision.recognizeRegion(segmented.page.pageId, segmented.image, ocrLanguage(source),
+                    region, segmented.seg.regions) {
+                    progress(PageTranslationProgress(PageTranslationStage.OCR, it.completed, it.total))
+                }
+                lines += result.lines; elapsed += result.elapsedMillis
             }
+            val ocr = LocalOcrResult(segmented.page.pageId, segmented.image.width, segmented.image.height,
+                ocrLanguage(source), lines.mapIndexed { i, line -> line.copy(id = "${segmented.page.pageId}:ocr:$i") }, elapsed)
             ensureActive()
             RecognizedPage(segmented.page, segmented.hash, segmented.image.width, segmented.image.height,
-                groupPageText(segmented.seg, ocr), segmented.started)
+                groupPageText(segmented.seg, ocr, scope), segmented.started)
         } finally { segmented.close() }
     }
     /** Caller holds pageWriteMutex, including queue state checks before publication. */
@@ -86,8 +93,9 @@ class LocalPageTranslator(private val context: Context, private val vision: Loca
     suspend fun translate(pageSource: PageSource, page: ReaderPage, source: LocalTranslationLanguage,
         target: LocalTranslationLanguage, render: BubbleRenderSettings,
         mode: TranslationPageMode = TranslationPageMode.BUBBLE, segThreshold: Float = .35f,
+        segTextScope: SegTextScope = SegTextScope.ALL,
         progress: (PageTranslationProgress) -> Unit = {}): ReaderPageTranslation {
-        val recognized = recognize(segment(pageSource, page, segThreshold, progress), source, progress)
+        val recognized = recognize(segment(pageSource, page, segThreshold, progress), source, segTextScope, progress)
         return pageWriteMutex.withLock { translateRecognized(recognized, source, target, render, progress) }
     }
     suspend fun releaseModels() { vision.releaseModels(); translator.releaseModels() }

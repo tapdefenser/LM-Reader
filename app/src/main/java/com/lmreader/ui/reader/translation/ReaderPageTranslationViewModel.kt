@@ -105,7 +105,7 @@ class ReaderPageTranslationViewModel(private val container: AppContainer,private
                 val categoryId = container.shelfRepository.categoryIdOf(mangaId)
                 val categoryStyle = categoryId?.let { id -> container.shelfRepository.observeCategories().first().firstOrNull { it.categoryId == id }?.customStyle }
                 val settings = WorkflowRunSettings(configuredSource, configuredTarget,
-                    resolveTranslationStyle(options, categoryStyle, container.preferences.translationGlobalStyle.first()), render, options.effectiveSegThreshold(), container.apiProfiles.profiles.first())
+                    resolveTranslationStyle(options, categoryStyle, container.preferences.translationGlobalStyle.first()), render, options.effectiveSegThreshold(), container.apiProfiles.profiles.first(), options.segTextScope)
                 val mangaName = container.mangaRepository.getCards(listOf(mangaId)).firstOrNull()?.displayName ?: mangaId
                 val host = object : AndroidWorkflowHost(container.applicationContext, container, mangaId, mangaName,
                     listOf(WorkflowChapterInput(item.chapter.chapterId, item.chapter.title, item.chapter.source, listOf(item.page))), settings,

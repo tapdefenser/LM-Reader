@@ -258,7 +258,8 @@ class TranslationQueueCoordinator(private val container: AppContainer) {
             val wholeBatch = AtomicBoolean(false)
             var wholeRequest: Job? = null
             val settings = WorkflowRunSettings(source, target, json.optString("style"), render, json.getDouble("segThreshold").toFloat(),
-                json.optJSONObject("apiProfiles")?.let { ApiProfileCodec.decode(it.toString()) }.orEmpty())
+                json.optJSONObject("apiProfiles")?.let { ApiProfileCodec.decode(it.toString()) }.orEmpty(),
+                SegTextScope.fromValue(json.optString("segTextScope").takeIf { it.isNotBlank() }))
             val mangaName = container.mangaRepository.getCards(listOf(mangaId)).firstOrNull()?.displayName ?: mangaId
             val runHost = object : AndroidWorkflowHost(container.applicationContext, container, mangaId, mangaName, chapters, settings, budget) {
                 override fun continueScheduling(frame: WorkflowFrame?): Boolean = wholeBatch.get() || !stopping.value || frame?.identity(WorkflowSystem.PAGE) == protectedPage && protectedPage != null
@@ -450,7 +451,8 @@ class TranslationQueueCoordinator(private val container: AppContainer) {
                 pageTotals[task.chapterId] = pages.size
                 if (eligible.isEmpty()) dao.setQueueState(task.chapterId, task.targetLanguage, "CANCELLED", null, 0, now())
                 works += eligible.map { QueuePageWork(task, pageSource, it, source, target, render,
-                    json.getDouble("segThreshold").toFloat(), json.getInt("retries").coerceIn(0, 5)) }
+                    json.getDouble("segThreshold").toFloat(), json.getInt("retries").coerceIn(0, 5),
+                    SegTextScope.fromValue(json.optString("segTextScope").takeIf { it.isNotBlank() })) }
             } catch (failure: Exception) {
                 if (failure is CancellationException) throw failure
                 dao.setQueueState(task.chapterId, task.targetLanguage, "FAILED", failure.message, task.translatedCount, now())

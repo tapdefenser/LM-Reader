@@ -101,6 +101,8 @@ internal fun MangaEntity.toDomain(): MangaRecord = MangaRecord(
         workflowId = translationWorkflowId,
         pageMode = translationPageMode?.let { name -> TranslationPageMode.entries.firstOrNull { it.name == name } },
         segThreshold = translationSegThreshold?.takeIf { it.isFinite() && it in 0f..1f },
+        segTextScope = com.lmreader.core.model.SegTextScope.entries.firstOrNull { it.name == translationSegTextScope }
+            ?: com.lmreader.core.model.SegTextScope.ALL,
         bubbleFillMode = translationBubbleFillMode?.let { name -> BubbleFillMode.entries.firstOrNull { it.name == name } },
         bubbleOpacityPercent = translationBubbleOpacity?.takeIf { it in 0..100 },
         bubbleTextPaddingPercent = translationBubblePadding?.takeIf { it in 0..20 },
@@ -144,6 +146,7 @@ internal fun MangaRecord.toEntity(sourceOrderIndex: Int): MangaEntity = MangaEnt
     translationWorkflowId = translationSettings.workflowId,
     translationPageMode = translationSettings.pageMode?.name,
     translationSegThreshold = translationSettings.segThreshold,
+    translationSegTextScope = translationSettings.segTextScope.name,
     translationBubbleFillMode = translationSettings.bubbleFillMode?.name,
     translationBubbleOpacity = translationSettings.bubbleOpacityPercent,
     translationBubblePadding = translationSettings.bubbleTextPaddingPercent,

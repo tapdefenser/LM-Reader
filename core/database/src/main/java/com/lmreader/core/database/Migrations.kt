@@ -333,6 +333,13 @@ object Migrations {
         }
     }
 
+    /** Preserve existing manga, chapter translations and queue snapshots. Null means both kinds. */
+    val MIGRATION_11_12 = object : Migration(11, 12) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("ALTER TABLE mangas ADD COLUMN translationSegTextScope TEXT")
+        }
+    }
+
     val ALL: Array<Migration> =
         arrayOf(
             MIGRATION_1_2,
@@ -345,5 +352,6 @@ object Migrations {
             MIGRATION_8_9,
             MIGRATION_9_10,
             MIGRATION_10_11,
+            MIGRATION_11_12,
         )
 }

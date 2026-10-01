@@ -10,6 +10,7 @@ import com.lmreader.core.model.*
 import com.lmreader.core.storage.reader.PageSource
 import com.lmreader.core.storage.reader.ReaderPage
 import com.lmreader.core.workflow.*
+import com.lmreader.core.vision.*
 import com.lmreader.di.AppContainer
 import com.lmreader.ui.queue.TranslationCacheBudget
 import com.lmreader.ui.reader.translation.*
@@ -27,7 +28,8 @@ import kotlin.math.floor
 
 data class WorkflowChapterInput(val id: String, val name: String, val source: PageSource, val pages: List<ReaderPage>)
 data class WorkflowRunSettings(val source: LocalTranslationLanguage, val target: LocalTranslationLanguage,
-    val style: String, val render: BubbleRenderSettings, val segThreshold: Float, val apiProfiles: List<ApiProfile> = emptyList())
+    val style: String, val render: BubbleRenderSettings, val segThreshold: Float, val apiProfiles: List<ApiProfile> = emptyList(),
+    val segTextScope: SegTextScope = SegTextScope.ALL)
 
 /** One host owns a manga run. Image references survive page completion; decoded bitmaps use the SEG MB budget. */
 open class AndroidWorkflowHost(private val context: Context, protected val container: AppContainer,
@@ -91,12 +93,7 @@ open class AndroidWorkflowHost(private val context: Context, protected val conta
                 try {
                 val seg = container.localVision.segment(reference.pageId, state.bitmap!!, settings.segThreshold) { progress(frame, PageTranslationProgress(PageTranslationStage.SEGMENTING, it.completed, it.total)) }
                 state.seg = seg
-                val bubbles = seg.regions.filter { it.kind == RegionKind.BUBBLE }
-                val regions = bubbles + seg.regions.filter { r -> r.kind == RegionKind.FREE_TEXT && bubbles.none { b ->
-                    val intersection = (minOf(b.bounds.right, r.bounds.right) - maxOf(b.bounds.left, r.bounds.left)).coerceAtLeast(0f) *
-                        (minOf(b.bounds.bottom, r.bounds.bottom) - maxOf(b.bounds.top, r.bounds.top)).coerceAtLeast(0f)
-                    intersection / r.bounds.area.coerceAtLeast(1f) > .6f
-                } }
+                val regions = selectSegRegions(seg, settings.segTextScope)
                 require(regions.size <= 1000) { "气泡过多，请分批处理" }
                 list(regions.mapIndexed { index, region ->
                     geometry[region.id] = region; images["bubble:${region.id}"] = ImageRef(reference.pageId, region.bounds)
@@ -110,10 +107,15 @@ open class AndroidWorkflowHost(private val context: Context, protected val conta
                 val reference = images[key] ?: error("图片不存在")
                 val state = image(reference.pageId)
                 try {
-                val result = container.localVision.recognize(reference.pageId, state.bitmap!!,
-                    LocalPageTranslator.ocrLanguage(LocalTranslationLanguage.fromTag(value("language"))), reference.area?.let { kotlin.collections.listOf(it) }) { progress(frame, PageTranslationProgress(PageTranslationStage.OCR, it.completed, it.total)) }
+                val language = LocalPageTranslator.ocrLanguage(LocalTranslationLanguage.fromTag(value("language")))
+                val region = key.takeIf { it.startsWith("bubble:") }?.removePrefix("bubble:")?.let { geometry[it] }
+                val report: (VisionProgress) -> Unit = { progress(frame, PageTranslationProgress(PageTranslationStage.OCR, it.completed, it.total)) }
+                val result = if (region != null) container.localVision.recognizeRegion(reference.pageId, state.bitmap!!,
+                    language, region, state.seg!!.regions, report)
+                else container.localVision.recognize(reference.pageId, state.bitmap!!, language,
+                    reference.area?.let { kotlin.collections.listOf(it) }, report)
                 if (key.startsWith("bubble:")) ocrBounds[key.removePrefix("bubble:")] = result.lines.map { it.bounds }
-                text(result.lines.joinToString("\n") { it.text })
+                text(result.translationText)
                 } finally { releaseReader(state) }
             }
             WorkflowKind.TRANSLATE -> {
@@ -165,7 +167,9 @@ open class AndroidWorkflowHost(private val context: Context, protected val conta
         val state = this.image(reference.pageId)
         return try {
             val bitmap = state.bitmap ?: error("图片已释放")
-            val crop = reference.area?.let { area ->
+            val region = image.key.takeIf { it.startsWith("bubble:") }?.removePrefix("bubble:")?.let { geometry[it] }
+            val isolated = region?.let { cropSegRegion(bitmap, it, state.seg!!.regions) }
+            val crop = isolated?.bitmap ?: reference.area?.let { area ->
                 val left = floor(area.left).toInt().coerceIn(0, bitmap.width - 1)
                 val top = floor(area.top).toInt().coerceIn(0, bitmap.height - 1)
                 Bitmap.createBitmap(bitmap, left, top, (ceil(area.right).toInt() - left).coerceIn(1, bitmap.width - left),

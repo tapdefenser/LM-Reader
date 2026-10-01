@@ -11,8 +11,17 @@ data class PixelRect(val left: Float, val top: Float, val right: Float, val bott
 }
 
 enum class RegionKind { BUBBLE, FREE_TEXT }
+/** Manga translation options choose which text to extract; old settings retain both kinds. */
+enum class SegTextScope(val label: String) {
+    BUBBLES("气泡"), FREE_TEXT("游离文字"), ALL("气泡+游离文字");
+    fun includes(kind: RegionKind) = this == ALL || (this == BUBBLES) == (kind == RegionKind.BUBBLE)
+    companion object {
+        fun fromValue(value: String?) = if (value == null) ALL else entries.firstOrNull { it.name == value }
+            ?: throw IllegalArgumentException("无效的 SEG 提取范围：$value")
+    }
+}
 data class SegRegion(val id: String, val kind: RegionKind, val bounds: PixelRect, val confidence: Float,
-                     val contour: List<PixelPoint> = emptyList())
+                     val contour: List<PixelPoint> = emptyList(), val extractionBounds: PixelRect? = null)
 enum class LocalOcrLanguage(val label: String) {
     JAPANESE("日语"), ENGLISH("英语"), CHINESE_SIMPLIFIED("简体中文"), CHINESE_TRADITIONAL("繁体中文"), KOREAN("韩语")
 }
@@ -22,6 +31,7 @@ data class SegResult(val imageId: String, val width: Int, val height: Int, val r
 data class LocalOcrResult(val imageId: String, val width: Int, val height: Int, val language: LocalOcrLanguage,
                           val lines: List<OcrLine>, val elapsedMillis: Long) {
     val text get() = lines.joinToString("\n") { it.text }
+    val translationText get() = joinOcrText(lines.map { it.text }, language)
 }
 data class VisionProgress(val stage: String, val completed: Int, val total: Int)
 

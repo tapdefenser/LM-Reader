@@ -529,6 +529,7 @@ internal class MangaRepositoryImpl(
             workflowId = settings.workflowId,
             pageMode = settings.pageMode?.name,
             segThreshold = settings.segThreshold,
+            segTextScope = settings.segTextScope.name,
             bubbleFillMode = settings.bubbleFillMode?.name,
             bubbleOpacity = settings.bubbleOpacityPercent,
             bubblePadding = settings.bubbleTextPaddingPercent,

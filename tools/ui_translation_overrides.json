@@ -217,5 +217,10 @@
   "已加载引擎会保留；修改加速方式在全部暂停卸载后，下次加载时生效。": "Loaded engines are retained. Acceleration changes take effect after pausing and unloading all engines.",
   "队列中 __VAR0__ 章": "__VAR0__ chapters in queue",
   "清除已取消": "Clear cancelled",
-  "导出临时快照未清理，请在导出设置中清理临时文件": "Export snapshots could not be removed. Clean temporary files in Export settings."
+  "导出临时快照未清理，请在导出设置中清理临时文件": "Export snapshots could not be removed. Clean temporary files in Export settings.",
+  "游离文字": "Free text",
+  "气泡+游离文字": "Bubbles + free text",
+  "SEG 提取范围": "SEG text scope",
+  "此选项只作用于这部漫画的新翻译任务。": "Applies to new translation tasks for this manga.",
+  "无效的 SEG 提取范围：__VAR0__": "Invalid SEG text scope: __VAR0__"
 }

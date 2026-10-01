@@ -103,6 +103,8 @@ data class MangaTranslationSettings(
     val bubbleFont: BubbleFont? = null,
     val bubbleFontScalePercent: Int? = null,
     val bubbleBold: Boolean? = null,
+    /** Per-manga SEG selection; old manga rows keep both kinds of text. */
+    val segTextScope: SegTextScope = SegTextScope.ALL,
 )
 
 /**

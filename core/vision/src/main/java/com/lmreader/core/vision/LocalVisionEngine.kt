@@ -55,13 +55,16 @@ internal class LocalVisionSession(context: Context, private val settings: Vision
                 for (raw in decodeSeg(model.detections,model.anchorCount,model.inputWidth,model.inputHeight,threshold)) {
                     val bounds = transform.rect(raw.bounds).offset(tile.x.toFloat(),tile.y.toFloat())
                     if (bounds.width <= 1 || bounds.height <= 1) continue
-                    val contour = if (raw.classId == 0) segContour(raw,model.prototypes,model.protoWidth,model.protoHeight,transform)
-                        .map { PixelPoint(it.x+tile.x,it.y+tile.y) } else emptyList()
-                    regions += SegRegion("",if (raw.classId == 0) RegionKind.BUBBLE else RegionKind.FREE_TEXT,bounds,raw.confidence,contour)
+                    val contours = if (raw.classId == 0) segContours(raw,model.prototypes,model.protoWidth,model.protoHeight,transform)
+                        .map { points -> points.map { PixelPoint(it.x+tile.x,it.y+tile.y) } } else emptyList()
+                    if (contours.size > 1) contours.forEach { contour ->
+                        regions += SegRegion("", RegionKind.BUBBLE, contourBounds(contour), raw.confidence, contour)
+                    } else regions += SegRegion("",if (raw.classId == 0) RegionKind.BUBBLE else RegionKind.FREE_TEXT,
+                        bounds,raw.confidence,contours.firstOrNull().orEmpty())
                 }
             } finally { if (source !== image) source.recycle() }
         }
-        val kept = keepCompleteRegions(regions,{ it.bounds },{ it.confidence },{ a,b -> a.kind==b.kind })
+        val kept = keepSegRegions(regions)
         progress(VisionProgress("气泡分割完成",tiles.size,tiles.size))
         SegResult(imageId,image.width,image.height,kept.mapIndexed { i,r -> r.copy(id="$imageId:seg:$i") },
             (System.nanoTime()-started)/1_000_000,model.backend)

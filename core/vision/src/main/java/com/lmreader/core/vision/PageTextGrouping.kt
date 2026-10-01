@@ -4,20 +4,16 @@ import com.lmreader.core.model.*
 import kotlin.math.*
 
 /** Each OCR line belongs to exactly one region; text detections inside bubbles do not duplicate it. */
-fun groupPageText(seg: SegResult, ocr: LocalOcrResult): List<PageTextRegion> {
+fun groupPageText(seg: SegResult, ocr: LocalOcrResult, scope: SegTextScope = SegTextScope.ALL): List<PageTextRegion> {
     require(seg.imageId == ocr.imageId && seg.width == ocr.width && seg.height == ocr.height)
     require(ocr.lines.map { it.id }.distinct().size == ocr.lines.size)
     require(seg.regions.map { it.id }.distinct().size == seg.regions.size)
-    val bubbles = seg.regions.filter { it.kind == RegionKind.BUBBLE }
-    val candidates = (bubbles + seg.regions.filter { region ->
-        region.kind == RegionKind.FREE_TEXT && bubbles.none { overlapArea(it.bounds, region.bounds) / region.bounds.area.coerceAtLeast(1f) > .6f }
-    }).filter { it.bounds.area > 0 }
+    val candidates = selectSegRegions(seg, scope)
     val groups = linkedMapOf<String, Pair<SegRegion, MutableList<OcrLine>>>()
     for (line in ocr.lines.filter { it.text.isNotBlank() && it.bounds.area > 0 }) {
-        val match = candidates.filter { overlapArea(it.bounds, line.bounds) / line.bounds.area > .55f &&
-            (it.contour.size<3 || polygonContains(it.contour,(line.bounds.left+line.bounds.right)/2,(line.bounds.top+line.bounds.bottom)/2)) }
-            .sortedWith(compareBy<SegRegion> { if (it.kind == RegionKind.BUBBLE) 0 else 1 }.thenBy { it.bounds.area }).firstOrNull()
-            ?: SegRegion(line.id, RegionKind.FREE_TEXT, line.bounds, line.confidence)
+        val match = regionOwner(line.bounds, candidates)
+            ?: if (scope.includes(RegionKind.FREE_TEXT) && regionOwner(line.bounds, seg.regions.filter { it.kind == RegionKind.BUBBLE }) == null)
+                SegRegion(line.id, RegionKind.FREE_TEXT, line.bounds, line.confidence) else continue
         groups.getOrPut(match.id) { match to arrayListOf() }.second += line
     }
     return groups.values.map { (region, lines) ->
@@ -28,7 +24,7 @@ fun groupPageText(seg: SegResult, ocr: LocalOcrResult): List<PageTextRegion> {
             coverage.right.coerceIn(0f,seg.width.toFloat()), coverage.bottom.coerceIn(0f,seg.height.toFloat()))
         val contour = region.contour.takeIf { points -> points.size >= 3 && points.all { it.x.isFinite() && it.y.isFinite() } }
             ?.map { PixelPoint(it.x.coerceIn(0f,seg.width.toFloat()), it.y.coerceIn(0f,seg.height.toFloat())) }.orEmpty()
-        PageTextRegion(region.id,region.kind,bounds,contour,joinOcrLines(lines.map { it.text }),lines.map { it.bounds })
+        PageTextRegion(region.id,region.kind,bounds,contour,joinOcrText(lines.map { it.text }, ocr.language),lines.map { it.bounds })
     }
 }
 
@@ -44,11 +40,7 @@ fun bindPageTranslations(regions: List<PageTextRegion>, translations: List<Local
     }
 }
 
-internal fun joinOcrLines(lines: List<String>): String = lines.map { it.trim() }.filter { it.isNotEmpty() }.fold("") { previous, next ->
-    if (previous.isEmpty()) next else previous + if (isCjkCharacter(previous.last()) && isCjkCharacter(next.first())) next else " $next"
-}
-private fun isCjkCharacter(c: Char) = c in '\u2E80'..'\u9FFF' || c in '\uAC00'..'\uD7AF' || c in '\uF900'..'\uFAFF' || c in '\uFF00'..'\uFFEF'
-private fun overlapArea(a: PixelRect,b: PixelRect) = (min(a.right,b.right)-max(a.left,b.left)).coerceAtLeast(0f) * (min(a.bottom,b.bottom)-max(a.top,b.top)).coerceAtLeast(0f)
+internal fun joinOcrLines(lines: List<String>): String = joinOcrText(lines, LocalOcrLanguage.JAPANESE)
 
 internal fun polygonContains(points: List<PixelPoint>,x: Float,y: Float): Boolean {
     var inside=false; var j=points.lastIndex

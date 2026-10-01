@@ -75,7 +75,7 @@ internal fun decodeSeg(values: FloatBuffer, anchors: Int, width: Int, height: In
     }
     val kept = ArrayList<RawSeg>()
     for (candidate in candidates.sortedByDescending { it.confidence }) {
-        if (kept.none { it.classId == candidate.classId && iou(it.bounds, candidate.bounds) > .45f }) kept += candidate
+        if (kept.none { it.classId == candidate.classId && duplicateSegBounds(it.bounds, candidate.bounds) }) kept += candidate
         if (kept.size == 300) break
     }
     return kept
@@ -105,7 +105,11 @@ internal fun components(width: Int, height: Int, foreground: (Int) -> Boolean): 
 }
 
 internal fun segContour(raw: RawSeg, prototypes: FloatBuffer, protoWidth: Int, protoHeight: Int,
-                        transform: Letterbox): List<PixelPoint> {
+                        transform: Letterbox): List<PixelPoint> = segContours(raw, prototypes, protoWidth, protoHeight, transform).firstOrNull().orEmpty()
+
+/** Retain substantial second lobes; a merged prediction's largest component is not its only balloon. */
+internal fun segContours(raw: RawSeg, prototypes: FloatBuffer, protoWidth: Int, protoHeight: Int,
+                        transform: Letterbox): List<List<PixelPoint>> {
     require(prototypes.limit() == protoWidth * protoHeight * 32)
     val sx = protoWidth.toFloat() / transform.targetWidth; val sy = protoHeight.toFloat() / transform.targetHeight
     val left = floor(raw.bounds.left * sx).toInt().coerceIn(0, protoWidth)
@@ -120,13 +124,16 @@ internal fun segContour(raw: RawSeg, prototypes: FloatBuffer, protoWidth: Int, p
         for (c in 0..31) value += raw.coefficients[c] * prototypes[offset+c]
         value.isFinite() && value > 0f // sigmoid(value) > 0.5
     }
-    val largest = components(w,h) { foreground[it] }.maxByOrNull { it.indices.size } ?: return emptyList()
-    val minX = IntArray(h) { w }; val maxX = IntArray(h) { -1 }
-    largest.indices.forEach { i -> minX[i/w] = min(minX[i/w],i%w); maxX[i/w] = max(maxX[i/w],i%w) }
-    val rows = (0 until h).filter { maxX[it] >= 0 }
-    val sampled = rows.filterIndexed { index, _ -> index % max(1, rows.size/48) == 0 || index == rows.lastIndex }
-    fun point(x: Int,y: Int) = transform.point((left+x+.5f)/sx,(top+y+.5f)/sy)
-    return sampled.map { point(minX[it],it) } + sampled.asReversed().map { point(maxX[it],it) }
+    val parts = components(w,h) { foreground[it] }.sortedByDescending { it.indices.size }
+    val largestSize = parts.firstOrNull()?.indices?.size ?: return emptyList()
+    return parts.filter { it.indices.size >= max(6, (largestSize * .04f).toInt()) }.map { part ->
+        val minX = IntArray(h) { w }; val maxX = IntArray(h) { -1 }
+        part.indices.forEach { i -> minX[i/w] = min(minX[i/w],i%w); maxX[i/w] = max(maxX[i/w],i%w) }
+        val rows = (0 until h).filter { maxX[it] >= 0 }
+        val sampled = rows.filterIndexed { index, _ -> index % max(1, rows.size/48) == 0 || index == rows.lastIndex }
+        fun point(x: Int,y: Int) = transform.point((left+x+.5f)/sx,(top+y+.5f)/sy)
+        sampled.map { point(minX[it],it) } + sampled.asReversed().map { point(maxX[it],it) }
+    }
 }
 
 internal fun dbBoxes(probabilities: FloatBuffer, width: Int, height: Int, transform: Letterbox): List<Pair<PixelRect,Float>> {

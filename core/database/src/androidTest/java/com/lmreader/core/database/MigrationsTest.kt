@@ -34,6 +34,24 @@ class MigrationsTest {
     )
 
     @Test
+    fun segScopeMigrationPreservesQueuedTranslations() {
+        helper.createDatabase(TEST_DB, 11).use { db ->
+            db.execSQL("INSERT INTO mangas (mangaId, anchorDocumentId, sourceId, sourceKind, layoutMode, displayName, sortKey, sourceOrderIndex, hasMetadata, chapterCountKnown, availability, discoveryGeneration, discoveredAt, updatedAt, translationAutoDetectSource, translationSegThreshold) VALUES ('m1', '/fixture', 's1', 'IMAGE_DIRECTORY', 'MULTI_CHAPTER', 'fixture', 'fixture', 0, 0, 1, 'AVAILABLE', 1, 0, 0, 0, 0.4)")
+            db.execSQL("INSERT INTO chapters (chapterId, mangaId, documentId, kind, title, sortKey, position, contentRevision, discoveredAt) VALUES ('c1', 'm1', '/fixture/chapter', 'IMAGE_DIRECTORY', 'chapter', 'chapter', 0, 1, 0)")
+            db.execSQL("INSERT INTO chapter_translation (chapterId, mangaId, targetLanguage, state, sourceLanguage, autoDetectSource, configSnapshot, translatedCount, updatedAt) VALUES ('c1', 'm1', 'zh-Hans', 'PENDING', 'en', 0, '{\"schema\":2}', 3, 1)")
+        }
+        helper.runMigrationsAndValidate(TEST_DB, 12, true, Migrations.MIGRATION_11_12).use { db ->
+            db.query("SELECT translationSegTextScope, translationSegThreshold FROM mangas WHERE mangaId = 'm1'").use { cursor ->
+                assertTrue(cursor.moveToFirst()); assertTrue(cursor.isNull(0)); assertEquals(.4f, cursor.getFloat(1), .0001f)
+            }
+            db.query("SELECT state, translatedCount, configSnapshot FROM chapter_translation WHERE chapterId = 'c1'").use { cursor ->
+                assertTrue(cursor.moveToFirst()); assertEquals("PENDING", cursor.getString(0)); assertEquals(3, cursor.getInt(1))
+                assertEquals("{\"schema\":2}", cursor.getString(2))
+            }
+        }
+    }
+
+    @Test
     fun `v10到v11每章保留最新一套翻译并保留已保存页数`() {
         helper.createDatabase(TEST_DB, 10).use { db ->
             db.execSQL("INSERT INTO mangas (mangaId, anchorDocumentId, sourceId, sourceKind, layoutMode, displayName, sortKey, sourceOrderIndex, hasMetadata, chapterCountKnown, availability, discoveryGeneration, discoveredAt, updatedAt, translationAutoDetectSource) VALUES ('m1', '/fixture', 's1', 'IMAGE_DIRECTORY', 'MULTI_CHAPTER', 'fixture', 'fixture', 0, 0, 1, 'AVAILABLE', 1, 0, 0, 0)")

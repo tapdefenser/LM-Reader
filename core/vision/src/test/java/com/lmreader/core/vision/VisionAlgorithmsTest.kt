@@ -6,6 +6,26 @@ import java.nio.FloatBuffer
 import kotlin.test.*
 
 class VisionAlgorithmsTest {
+    @Test fun `merged prediction keeps a smaller disconnected balloon but discards isolated mask noise`() {
+        val w = 20; val h = 20; val proto = FloatArray(w * h * 32) { -1f }
+        for (y in 2..10) for (x in 2..9) proto[(y * w + x) * 32] = 1f
+        for (y in 12..17) for (x in 12..17) proto[(y * w + x) * 32] = 1f
+        proto[0] = 1f
+        val coefficients = FloatArray(32).apply { this[0] = 1f }
+        val contours = segContours(RawSeg(PixelRect(0f, 0f, 20f, 20f), .9f, 0, coefficients),
+            FloatBuffer.wrap(proto), w, h, Letterbox(w, h, w, h))
+        assertEquals(2, contours.size)
+        assertTrue(contours[1].all { it.x >= 12f && it.y >= 12f })
+    }
+    @Test fun `class-aware head suppression retains both connected balloon predictions`() {
+        val n = 2; val values = FloatArray(38 * n)
+        for (i in 0 until n) {
+            values[i] = .3f + i * .13f; values[n + i] = .3f
+            values[2 * n + i] = .4f; values[3 * n + i] = .4f
+            values[4 * n + i] = .9f - i * .1f
+        }
+        assertEquals(2, decodeSeg(FloatBuffer.wrap(values), n, 500, 500, .35f).size)
+    }
     @Test fun `letterbox maps actual rounded edges to source pixels`() {
         val t=Letterbox(333,777,1472,1472)
         val r=t.rect(PixelRect(t.left.toFloat(),t.top.toFloat(),(t.left+t.contentWidth).toFloat(),(t.top+t.contentHeight).toFloat()))

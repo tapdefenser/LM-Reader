@@ -113,6 +113,13 @@ fun TranslationOptionsScreen(container: AppContainer, mangaId: String, onBack: (
             }
             HorizontalDivider()
             Text("Seg 判定与回填", style = MaterialTheme.typography.titleMedium)
+            Text("SEG 提取范围", style = MaterialTheme.typography.titleSmall)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                SegTextScope.entries.forEach { scope ->
+                    FilterChip(state.settings.segTextScope == scope, { viewModel.setSegTextScope(scope) }, label = { Text(scope.label) })
+                }
+            }
+            Text("此选项只作用于这部漫画的新翻译任务。", style = MaterialTheme.typography.bodySmall)
             OptionSlider("Seg 判定阈值", state.settings.effectiveSegThreshold() * 100, 5f..95f) { viewModel.setSegThreshold(it / 100) }
             Text("阈值影响新识别；回填样式和字体实时作用于已有译文。", style = MaterialTheme.typography.bodySmall)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

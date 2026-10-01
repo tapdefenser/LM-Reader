@@ -13,7 +13,7 @@ import java.util.concurrent.atomic.AtomicReference
 
 data class QueuePageWork(val task: ChapterTranslationEntity, val source: PageSource, val page: ReaderPage,
     val sourceLanguage: LocalTranslationLanguage, val targetLanguage: LocalTranslationLanguage,
-    val render: BubbleRenderSettings, val threshold: Float, val retries: Int)
+    val render: BubbleRenderSettings, val threshold: Float, val retries: Int, val segTextScope: SegTextScope = SegTextScope.ALL)
 
 /** A manga owns both async branches. The MB budget provides backpressure without serializing stages. */
 internal class MangaPagePipeline(parent: CoroutineScope, works: List<QueuePageWork>,
@@ -72,7 +72,7 @@ internal class MangaPagePipeline(parent: CoroutineScope, works: List<QueuePageWo
                     owned = segmented
                     state.image.set(null)
                     val bitmapBytes = segmented.image.allocationByteCount.toLong()
-                    val recognized = translator.recognize(segmented, state.work.sourceLanguage) { state.progress.value = it }
+                    val recognized = translator.recognize(segmented, state.work.sourceLanguage, state.work.segTextScope) { state.progress.value = it }
                     val metadataBytes = recognized.groups.sumOf { region ->
                         256L + region.sourceText.length * 2L + region.contour.size * 8L + region.textBounds.size * 16L
                     }

@@ -168,6 +168,7 @@ data class MangaEntity(
     val translationBubbleFont: String? = null,
     val translationBubbleFontScale: Int? = null,
     val translationBubbleBold: Boolean? = null,
+    val translationSegTextScope: String? = null,
 )
 
 /** 章节行；物理定位键是 `(documentId, kind)`（开发文档 15.3）。 */

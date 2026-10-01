@@ -20,11 +20,15 @@ Comic
 
 The top menu provides names/retry settings, templates, unified API binding, generated Cat-paw text and instructions. The generated text reflects the actual tree and variable bindings. Changing a parameter with unsaved edits prompts you to save, discard or continue editing.
 
+Each manga's **Translation options → SEG text scope** offers bubbles, free text, or both (the default). The selection is saved per manga and captured in new task snapshots. Existing queued tasks keep their snapshot. The Seg step still accepts only an image; it has no scope parameter.
+
+Text blocks are assigned to balloon contours before filtering the scope. Connected balloons retain separate text targets and significant mask components; overlapping balloon boxes no longer suppress each other solely by containment. Local OCR and API image attachments use the same isolated crops. OCR joins layout line breaks within each region using the source language's spacing rules before passing text to translation steps.
+
 ## Steps and variables
 
 | Step | Use |
 |---|---|
-| Seg / OCR / local translation | Detect bubbles, recognize text and run installed offline models |
+| Seg / OCR / local translation | Detect regions using the manga's text scope, recognize text and run installed offline models |
 | API / streaming API | Send prompts/context and optional images; validate typed output |
 | Fill translated bubbles | Map ordered output back to existing bubble identities |
 | Each item / If | Iterate a list/dictionary or choose a conditional branch |

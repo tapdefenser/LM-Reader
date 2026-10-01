@@ -46,6 +46,7 @@ fun translationTaskSnapshot(
         .put("targetLanguage", target)
         .put("style", style)
         .put("segThreshold", settings.effectiveSegThreshold().toDouble())
+        .put("segTextScope", settings.segTextScope.name)
         .put("fillMode", render.fillMode.name)
         .put("opacity", render.opacityPercent)
         .put("padding", render.textPaddingPercent)
