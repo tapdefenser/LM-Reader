@@ -1,9 +1,9 @@
 # Changelog / 更新记录
 
-## v0.1.0 — release candidate / 发布候选
+## v0.1.0 — First release / 首版
 
-This is the first test-release candidate; it is not a published signed release.
-这是首个测试版候选，目前尚未发布签名发行版。
+First signed APK release, using a dedicated RSA-4096 release key.
+首个已签名 APK 发行版，使用专用 RSA-4096 发布密钥。
 
 - Local library/shelf, reading progress, image-folder/ZIP/CBZ/PDF reading.
 - Local Seg/OCR, offline translation packs and configurable API workflows.
@@ -13,7 +13,7 @@ This is the first test-release candidate; it is not a published signed release.
 - Backups with empty API keys, checked restore/rollback and startup recovery.
 - About page with app version, GitHub project link and stable-release update checks.
 - Simplified Chinese/English UI: system-following uses English for every non-Simplified-Chinese primary language.
-- Release candidate version `0.1.0`, code `2`, only arm64-v8a/x86_64; reproducible preparation and packaging instructions.
+- Release version `0.1.0`, code `2`, only arm64-v8a/x86_64; reproducible preparation and packaging instructions.
 
 翻译与导出任务完成后自动出队，保留译文、章节完成状态与导出产物；启动清理旧完成任务，失败、中断与暂停记录仍可恢复。
 

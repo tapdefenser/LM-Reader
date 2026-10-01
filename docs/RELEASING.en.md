@@ -1,36 +1,29 @@
-# v0.1.0 release preparation
+# v0.1.0 release and signing
 
 [简体中文](RELEASING.zh-CN.md) · [Bilingual release notes](releases/v0.1.0.md)
 
-Checked on 2026-10-01. The requested deliverable is an **unsigned candidate**, not a published/installable release.
+Release date: 2026-10-01. The first release provides a signed APK on [GitHub Releases](https://github.com/tapdefenser/LM-Reader/releases/tag/v0.1.0). The repository is currently private; downloads require repository access.
 
-## Candidate configuration
+## Release assets
 
-| Item | Value |
+| Item | Configuration |
 |---|---|
 | Version / code | `0.1.0` / `2`, from `gradle/release.properties` |
-| Intended tag | `v0.1.0`, not yet created |
-| Package | `com.lmreader`; Debug: `com.lmreader.debug` |
-| SDK | min 26, target 36, compile 37 |
-| ABIs | arm64-v8a and x86_64 only |
-| Optimization | R8 and resource shrinking enabled |
-| Signing | No formal credentials supplied; unsigned candidate |
-| Candidate / size | `LM-Reader-v0.1.0-64bit-unsigned.apk` / 195,982,080 bytes, about 186.9 MiB |
-| Source | This APK was built from the then-uncommitted worktree; metadata records that HEAD/dirty state |
+| Tag | `v0.1.0` |
+| Package | `com.lmreader`; Debug uses `com.lmreader.debug` |
+| Android | min 26, target 36, compile 37 |
+| ABIs | `arm64-v8a`, `x86_64` |
+| Optimization | R8 and resource shrinking |
+| Signing | Dedicated RSA-4096 key; APK v2/v3 verification passed |
+| APK | `LM-Reader-v0.1.0-64bit.apk`, 196,008,539 bytes, about 186.9 MiB |
 
-The local `.scratch/release-v0.1.0/` folder contains the named APK, notes, third-party texts, `release-metadata.json` and `SHA256SUMS`. Local outputs are Git-ignored. An unsigned APK cannot be installed or used as an official download asset.
+APK SHA-256: `483f490b50115dbcb5133f533246d7e4c29a19a4e9c30098168998b659770b77`.
 
-This candidate's APK SHA-256 is `6b38d2d26a5352c48fd88ba8023cd9b31e16ee75d8580456e045ccb4030ae4df`. Regenerate `SHA256SUMS` after signing or rebuilding.
+Signer certificate SHA-256: `8b1051b89d4e4bf8c423e4f7a2ad19e9ef1cfce3cd19041997a75b838b65ecc7`. Future releases must reuse this key for normal upgrades.
 
-## Language policy
+Assets include the APK, `SHA256SUMS`, `release-metadata.json`, `THIRD_PARTY_NOTICES.md` and `LICENSES.zip`. Extract the notices archive before checking document/license paths in the checksum list. Metadata records signing, certificate fingerprint, source revision, ABIs, Android library alignment and separate Hexagon DSP files.
 
-The shared AppLanguage policy supplies Activity, notifications, UI text and preference language labels. Manual Chinese/English takes priority. Follow system examines only the primary system language: Simplified Chinese, including zh-Hans/zh-CN/zh-SG and unspecified zh, uses Chinese; all others use English. Traditional zh-Hant/TW/HK/MO uses English. Explicit script wins over region, so zh-Hans-HK stays Chinese and zh-Hant-CN is English. Empty system language falls back to English.
-
-Default Android resources are English; Chinese uses `values-b+zh+Hans`. The null Follow system preference is preserved. Titles, paths, user input and translation targets remain unchanged. Four JVM tests cover policy and three device tests cover real resource selection, the offline UI catalog and preferences using isolated configurations.
-
-App Bundle language splitting is disabled so both UI languages remain available after a manual switch in bundle installs.
-
-## Build and verify
+## Build and package
 
 Use JDK 21, Python 3.9+/PyYAML, SDK Platform 37.0, Build Tools 36.0.0, NDK 28.2.13676358 and CMake 3.22.1.
 
@@ -38,55 +31,31 @@ Use JDK 21, Python 3.9+/PyYAML, SDK Platform 37.0, Build Tools 36.0.0, NDK 28.2.
 python -m pip install PyYAML
 python tools/fetch_vision_models.py
 python tools/fetch_translation_sources.py
-./gradlew :app:assembleDebug :app:assembleRelease :app:lintDebug :app:lintRelease test --console=plain
-python tools/package_release.py --allow-unsigned
+./gradlew :app:assembleDebug :app:lintDebug test --no-parallel --max-workers=2
+./gradlew :app:assembleRelease :app:lintRelease --no-parallel --max-workers=2
 ```
 
-Packaging checks the actual APK package/version/SDK, CRC, signature status, 64-bit ABIs, both native engines, ELF LOAD alignment of at least 16 KB, ZIP alignment, six model hashes and UI JSON. It does not sign, commit, tag or upload. Without `--allow-unsigned`, unsigned APKs or dirty sources are rejected. Signing does not automatically satisfy license/device gates.
+On Windows use `gradlew.bat`. If packaging runs out of memory, increase the Java heap with `-Dorg.gradle.jvmargs=-Xmx6g`; reducing parallel work lowers memory usage.
 
-The read-only GitHub workflow builds/tests/lints and uploads reports, with no automatic Release/APK publication. All new modules/resources/tests/tools/source locks must be committed before CI can build them. Local success does not establish remote CI success.
-
-## Formal signing later
-
-Keep a reliable keystore/password backup. Consult Android's [signing documentation](https://developer.android.com/studio/publish/app-signing) for installation/update rules. The app reads four environment variables: `LMREADER_KEYSTORE_FILE`, `LMREADER_KEYSTORE_PASSWORD`, `LMREADER_KEY_ALIAS`, `LMREADER_KEY_PASSWORD`. Set all four or clear all four. Do not commit credentials or share them in chat/issues/logs.
-
-Use `--no-configuration-cache` for signing builds to keep passwords out of configuration caches:
+Signing reads four local environment variables: `LMREADER_KEYSTORE_FILE`, `LMREADER_KEYSTORE_PASSWORD`, `LMREADER_KEY_ALIAS`, `LMREADER_KEY_PASSWORD`. Configure all or none. Without them, builds only produce an unsigned candidate.
 
 ```sh
-./gradlew --no-configuration-cache :app:assembleRelease :app:lintRelease
+./gradlew --no-configuration-cache :app:assembleRelease :app:lintRelease --no-parallel --max-workers=2
 python tools/package_release.py --apk app/build/outputs/apk/release/app-release.apk
 ```
 
-Verify the certificate with `apksigner`, then test install/same-certificate upgrades, shrunk JNI, all input formats, translation/edits, export/recovery and notifications. Debug/Release are separate packages; migrate through backups. Regenerate checksums for the actual signed APK.
+Packaging verifies package/version/SDK, CRC, signature, ABIs, Android ELF/ZIP 16 KB alignment, six model hashes and UI JSON. Hexagon DSP skeletons are recorded separately from Android ARM64 libraries. Unsigned or dirty candidates require `--allow-unsigned` for local preparation.
 
-## GitHub steps
+## Keys and upgrades
 
-1. Review/commit the complete worktree, including new modules, schemas, resources, tests and tools; validate a clean checkout.
-2. Select the project's own LICENSE and complete dependency/Seg redistribution evidence. The Seg notice explicitly records the unresolved independent weight terms; the code's MIT declaration does not establish those terms.
-3. Finish signing and Release install/upgrade/ARM validation. Update bilingual notes and checksums.
-4. Tag the verified commit as v0.1.0 and push it. Create a draft/prerelease with signed APK, checksums, notices and source references; review before publishing.
+The release key is stored outside the repository. Its Windows DPAPI-encrypted password can only be decrypted by the corresponding Windows account. Securely back up the key and password separately before reinstalling Windows or moving computers. Never upload private keys, passwords or signing configuration caches. Signing builds disable configuration caching. See Android’s [signing documentation](https://developer.android.com/studio/publish/app-signing).
 
-Releases use tagged commits, per [GitHub documentation](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases). Use the web UI, or an installed/authenticated CLI after completing the steps above:
+Debug/Release use separate packages; migrate with app backups. The first signature is verified; device installation and future same-certificate upgrades still require validation.
 
-```sh
-git tag -a v0.1.0 -m 'LM-Reader v0.1.0'
-git push origin v0.1.0
-gh release create v0.1.0 --verify-tag --draft --prerelease \
-  --title 'LM-Reader v0.1.0' --notes-file docs/releases/v0.1.0.md \
-  .scratch/release-v0.1.0/LM-Reader-v0.1.0-64bit.apk \
-  .scratch/release-v0.1.0/SHA256SUMS
-```
+## Verification and limits
 
-No remote Release/tag was created in this preparation. A dirty candidate must not use the old HEAD as its complete release source. Update the candidate-status note once official assets are ready.
+Debug/Release builds passed; **407 JVM tests passed, 1 skipped, 0 failed**. Lint has no Fatal/Error findings, with 83 Debug and 79 Release warnings. The signed APK passes v2/v3 and 16 KB ZIP checks, LOAD alignment for 35 Android libraries, classification of 7 DSP files and six model hashes.
 
-## Evidence and remaining work
+Earlier, 17 MuMu Android 15 tests passed: 3 language and 14 reliability tests. New completed-task queue tests compiled; device tests were not rerun after the emulator was closed. Follow system selects Chinese for Simplified Chinese primary locales and English otherwise; manual language takes precedence.
 
-Local Debug/Release builds and both lint variants passed. All-module JVM tests recorded **407 passes, 1 skip and 0 failures**, counting each shared Debug/Release test set once. Earlier **17 MuMu Android 15 tests passed:** 3 language and 14 reliability tests. Language coverage includes Japanese, Korean, French, Arabic and Traditional Chinese English fallback, Simplified Chinese resources and manual priority.
-
-Lint has no Fatal/Error findings, with 83 Debug and 79 Release warnings remaining. Packaging verified 35 Android native libraries and 7 Hexagon DSP files, six models and 40 checksum-listed files. Public documentation links were checked; the GitHub workflow passed static YAML parsing.
-
-Logs: `.scratch/release-preparation-build.log`, `.scratch/release-preparation-final-build.log` and `.scratch/release-preparation-device-tests.log`. Candidate metadata records size/hash, ABIs and ELF alignment; the local summary is `.scratch/release-preparation-verification.json`.
-
-Remaining: formal signing/install/upgrade, clean checkout/remote CI, project license/transitive notices/Seg redistribution evidence, long-running ARM lock-screen/power behavior, real SD/cloud providers, full disks and system-kill matrices. Additional export formats, arbitrary workflow checkpoints and cross-schema migration are outside the current first-release capability.
-
-This revision adds About/GitHub/update checking, completed-task dequeueing and bilingual documentation. The new queue device tests compiled; device tests were not rerun after the emulator was closed. Current build logs are `.scratch/github-preparation-repair-build.log` and `.scratch/github-preparation-package-build.log`.
+Device installation/upgrades, ARM long-running background/power behavior and real SD/cloud providers remain to be validated. Project license selection, independent Seg redistribution evidence and complete dependency review remain unfinished; retained notices do not imply those reviews are complete. Repository visibility has not changed.

@@ -14,7 +14,7 @@
   <a href="https://github.com/tapdefenser/LM-Reader/issues">反馈</a>
 </p>
 
-> **v0.1.0 发布候选**：目前准备的是未签名 APK，不能直接安装；尚未公开发行。正式签名、ARM 安装升级验收及模型分发依据待完成，进度见[发布准备](docs/RELEASING.zh-CN.md)。
+> **v0.1.0 首版**：[下载已签名 APK](https://github.com/tapdefenser/LM-Reader/releases/tag/v0.1.0)。Android 8.0+，支持 arm64-v8a / x86_64。已知边界见[发行说明](docs/releases/v0.1.0.md)。
 
 ## 从阅读，到翻译与创作
 

@@ -98,8 +98,9 @@ def prepare(apk, output, allow_unsigned):
     minimum_sdk = re.search(r"^(?:minSdkVersion|sdkVersion):'26'$", badging, re.MULTILINE)
     if expected not in badging or minimum_sdk is None or "targetSdkVersion:'36'" not in badging:
         raise RuntimeError("APK package/version/SDK does not match the release configuration.")
-    signature = run([tool(tools, "apksigner"), "verify", "--verbose", apk], check=False)
+    signature = run([tool(tools, "apksigner"), "verify", "--verbose", "--print-certs", apk], check=False)
     signed = signature.returncode == 0
+    signer = re.search(r"Signer #1 certificate SHA-256 digest: ([0-9a-f]{64})", signature.stdout)
     dirty = bool(run(["git", "status", "--porcelain"]).stdout.strip())
     if not signed and not allow_unsigned:
         raise RuntimeError("APK is unsigned. For a local candidate only, pass --allow-unsigned.")
@@ -153,10 +154,12 @@ def prepare(apk, output, allow_unsigned):
         "versionName": name, "versionCode": int(version["versionCode"]), "tag": "v" + name,
         "applicationId": "com.lmreader", "minSdk": 26, "targetSdk": 36, "abis": abis,
         "apk": destination.name, "bytes": destination.stat().st_size, "sha256": checksum,
-        "signed": signed, "sourceRevision": run(["git", "rev-parse", "HEAD"]).stdout.strip(),
+        "signed": signed, "signerCertificateSha256": signer.group(1) if signer else None,
+        "sourceRevision": run(["git", "rev-parse", "HEAD"]).stdout.strip(),
         "sourceDirty": dirty, "nativeLoadAlignment": alignments, "hexagonDspLibraries": dsp_libraries,
         "publicDistributionReady": False,
-        "pending": ["Seg weights redistribution evidence", "project license selection", "signed install/upgrade and ARM validation"],
+        "pending": ["Seg weights redistribution evidence", "project license selection",
+                    "install/upgrade and ARM validation" if signed else "signing, install/upgrade and ARM validation"],
     }
     (output / "release-metadata.json").write_text(json.dumps(metadata, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     entries = [destination, output / "RELEASE_NOTES.md", output / "THIRD_PARTY_NOTICES.md", output / "release-metadata.json"]
