@@ -1,21 +1,21 @@
-# v0.1.1 release and signing
+# v0.1.2 release and signing
 
-[简体中文](RELEASING.zh-CN.md) · [Bilingual release notes](releases/v0.1.1.md)
+[简体中文](RELEASING.zh-CN.md) · [Bilingual release notes](releases/v0.1.2.md)
 
-Release date: 2026-10-02. This release provides a signed APK on [GitHub Releases](https://github.com/tapdefenser/LM-Reader-an-AI-manga-translation-reader-for-Android/releases/tag/v0.1.1). The repository is public.
+Release date: 2026-10-02. This release provides a signed APK on [GitHub Releases](https://github.com/tapdefenser/LM-Reader-an-AI-manga-translation-reader-for-Android/releases/tag/v0.1.2). The repository is public.
 
 ## Release assets
 
 | Item | Configuration |
 |---|---|
-| Version / code | `0.1.1` / `3`, from `gradle/release.properties` |
-| Tag | `v0.1.1` |
+| Version / code | `0.1.2` / `4`, from `gradle/release.properties` |
+| Tag | `v0.1.2` |
 | Package | `com.lmreader`; Debug uses `com.lmreader.debug` |
 | Android | min 26, target 36, compile 37 |
 | ABIs | `arm64-v8a`, `x86_64` |
 | Optimization | R8 and resource shrinking |
 | Signing | Dedicated RSA-4096 key; APK v2/v3 verification passed |
-| APK | `LM-Reader-v0.1.1-64bit.apk`; actual size is recorded in the attached metadata |
+| APK | `LM-Reader-v0.1.2-64bit.apk`; actual size is recorded in the attached metadata |
 
 The APK SHA-256 is recorded in this release's `SHA256SUMS` and `release-metadata.json` assets.
 
@@ -33,6 +33,7 @@ python tools/fetch_vision_models.py
 python tools/fetch_translation_sources.py
 ./gradlew :app:assembleDebug :app:lintDebug test --no-parallel --max-workers=2
 ./gradlew :app:assembleRelease :app:lintRelease --no-parallel --max-workers=2
+python tools/verify_native_jni.py --apk app/build/outputs/apk/release/app-release-unsigned.apk
 ```
 
 On Windows use `gradlew.bat`. If packaging runs out of memory, increase the Java heap with `-Dorg.gradle.jvmargs=-Xmx6g`; reducing parallel work lowers memory usage.
@@ -56,6 +57,8 @@ Debug/Release use separate packages; migrate with app backups. This release reus
 
 Debug/Release builds and lint passed; **420 JVM tests passed, 1 skipped, 0 failed**. Signed APK checks include v2/v3, 16 KB ZIP/Android library LOAD alignment, DSP file classification and six model hashes.
 
-Seven MuMu Android 15 tests passed in this change: four SEG/OCR tests, two manga-option/snapshot tests and one schema 11→12 migration test. A generated connected-balloon fixture retained both text regions as separate outputs through the actual SEG/OCR engines.
+The MuMu Android 15 navigation regression test passed. GUI testing of the signed, R8-minified production APK covered export toolbar/system Back, English/Korean SEG + OCR, GPU-to-CPU fallback, the actual local-machine queue, saved translations and reader display. APK JNI checks reject the previous release and accept this one, and run in CI and packaging.
+
+Release acceptance requires installing the actual signed APK, returning from settings children, completing SEG → OCR → translation and opening the translated page. Debug testing cannot replace minified-release acceptance. The phone was disconnected after crash-log collection; post-fix physical-device testing remains pending.
 
 Device installation/upgrades, ARM long-running background/power behavior and real SD/cloud providers remain to be validated. Project license selection, independent Seg redistribution evidence and complete dependency review remain unfinished; retained notices do not imply those reviews are complete. Repository visibility has not changed.

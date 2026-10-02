@@ -109,6 +109,8 @@ def prepare(apk, output, allow_unsigned):
     if dirty and not allow_unsigned:
         raise RuntimeError("Commit the complete release source before preparing publishable files.")
     run([tool(tools, "zipalign"), "-c", "-P", "16", "4", apk])
+    from verify_native_jni import verify as verify_native_jni
+    native_jni = verify_native_jni(apk, tool(tools, "dexdump"))
     from fetch_vision_models import HASHES
     alignments = {}
     dsp_libraries = []
@@ -159,6 +161,7 @@ def prepare(apk, output, allow_unsigned):
         "signed": signed, "signerCertificateSha256": signer.group(1) if signer else None,
         "sourceRevision": run(["git", "rev-parse", "HEAD"]).stdout.strip(),
         "sourceDirty": dirty, "nativeLoadAlignment": alignments, "hexagonDspLibraries": dsp_libraries,
+        "nativeJniConstructors": native_jni,
         "publicDistributionReady": False,
         "pending": ["Seg weights redistribution evidence", "project license selection",
                     "install/upgrade and ARM validation" if signed else "signing, install/upgrade and ARM validation"],

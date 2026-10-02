@@ -3,6 +3,9 @@ plugins {
 }
 
 android {
+    buildTypes.named("release") {
+        proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+    }
     androidResources { noCompress += listOf("tflite", "onnx") }
     // QNN's DSP runtime needs extracted native libraries, including the skel files.
     packaging { jniLibs.useLegacyPackaging = true }

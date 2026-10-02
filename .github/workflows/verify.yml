@@ -48,6 +48,7 @@ jobs:
           chmod +x gradlew
           ./gradlew :app:assembleDebug :app:lintDebug test --max-workers=2 --no-parallel -Dorg.gradle.jvmargs=-Xmx4g --console=plain
           ./gradlew :app:assembleRelease :app:lintRelease --max-workers=2 --no-parallel -Dorg.gradle.jvmargs=-Xmx4g --console=plain
+          .scratch/ci-python/bin/python tools/verify_native_jni.py --apk app/build/outputs/apk/release/app-release-unsigned.apk
       - name: Upload verification reports
         if: always()
         uses: actions/upload-artifact@v7

@@ -1,21 +1,21 @@
-# v0.1.1 发布与签名
+# v0.1.2 发布与签名
 
-[English](RELEASING.en.md) · [中英发行说明](releases/v0.1.1.md)
+[English](RELEASING.en.md) · [中英发行说明](releases/v0.1.2.md)
 
-发布日期：2026-10-02。本版提供已签名 APK：[GitHub Release](https://github.com/tapdefenser/LM-Reader-an-AI-manga-translation-reader-for-Android/releases/tag/v0.1.1)。仓库为公开仓库。
+发布日期：2026-10-02。本版提供已签名 APK：[GitHub Release](https://github.com/tapdefenser/LM-Reader-an-AI-manga-translation-reader-for-Android/releases/tag/v0.1.2)。仓库为公开仓库。
 
 ## 本版附件
 
 | 项目 | 配置 |
 |---|---|
-| 版本 / versionCode | `0.1.1` / `3`，来自 `gradle/release.properties` |
-| 标签 | `v0.1.1` |
+| 版本 / versionCode | `0.1.2` / `4`，来自 `gradle/release.properties` |
+| 标签 | `v0.1.2` |
 | applicationId | `com.lmreader`；Debug 为 `com.lmreader.debug` |
 | Android | min API 26、target API 36、compile SDK 37 |
 | ABI | `arm64-v8a`、`x86_64` |
 | Release 优化 | R8 与资源收缩 |
 | 签名 | 专用 RSA-4096 密钥，APK v2/v3 校验通过 |
-| APK | `LM-Reader-v0.1.1-64bit.apk`；实际大小见附件 metadata |
+| APK | `LM-Reader-v0.1.2-64bit.apk`；实际大小见附件 metadata |
 
 APK SHA-256 见本版附件 `SHA256SUMS` 与 `release-metadata.json`。
 
@@ -33,6 +33,7 @@ python tools/fetch_vision_models.py
 python tools/fetch_translation_sources.py
 ./gradlew :app:assembleDebug :app:lintDebug test --no-parallel --max-workers=2
 ./gradlew :app:assembleRelease :app:lintRelease --no-parallel --max-workers=2
+python tools/verify_native_jni.py --apk app/build/outputs/apk/release/app-release-unsigned.apk
 ```
 
 Windows 使用 `gradlew.bat`。打包内存不足时可通过 `-Dorg.gradle.jvmargs=-Xmx6g` 增大 Java 堆；减少并行任务可降低占用。
@@ -56,6 +57,8 @@ Debug 与 Release 使用独立包名，通过应用备份迁移。本版沿用 v
 
 Debug/Release 构建与 lint 通过；JVM **420 项通过、1 项跳过、0 项失败**。签名 APK 校验包括 v2/v3、16 KB ZIP 与 Android native 库 LOAD 对齐、DSP 文件分类与六个模型。
 
-本轮 MuMu Android 15 的 SEG/OCR 4 项、漫画选项与快照 2 项、schema 11→12 迁移 1 项共 7 项通过。生成的粘连气泡样例经真实 SEG/OCR 识别，两个文字区域均保留且分别输出。
+本轮 MuMu Android 15 的导航回归测试通过。签名、R8 压缩的正式 APK 已验证导出设置的页面/系统返回、英文与韩文 SEG + OCR、GPU 失败回退 CPU、本地机翻队列、译文保存及阅读器显示。APK JNI 检查拒绝旧版并通过新版，已接入 CI 与打包。
+
+发布验收必须安装实际签名 APK，打开设置子页后返回，再完成 SEG → OCR → 机翻并打开译文页面；Debug 测试不能代替压缩正式版验收。手机崩溃日志采集后已断开，修复后的真机复测仍待进行。
 
 仍待设备安装/升级、ARM 长时后台与省电、真实 SD/云提供方验收。项目许可证选择、Seg 权重独立分发依据及完整依赖审查仍未完成，现有第三方声明不表示已完成这些审查。仓库权限未改变。

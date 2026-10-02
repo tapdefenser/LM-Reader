@@ -178,18 +178,18 @@ fun LmReaderNavHost(
                 activeExportTasks = exportTasks.count { it.state == "PENDING" || it.state == "RUNNING" || it.state == "PAUSED" },
                 onNavigate = { target ->
                     when (target) {
-                        MainDestination.LIBRARY -> navController.navigateSingleTop(Routes.LIBRARY)
-                        MainDestination.BOOKSHELF -> navController.navigateSingleTop(Routes.BOOKSHELF)
+                        MainDestination.LIBRARY -> navController.navigateMainDestination(Routes.LIBRARY)
+                        MainDestination.BOOKSHELF -> navController.navigateMainDestination(Routes.BOOKSHELF)
                         MainDestination.TRANSLATION_QUEUE ->
-                            navController.navigateSingleTop(Routes.TRANSLATION_QUEUE)
+                            navController.navigateMainDestination(Routes.TRANSLATION_QUEUE)
                         MainDestination.TRANSLATION_WORKFLOWS ->
-                            navController.navigateSingleTop(Routes.TRANSLATION_WORKFLOWS)
-                        MainDestination.API_LOGS -> navController.navigateSingleTop(Routes.API_LOGS)
+                            navController.navigateMainDestination(Routes.TRANSLATION_WORKFLOWS)
+                        MainDestination.API_LOGS -> navController.navigateMainDestination(Routes.API_LOGS)
 
                         MainDestination.EXPORT_QUEUE ->
-                            navController.navigateSingleTop(Routes.EXPORT_QUEUE)
+                            navController.navigateMainDestination(Routes.EXPORT_QUEUE)
 
-                        MainDestination.SETTINGS -> navController.navigateSingleTop(Routes.SETTINGS)
+                        MainDestination.SETTINGS -> navController.navigateMainDestination(Routes.SETTINGS)
                         MainDestination.MENU -> Unit
                     }
                 },
@@ -253,7 +253,7 @@ fun LmReaderNavHost(
                         container = container,
                         onOpenMenu = openMenu,
                         onOpenManga = { mangaId -> navController.navigate(Routes.mangaDetail(mangaId)) },
-                        onOpenLibrary = { navController.navigateSingleTop(Routes.LIBRARY) },
+                        onOpenLibrary = { navController.navigateMainDestination(Routes.LIBRARY) },
                     )
                 }
 
@@ -406,9 +406,14 @@ fun LmReaderNavHost(
 }
 
 /** 同一个目的地重复点选时不叠加返回栈（主菜单可能被连续点击）。 */
-private fun NavHostController.navigateSingleTop(route: String) {
+private fun NavHostController.navigateMainDestination(route: String) {
     navigate(route) {
         launchSingleTop = true
         popUpTo(graph.startDestinationId) { inclusive = false }
     }
+}
+
+/** Child pages retain their caller so both toolbar and system Back return there. */
+private fun NavHostController.navigateSingleTop(route: String) {
+    navigate(route) { launchSingleTop = true }
 }
